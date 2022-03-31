@@ -28,9 +28,13 @@ class _ModuleAdapter:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = "auto",
         max_tokens: int | None = None,
+        stream_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         provider_id, model_name = split_model_id(self.model_id)
         if tools and hasattr(self.llm, "call_messages_with_tools"):
+            kwargs: dict[str, Any] = {}
+            if stream_callback is not None:
+                kwargs["stream_callback"] = stream_callback
             return self.llm.call_messages_with_tools(
                 messages,
                 tools=tools,
@@ -38,7 +42,11 @@ class _ModuleAdapter:
                 model_id=model_name,
                 max_tokens=max_tokens,
                 tool_choice=tool_choice,
+                **kwargs,
             )
+        kwargs = {}
+        if stream_callback is not None:
+            kwargs["stream_callback"] = stream_callback
         return self.llm.call_messages_inline(
             messages,
             provider_id=provider_id,
@@ -46,6 +54,7 @@ class _ModuleAdapter:
             max_tokens=max_tokens,
             tools=tools,
             tool_choice=tool_choice,
+            **kwargs,
         )
 
 
@@ -61,6 +70,7 @@ def run_agent_once(
     permission_mode: str | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     permission_prompt_callback: Callable[[dict[str, Any]], bool] | None = None,
+    stream_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run one Codex-like AETHER harness turn.
 
@@ -81,5 +91,6 @@ def run_agent_once(
         max_steps=max_steps,
         progress_callback=progress_callback,
         permission_prompt_callback=permission_prompt_callback,
+        stream_callback=stream_callback,
     )
     return summarize_research_turn(record, project=project)

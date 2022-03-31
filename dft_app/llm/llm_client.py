@@ -248,6 +248,7 @@ def call_openai_compatible_result(
     max_tokens: int | None = None,
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | dict[str, Any] | None = None,
+    stream_callback: Any | None = None,
 ) -> dict[str, Any]:
     config = build_provider_model_config(provider_id, model_id)
     base_url = str(config.get("base_url", "") or "").strip().rstrip("/")
@@ -294,6 +295,14 @@ def call_openai_compatible_result(
         request_kwargs["tools"] = tools
         request_kwargs["tool_choice"] = tool_choice or "auto"
 
+    if stream_callback is not None:
+        return _call_chat_completions_streaming(
+            client,
+            request_kwargs,
+            stream_callback=stream_callback,
+            provider_label=str(config.get("label") or provider_id),
+        )
+
     try:
         completion = client.chat.completions.create(**request_kwargs)
     except Exception as exc:
@@ -333,3 +342,91 @@ def call_openai_compatible(
 ) -> str:
     result = call_openai_compatible_result(provider_id, model_id, api_key, messages, max_tokens=max_tokens)
     return str(result["content"])
+
+
+def _call_chat_completions_streaming(
+    client: Any,
+    request_kwargs: dict[str, Any],
+    *,
+    stream_callback: Any,
+    provider_label: str,
+) -> dict[str, Any]:
+    """Stream Chat Completions deltas while reconstructing the normal result.
+
+    This intentionally covers the Chat Completions protocol only.  The Qwen
+    Responses-style tool path still uses the non-streaming parser until its
+    function-call delta protocol is implemented separately.
+    """
+
+    try:
+        stream = client.chat.completions.create(**request_kwargs, stream=True)
+    except Exception as exc:
+        raise RuntimeError(f"{provider_label} 接口调用失败: {format_error_payload(str(exc))}") from exc
+
+    content_chunks: list[str] = []
+    reasoning_chunks: list[str] = []
+    raw_chunks: list[dict[str, Any]] = []
+    finish_reason: str | None = None
+    tool_calls_by_index: dict[int, dict[str, Any]] = {}
+
+    for chunk in stream:
+        data = _chunk_to_dict(chunk)
+        raw_chunks.append(data)
+        choices = data.get("choices") or []
+        if not choices:
+            continue
+        choice = choices[0]
+        finish_reason = choice.get("finish_reason") or finish_reason
+        delta = choice.get("delta") or {}
+        content_delta = _delta_text(delta.get("content"))
+        if content_delta:
+            content_chunks.append(content_delta)
+            stream_callback({"type": "content_delta", "delta": content_delta})
+        reasoning_delta = _delta_text(delta.get("reasoning_content"))
+        if reasoning_delta:
+            reasoning_chunks.append(reasoning_delta)
+            stream_callback({"type": "reasoning_delta", "delta": reasoning_delta})
+        for raw_call in delta.get("tool_calls") or []:
+            index = int(raw_call.get("index") or 0)
+            target = tool_calls_by_index.setdefault(
+                index,
+                {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+            )
+            if raw_call.get("id"):
+                target["id"] = str(raw_call.get("id"))
+            if raw_call.get("type"):
+                target["type"] = str(raw_call.get("type"))
+            function = raw_call.get("function") or {}
+            if function.get("name"):
+                target["function"]["name"] += str(function.get("name"))
+            if function.get("arguments"):
+                target["function"]["arguments"] += str(function.get("arguments"))
+
+    tool_calls = [tool_calls_by_index[index] for index in sorted(tool_calls_by_index)]
+    content = maybe_strip_markdown_fence("".join(content_chunks).strip())
+    reasoning_content = "".join(reasoning_chunks).strip()
+    if not content and not tool_calls:
+        raise RuntimeError("模型接口未返回可展示内容")
+    return {
+        "content": content,
+        "reasoning_content": reasoning_content,
+        "finish_reason": finish_reason or ("tool_calls" if tool_calls else "stop"),
+        "tool_calls": tool_calls,
+        "raw": {"stream_chunks": raw_chunks},
+    }
+
+
+def _chunk_to_dict(chunk: Any) -> dict[str, Any]:
+    if isinstance(chunk, dict):
+        return chunk
+    if hasattr(chunk, "model_dump"):
+        return chunk.model_dump()
+    if hasattr(chunk, "model_dump_json"):
+        return json.loads(chunk.model_dump_json())
+    raise RuntimeError("模型流式接口返回了无法解析的 chunk")
+
+
+def _delta_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    return extract_message_text(content)

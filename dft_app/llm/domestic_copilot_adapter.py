@@ -77,6 +77,7 @@ class DomesticCopilotLLM:
         max_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
+        stream_callback: Any | None = None,
     ) -> dict[str, Any]:
         resolved_provider, resolved_model = (
             (provider_id, model_id)
@@ -93,6 +94,7 @@ class DomesticCopilotLLM:
             max_tokens=max_tokens,
             tools=tools,
             tool_choice=tool_choice,
+            stream_callback=stream_callback,
         )
         result["provider_id"] = resolved_provider
         result["model_id"] = resolved_model
@@ -107,6 +109,7 @@ class DomesticCopilotLLM:
         model_id: str | None = None,
         max_tokens: int | None = None,
         tool_choice: str | dict[str, Any] | None = "auto",
+        stream_callback: Any | None = None,
     ) -> dict[str, Any]:
         return self.call_messages_inline(
             messages,
@@ -115,6 +118,7 @@ class DomesticCopilotLLM:
             max_tokens=max_tokens,
             tools=tools,
             tool_choice=tool_choice,
+            stream_callback=stream_callback,
         )
 
     def _call_messages_external(

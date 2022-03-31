@@ -203,6 +203,7 @@ class AgentHarness:
         max_steps: int | None = None,
         progress_callback: Any | None = None,
         permission_prompt_callback: Any | None = None,
+        stream_callback: Any | None = None,
     ) -> dict[str, Any]:
         session_store = self.sessions.store if hasattr(self.sessions, "store") else self.sessions
         interaction_mode = infer_turn_mode(prompt)
@@ -248,7 +249,14 @@ class AgentHarness:
                         }
                     )
                     messages = _clean_messages(messages)
-                reply = self.adapter.chat(messages, tools=tools_for_step, tool_choice=tool_choice_for_step, max_tokens=max_tokens)
+                chat_kwargs: dict[str, Any] = {
+                    "tools": tools_for_step,
+                    "tool_choice": tool_choice_for_step,
+                    "max_tokens": max_tokens,
+                }
+                if stream_callback is not None and not tools_for_step:
+                    chat_kwargs["stream_callback"] = stream_callback
+                reply = self.adapter.chat(messages, **chat_kwargs)
                 finish_reason = str(reply.get("finish_reason") or "stop")
                 tool_calls = reply.get("tool_calls") or []
                 content = str(reply.get("content") or "")

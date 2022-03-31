@@ -292,6 +292,30 @@ def make_chat_progress_printer() -> Any:
     return _printer
 
 
+def make_stream_printer() -> tuple[Any, dict[str, bool]]:
+    state = {"printed": False}
+
+    def _printer(event: dict[str, Any]) -> None:
+        if str(event.get("type") or "") != "content_delta":
+            return
+        delta = str(event.get("delta") or "")
+        if not delta:
+            return
+        if not state["printed"]:
+            print(f"{Colors.CYAN}assistant>{Colors.RESET} ", end="", flush=True)
+        print(delta, end="", flush=True)
+        state["printed"] = True
+
+    return _printer, state
+
+
+def print_streamed_or_final_response(record: dict[str, Any], stream_state: dict[str, bool]) -> None:
+    if stream_state.get("printed"):
+        print()
+        return
+    print(record["response"])
+
+
 def make_permission_prompt_callback() -> Any:
     def _prompt(details: dict[str, Any]) -> bool:
         name = details.get("tool_name") or "tool"
@@ -423,17 +447,19 @@ def run_demo_repl(run_root: str | None = None) -> int:
             print_json({"recommendations": recommend_next_tasks(None, focus=focus)})
             continue
 
-        print(f"{Colors.DIM}thinking with {program_model_id()}...{Colors.RESET}")
         from .agent import run_agent_once
 
+        stream_printer, stream_state = make_stream_printer()
         record = run_agent_once(
             line,
             max_tokens=1000,
             max_steps=4,
             allow_cluster_submit=False,
+            progress_callback=make_chat_progress_printer(),
             permission_prompt_callback=make_permission_prompt_callback(),
+            stream_callback=stream_printer,
         )
-        print(record["response"])
+        print_streamed_or_final_response(record, stream_state)
 
 
 def _current_model_config(model_id: str | None = None) -> tuple[str, str, dict[str, Any]]:
@@ -838,6 +864,7 @@ def handle_chat(args: argparse.Namespace) -> int:
         return 0
 
     if prompt:
+        stream_printer, stream_state = make_stream_printer()
         record = ask_once(
             prompt,
             project=args.project,
@@ -848,8 +875,9 @@ def handle_chat(args: argparse.Namespace) -> int:
             permission_mode=get_permission_mode(),
             progress_callback=make_chat_progress_printer(),
             permission_prompt_callback=make_permission_prompt_callback(),
+            stream_callback=stream_printer,
         )
-        print(record["response"])
+        print_streamed_or_final_response(record, stream_state)
         print()
         print_turn_footer(record)
         next_steps = (record.get("progress") or {}).get("next_steps") or []
@@ -962,6 +990,7 @@ def handle_chat(args: argparse.Namespace) -> int:
             focus = line[len("/recommend") :].strip() or None
             print_json({"recommendations": recommend_next_tasks(args.project, focus=focus)})
             continue
+        stream_printer, stream_state = make_stream_printer()
         record = ask_once(
             line,
             project=args.project,
@@ -972,8 +1001,9 @@ def handle_chat(args: argparse.Namespace) -> int:
             permission_mode=get_permission_mode(),
             progress_callback=make_chat_progress_printer(),
             permission_prompt_callback=make_permission_prompt_callback(),
+            stream_callback=stream_printer,
         )
-        print(record["response"])
+        print_streamed_or_final_response(record, stream_state)
         print_turn_footer(record)
         next_steps = (record.get("progress") or {}).get("next_steps") or []
         if next_steps:
@@ -1104,6 +1134,7 @@ def handle_agent_run(args: argparse.Namespace) -> int:
     from .agent import run_agent_once
 
     prompt = " ".join(args.prompt).strip()
+    stream_printer, stream_state = make_stream_printer()
     record = run_agent_once(
         prompt,
         project=args.project,
@@ -1111,9 +1142,11 @@ def handle_agent_run(args: argparse.Namespace) -> int:
         max_tokens=args.max_tokens,
         max_steps=args.max_steps,
         allow_cluster_submit=args.allow_cluster_submit,
+        progress_callback=make_chat_progress_printer(),
         permission_prompt_callback=make_permission_prompt_callback(),
+        stream_callback=stream_printer,
     )
-    print(record["response"])
+    print_streamed_or_final_response(record, stream_state)
     print("\n[tool_executions]")
     print_json(record["tool_executions"])
     print(f"\n[record] {record['record_path']}")

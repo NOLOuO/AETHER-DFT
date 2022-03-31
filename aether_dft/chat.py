@@ -32,6 +32,7 @@ def ask_once(
     permission_mode: str | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     permission_prompt_callback: Callable[[dict[str, Any]], bool] | None = None,
+    stream_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     record = run_agent_once(
         prompt,
@@ -43,5 +44,6 @@ def ask_once(
         permission_mode=permission_mode,
         progress_callback=progress_callback,
         permission_prompt_callback=permission_prompt_callback,
+        stream_callback=stream_callback,
     )
     return record

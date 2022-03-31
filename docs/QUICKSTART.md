@@ -90,9 +90,12 @@ CLI 会显示工具调用进度：
 ```text
 thinking with deepseek:deepseek-v4-pro...
 ↻ model step 1/6
-↳ tool adsorbate_chemistry_hint {"adsorbate":"H2O"}
-✓ tool adsorbate_chemistry_hint status=ok
+↳ tool adsorbate_chemistry_hint (0.8s) {"adsorbate":"H2O"}
+✓ tool adsorbate_chemistry_hint status=ok (0.2s)
+assistant> 根据已有证据，下一步应先比较 top / bridge / hollow 吸附候选...
 ```
+
+工具选择阶段仍等待模型返回完整 JSON；无工具/最终回复阶段会边生成边显示，避免用户长时间只看到静态 “thinking”。
 
 ## 6. 集群探测与真实提交边界
 

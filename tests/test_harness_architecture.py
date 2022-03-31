@@ -51,6 +51,21 @@ class InterruptingAdapter:
         raise KeyboardInterrupt()
 
 
+class StreamAwareAdapter:
+    runtime = type("Runtime", (), {"model_id": "fake:stream"})()
+
+    def chat(self, messages, *, tools=None, tool_choice="auto", max_tokens=None, stream_callback=None):
+        if stream_callback:
+            stream_callback({"type": "content_delta", "delta": "流"})
+            stream_callback({"type": "content_delta", "delta": "式"})
+        return {"content": "流式", "finish_reason": "stop", "tool_calls": []}
+
+
+class EmptyRegistry:
+    def openai_tool_schemas(self, interaction_mode=None):
+        return []
+
+
 def test_root_prompt_file_is_primary_system_prompt():
     prompt_path = paths.PROJECT_ROOT / "aether_dft" / "prompt_assets" / "system_chemistry.md"
     assert prompt_path.exists()
@@ -180,6 +195,17 @@ def test_agent_harness_saves_partial_trace_on_keyboard_interrupt(tmp_path: Path)
     assert "partial trace" in record["response"]
     assert Path(record["record_path"]).exists()
     assert any(event.get("event") == "turn_interrupted" for event in events)
+
+
+def test_agent_harness_forwards_stream_callback_when_no_tools(tmp_path: Path):
+    sessions = HarnessSessionStore(tmp_path / "sessions")
+    events: list[dict[str, Any]] = []
+    harness = AgentHarness(adapter=StreamAwareAdapter(), registry=EmptyRegistry(), sessions=sessions)
+
+    record = harness.run_turn("直接回答", max_steps=1, stream_callback=events.append)
+
+    assert record["response"] == "流式"
+    assert [event["delta"] for event in events] == ["流", "式"]
 
 
 def test_knowledge_note_tools_round_trip(tmp_path: Path, monkeypatch):

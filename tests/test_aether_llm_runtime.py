@@ -4,7 +4,11 @@ import pytest
 
 from aether_dft.model_catalog import load_model_catalog
 from dft_app.llm import DomesticCopilotLLM
-from dft_app.llm.llm_client import _chat_tools_to_responses_tools, _messages_to_responses_payload
+from dft_app.llm.llm_client import (
+    _chat_tools_to_responses_tools,
+    _messages_to_responses_payload,
+    call_openai_compatible_result,
+)
 from dft_app.llm.provider_presets import build_provider_model_config
 
 
@@ -106,5 +110,110 @@ def test_responses_tool_schema_is_flattened():
             "name": "project_state_read",
             "description": "read project state",
             "parameters": {"type": "object", "properties": {}},
+        }
+    ]
+
+
+def test_chat_completions_streaming_reconstructs_content(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured["kwargs"] = kwargs
+            return iter(
+                [
+                    {"choices": [{"delta": {"content": "Hello "}}]},
+                    {"choices": [{"delta": {"content": "world"}, "finish_reason": "stop"}]},
+                ]
+            )
+
+    class FakeClient:
+        chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr("dft_app.llm.llm_client._build_openai_client", lambda *args, **kwargs: FakeClient())
+    events: list[dict[str, object]] = []
+
+    result = call_openai_compatible_result(
+        "deepseek",
+        "deepseek-v4-pro",
+        "fake-key",
+        [{"role": "user", "content": "hello"}],
+        stream_callback=events.append,
+    )
+
+    assert captured["kwargs"]["stream"] is True
+    assert result["content"] == "Hello world"
+    assert result["finish_reason"] == "stop"
+    assert [event["delta"] for event in events] == ["Hello ", "world"]
+
+
+def test_chat_completions_streaming_reconstructs_tool_call(monkeypatch):
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return iter(
+                [
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": "call_1",
+                                            "type": "function",
+                                            "function": {"name": "project_state_read", "arguments": "{\"project\""},
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "function": {"arguments": ":\"demo\"}"},
+                                        }
+                                    ]
+                                },
+                                "finish_reason": "tool_calls",
+                            }
+                        ]
+                    },
+                ]
+            )
+
+    class FakeClient:
+        chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr("dft_app.llm.llm_client._build_openai_client", lambda *args, **kwargs: FakeClient())
+
+    result = call_openai_compatible_result(
+        "deepseek",
+        "deepseek-v4-pro",
+        "fake-key",
+        [{"role": "user", "content": "read state"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "project_state_read",
+                    "description": "read",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        stream_callback=lambda _event: None,
+    )
+
+    assert result["finish_reason"] == "tool_calls"
+    assert result["tool_calls"] == [
+        {
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "project_state_read", "arguments": "{\"project\":\"demo\"}"},
         }
     ]
