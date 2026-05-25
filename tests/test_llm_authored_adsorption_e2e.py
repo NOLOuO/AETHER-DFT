@@ -55,8 +55,8 @@ def test_live_model_uses_reasoning_tools_for_adsorption_candidate_plan(tmp_path)
     record = run_agent_once(
         prompt,
         project="llm-e2e-adsorption",
-        max_steps=4,
-        max_tokens=1200,
+        max_steps=8,
+        max_tokens=2000,
         permission_mode="dev",
     )
     tool_names = [item["name"] for item in record.get("tool_executions", [])]
