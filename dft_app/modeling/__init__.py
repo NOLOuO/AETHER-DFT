@@ -27,6 +27,7 @@ from .models import (
     SystemSpec,
     WorkflowSpec,
     WorkflowStepSpec,
+    model_spec_from_dict,
 )
 
 __all__ = [
@@ -51,6 +52,7 @@ __all__ = [
     "ModelingResult",
     "ModelSourceKind",
     "ModelSpec",
+    "model_spec_from_dict",
     "SystemSpec",
     "TaskModeler",
     "WorkflowSpec",

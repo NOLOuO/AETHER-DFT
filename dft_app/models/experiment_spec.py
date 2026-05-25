@@ -224,7 +224,15 @@ class ExperimentSpec:
 def experiment_spec_from_dict(data: dict[str, Any]) -> ExperimentSpec:
     """Rehydrate an ExperimentSpec from its JSON/dict representation."""
 
-    kpoints_value = data["kpoints_strategy"].get("value")
+    kpoints_payload = data.get("kpoints_strategy") or KpointsStrategy().__dict__
+    encut_payload = data.get("encut_strategy") or EncutStrategy().__dict__
+    smearing_payload = data.get("smearing") or SmearingSettings().__dict__
+    spin_payload = data.get("spin_settings") or SpinSettings().__dict__
+    convergence_payload = data.get("convergence_settings") or ConvergenceSettings().__dict__
+    job_payload = data.get("job_overrides") or JobSettings().__dict__
+    constraints_payload = data.get("structure_constraints") or StructureConstraint().__dict__
+
+    kpoints_value = kpoints_payload.get("value")
     if isinstance(kpoints_value, list):
         kpoints_value = tuple(kpoints_value)
 
@@ -233,30 +241,30 @@ def experiment_spec_from_dict(data: dict[str, Any]) -> ExperimentSpec:
         task_type=TaskType(data["task_type"]),
         material_name=data["material_name"],
         source_prompt=data["source_prompt"],
-        created_at=data["created_at"],
+        created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
         chemical_formula=data.get("chemical_formula"),
         description=data.get("description"),
-        structure_source=StructureSource(data["structure_source"]),
+        structure_source=StructureSource(data.get("structure_source", StructureSource.LOCAL_FILE.value)),
         structure_path=data.get("structure_path"),
         structure_id=data.get("structure_id"),
-        structure_constraints=StructureConstraint(**data["structure_constraints"]),
+        structure_constraints=StructureConstraint(**constraints_payload),
         workflow=data.get("workflow", []),
         code=data.get("code", "vasp"),
         functional=data.get("functional", "PBE"),
         task_goal=data.get("task_goal"),
         incar_overrides=data.get("incar_overrides", {}),
         kpoints_strategy=KpointsStrategy(
-            mode=data["kpoints_strategy"]["mode"],
+            mode=kpoints_payload.get("mode", "auto_density"),
             value=kpoints_value,
         ),
-        encut_strategy=EncutStrategy(**data["encut_strategy"]),
-        smearing=SmearingSettings(**data["smearing"]),
-        spin_settings=SpinSettings(**data["spin_settings"]),
-        convergence_settings=ConvergenceSettings(**data["convergence_settings"]),
+        encut_strategy=EncutStrategy(**encut_payload),
+        smearing=SmearingSettings(**smearing_payload),
+        spin_settings=SpinSettings(**spin_payload),
+        convergence_settings=ConvergenceSettings(**convergence_payload),
         workflow_parameters=data.get("workflow_parameters", {}),
         submit_profile=data.get("submit_profile"),
         scheduler=data.get("scheduler", "slurm"),
-        job_overrides=JobSettings(**data["job_overrides"]),
+        job_overrides=JobSettings(**job_payload),
         requires_confirmation=data.get("requires_confirmation", True),
         confirmation_items=[ConfirmationItem(item) for item in data.get("confirmation_items", [])],
         allow_reuse_previous_results=data.get("allow_reuse_previous_results", True),

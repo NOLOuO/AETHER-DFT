@@ -8,6 +8,7 @@ __pycache__/
 api_keys.local.json
 api_keys.json
 **/api_keys.json
+!tests/fixtures/**/api_keys.json
 *.local.json
 .secrets/
 runtime/

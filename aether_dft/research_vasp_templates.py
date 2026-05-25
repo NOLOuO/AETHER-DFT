@@ -26,6 +26,10 @@ _TASK_ALIASES = {
     "scf": "single_point",
 }
 
+_EXPECTED_SOURCE_HASHES = {
+    "research/MCH-Pt-Br/common/DFT任务与自由能校正规则.md": "34286b82ec29a6b9c92410ac3bcff360387187f06b7a7677f318cef4236057e0",
+}
+
 
 def normalize_research_task_type(task_type: str | None, prompt: str = "") -> str | None:
     raw = (task_type or "").strip().lower()
@@ -50,16 +54,48 @@ def _source(label: str, *parts: str) -> dict[str, Any]:
 
 def _source_from_path(label: str, path: Any) -> dict[str, Any]:
     source_path = PROJECT_ROOT.joinpath(path) if isinstance(path, str) else path
+    try:
+        relative_path = source_path.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        relative_path = str(source_path)
     payload: dict[str, Any] = {
         "label": label,
         "path": str(source_path),
+        "relative_path": relative_path,
         "exists": source_path.exists(),
     }
     if source_path.exists() and source_path.is_file():
         raw = source_path.read_bytes()
         payload["sha256"] = hashlib.sha256(raw).hexdigest()
         payload["mtime_ns"] = source_path.stat().st_mtime_ns
+    expected = _EXPECTED_SOURCE_HASHES.get(relative_path)
+    if expected:
+        payload["expected_sha256"] = expected
+        payload["hash_status"] = "match" if payload.get("sha256") == expected else "mismatch"
     return payload
+
+
+def _attach_source_integrity(template: dict[str, Any]) -> dict[str, Any]:
+    mismatches = [
+        item
+        for item in template.get("source_paths", [])
+        if item.get("expected_sha256") and item.get("hash_status") != "match"
+    ]
+    template["source_integrity"] = {
+        "status": "needs_review" if mismatches else "ok",
+        "mismatches": mismatches,
+        "policy": "若 research 源文件 hash 变化，模型必须重新读取 research 并确认模板；不能静默套用旧 Python 参数。",
+    }
+    template["requires_template_review"] = bool(mismatches)
+    if mismatches:
+        template["status"] = "needs_review"
+        template.setdefault("notes", [])
+        template["notes"] = [
+            "research 源文件与已验证 fingerprint 不一致；禁止自动应用硬编码模板，需重新读取项目规则。",
+            *template["notes"],
+        ]
+        template["incar_overrides"] = {}
+    return template
 
 
 def _base_sources(project: str | None) -> list[dict[str, Any]]:
@@ -225,4 +261,4 @@ def resolve_research_vasp_template(
             "blocked_method_rules": [],
         }
     template["material"] = material
-    return template
+    return _attach_source_integrity(template)

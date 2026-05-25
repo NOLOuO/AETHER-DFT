@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from dft_app.models import ExperimentSpec, PhaseStatus, PipelinePhase, RunRecord, RunStatus
+from dft_app.submission_gate import verify_submission_evidence
 
 
 @dataclass
@@ -23,6 +24,20 @@ class SlurmRunner:
     def submit(self, spec: ExperimentSpec, run_record: RunRecord) -> RunnerResult:
         run_root = Path(run_record.run_root)
         job_script = run_root / "inputs" / "job.slurm"
+        gate = verify_submission_evidence(spec, run_record, mode="submit")
+        gate_path = run_root / "metadata" / "pre_submit_gate.json"
+        if gate["status"] != "ready":
+            message = "提交前证据核对未通过，已阻止 sbatch。"
+            run_record.block_phase(PipelinePhase.SUBMIT, message)
+            return RunnerResult(
+                "blocked",
+                message,
+                {
+                    "gate_path": str(gate_path),
+                    "blockers": gate["blockers"],
+                    "warnings": gate["warnings"],
+                },
+            )
 
         if not job_script.exists():
             message = f"未找到提交脚本: {job_script}"
@@ -88,7 +103,7 @@ class SlurmRunner:
         run_record.scheduler_job_id = job_id
         run_record.complete_phase(
             PipelinePhase.SUBMIT,
-            artifacts=[str(job_script)],
+            artifacts=[str(job_script), str(gate_path)],
             message=f"已提交 Slurm 作业，job_id={job_id}",
         )
         run_record.overall_status = RunStatus.RUNNING

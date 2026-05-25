@@ -160,7 +160,7 @@ class ToolRegistry:
         self._register(ToolSpec("research_vasp_template_resolve", "把 project/task_type/prompt 映射成 research 中可安全自动应用的 VASP 模板约束和 INCAR 核对项；只解析不提交。", {"project": {"type": "string"}, "task_type": {"type": "string"}, "prompt": {"type": "string"}, "material": {"type": "string"}}, True), self._research_vasp_template_resolve)
         self._register(ToolSpec("vasp_input_preflight_check", "提交集群前核对 VASP 输入包：POSCAR/INCAR/KPOINTS/job.slurm/POTCAR 映射、research 规则证据与阻塞项；只检查不提交。", {"run_root": {"type": "string"}, "inputs_dir": {"type": "string"}, "project": {"type": "string"}, "task_type": {"type": "string"}, "require_potcar": {"type": "boolean"}}, True), self._vasp_input_preflight_check)
         self._register(ToolSpec("dft_run_step", "执行单步 DFT 主线。", {"phase": {"type": "string"}}, False), self._dft_run_step)
-        self._register(ToolSpec("dft_run_task", "创建并执行真实 DFT 任务。", {"prompt": {"type": "string"}, "project": {"type": "string"}, "material": {"type": "string"}, "structure_path": {"type": "string"}, "task_type": {"type": "string"}, "submit_profile": {"type": "string"}, "execution_mode": {"type": "string"}}, False, ("prompt",)), self._dft_run_task)
+        self._register(ToolSpec("dft_run_task", "创建并执行真实 DFT 任务；可接收 Step 2 model_spec/manifest/candidate_id 作为 lineage 证据，提交仍由证据 gate 自适应核对。", {"prompt": {"type": "string"}, "project": {"type": "string"}, "material": {"type": "string"}, "structure_path": {"type": "string"}, "task_type": {"type": "string"}, "submit_profile": {"type": "string"}, "model_spec_path": {"type": "string"}, "step2_manifest_path": {"type": "string"}, "candidate_id": {"type": "string"}, "execution_mode": {"type": "string"}}, False, ("prompt",)), self._dft_run_task)
         self._register(ToolSpec("dft_run_report", "读取 run 报告。", {"run_id": {"type": "string"}, "run_root": {"type": "string"}}, True), self._dft_run_report)
         self._register(ToolSpec("dft_run_list", "列出 run。", {"limit": {"type": "integer"}}, True), self._dft_run_list)
         self._register(ToolSpec("vasp_output_scan", "扫描 VASP 输出。", {"run_root": {"type": "string"}}, True), self._vasp_output_scan)
@@ -1008,6 +1008,9 @@ class ToolRegistry:
                     "material": material,
                     "project": project,
                     "submit_profile": available.get("submit_profile") or "c32",
+                    "model_spec_path": available.get("model_spec_path"),
+                    "step2_manifest_path": available.get("step2_manifest_path") or available.get("manifest_path"),
+                    "candidate_id": available.get("candidate_id"),
                 },
             },
             {
@@ -1102,6 +1105,8 @@ class ToolRegistry:
             "template_preview": {
                 "template_found": template_preview.get("template_found"),
                 "template_id": template_preview.get("template_id"),
+                "requires_template_review": template_preview.get("requires_template_review", False),
+                "source_integrity": template_preview.get("source_integrity"),
                 "expected_incar": template_preview.get("expected_incar", {}),
                 "blocked_method_rules": template_preview.get("blocked_method_rules", []),
             },
@@ -1260,6 +1265,8 @@ class ToolRegistry:
             else:
                 warnings.append("POTCAR 与 POTCAR.mapping.json 都不存在，提交前需确认赝势来源。")
 
+        if research_template.get("requires_template_review"):
+            blockers.append("research 模板源文件 hash 已变化；模型必须重新读取 research 并确认模板后再提交。")
         incar = self._parse_incar_file(files["INCAR"])
         if incar:
             expected_incar = dict(research_template.get("expected_incar") or {})
@@ -1379,6 +1386,9 @@ class ToolRegistry:
             structure_path=str(payload.get("structure_path") or "").strip() or None,
             task_type=str(payload.get("task_type") or "").strip() or None,
             submit_profile=str(payload.get("submit_profile") or "").strip() or None,
+            model_spec_path=str(payload.get("model_spec_path") or "").strip() or None,
+            step2_manifest_path=str(payload.get("step2_manifest_path") or "").strip() or None,
+            candidate_id=str(payload.get("candidate_id") or "").strip() or None,
             execution_mode=execution_mode,
         )
         return {"status": result.get("status", "ok"), "result": result}

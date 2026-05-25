@@ -534,6 +534,9 @@ def handle_task_plan(args: argparse.Namespace) -> int:
         structure_path=args.structure_path,
         task_type=args.task_type,
         submit_profile=args.submit_profile,
+        model_spec_path=args.model_spec_path,
+        step2_manifest_path=args.step2_manifest_path,
+        candidate_id=args.candidate_id,
         planner_mode=args.planner,
         persist=not args.no_persist,
     )
@@ -560,6 +563,9 @@ def handle_task_run(args: argparse.Namespace) -> int:
         structure_path=args.structure_path,
         task_type=args.task_type,
         submit_profile=args.submit_profile,
+        model_spec_path=args.model_spec_path,
+        step2_manifest_path=args.step2_manifest_path,
+        candidate_id=args.candidate_id,
         planner_mode=args.planner,
         execution_mode=execution_mode,
     )
@@ -748,6 +754,9 @@ def handle_chat(args: argparse.Namespace) -> int:
                 structure_path=args.structure_path,
                 task_type=args.task_type,
                 submit_profile=args.submit_profile,
+                model_spec_path=getattr(args, "model_spec_path", None),
+                step2_manifest_path=getattr(args, "step2_manifest_path", None),
+                candidate_id=getattr(args, "candidate_id", None),
                 planner_mode=args.planner,
                 execution_mode="dry_run",
             )
@@ -762,6 +771,9 @@ def handle_chat(args: argparse.Namespace) -> int:
             structure_path=args.structure_path,
             task_type=args.task_type,
             submit_profile=args.submit_profile,
+            model_spec_path=getattr(args, "model_spec_path", None),
+            step2_manifest_path=getattr(args, "step2_manifest_path", None),
+            candidate_id=getattr(args, "candidate_id", None),
             planner_mode=args.planner,
             persist=True,
         )
@@ -840,6 +852,9 @@ def handle_chat(args: argparse.Namespace) -> int:
                 structure_path=args.structure_path,
                 task_type=args.task_type,
                 submit_profile=args.submit_profile,
+                model_spec_path=getattr(args, "model_spec_path", None),
+                step2_manifest_path=getattr(args, "step2_manifest_path", None),
+                candidate_id=getattr(args, "candidate_id", None),
                 planner_mode=args.planner,
                 persist=True,
             )
@@ -855,6 +870,9 @@ def handle_chat(args: argparse.Namespace) -> int:
                 structure_path=args.structure_path,
                 task_type=args.task_type,
                 submit_profile=args.submit_profile,
+                model_spec_path=getattr(args, "model_spec_path", None),
+                step2_manifest_path=getattr(args, "step2_manifest_path", None),
+                candidate_id=getattr(args, "candidate_id", None),
                 planner_mode=args.planner,
                 execution_mode="dry_run",
             )
@@ -1148,6 +1166,9 @@ def build_parser() -> argparse.ArgumentParser:
     task_plan.add_argument("--structure-path")
     task_plan.add_argument("--task-type")
     task_plan.add_argument("--submit-profile")
+    task_plan.add_argument("--model-spec-path", help="Step 2 产出的 model_spec.json；用于保留模型建模证据。")
+    task_plan.add_argument("--step2-manifest-path", help="Step 2 候选/结构 manifest；用于 Step 3 lineage。")
+    task_plan.add_argument("--candidate-id", help="Step 2 中被选中的候选结构 ID。")
     task_plan.add_argument("--planner", choices=["rule", "auto"], default="rule")
     task_plan.add_argument("--no-persist", action="store_true")
     task_plan.set_defaults(func=handle_task_plan)
@@ -1158,6 +1179,9 @@ def build_parser() -> argparse.ArgumentParser:
     task_run.add_argument("--structure-path")
     task_run.add_argument("--task-type")
     task_run.add_argument("--submit-profile")
+    task_run.add_argument("--model-spec-path", help="Step 2 产出的 model_spec.json；用于保留模型建模证据。")
+    task_run.add_argument("--step2-manifest-path", help="Step 2 候选/结构 manifest；用于 Step 3 lineage。")
+    task_run.add_argument("--candidate-id", help="Step 2 中被选中的候选结构 ID。")
     task_run.add_argument("--planner", choices=["rule", "auto"], default="rule")
     task_run.add_argument("--build", action="store_true", help="真实生成工作区，但不提交。")
     task_run.add_argument("--submit", action="store_true", help="本地 Slurm submit；必须显式指定。")
@@ -1334,6 +1358,9 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("--preferred-orientation")
     chat_parser.add_argument("--task-type")
     chat_parser.add_argument("--submit-profile")
+    chat_parser.add_argument("--model-spec-path")
+    chat_parser.add_argument("--step2-manifest-path")
+    chat_parser.add_argument("--candidate-id")
     chat_parser.add_argument("--planner", choices=["rule", "auto"], default="rule")
     chat_parser.set_defaults(func=handle_chat)
 
@@ -1355,6 +1382,9 @@ def build_parser() -> argparse.ArgumentParser:
     mainline_parser.add_argument("--preferred-orientation")
     mainline_parser.add_argument("--task-type")
     mainline_parser.add_argument("--submit-profile")
+    mainline_parser.add_argument("--model-spec-path")
+    mainline_parser.add_argument("--step2-manifest-path")
+    mainline_parser.add_argument("--candidate-id")
     mainline_parser.add_argument("--planner", choices=["rule", "auto"], default="rule")
     mainline_parser.add_argument("--focus")
     mainline_parser.set_defaults(func=handle_mainline)

@@ -31,11 +31,13 @@ class TaskModeler:
         self,
         *,
         spec: ExperimentSpec | None,
-        plan: ExperimentPlan,
+        plan: ExperimentPlan | None = None,
     ) -> ModelingResult:
         if spec is not None:
             model_spec = self._build_from_spec(spec)
         else:
+            if plan is None:
+                raise ValueError("spec 为 None 时必须提供 plan。")
             model_spec = self._build_from_plan(plan)
         return ModelingResult(model_spec=model_spec)
 

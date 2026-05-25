@@ -18,6 +18,7 @@ from dft_app.modeling import (
     CandidateManifestWriter,
     ConfirmedCandidateHandoff,
     TaskModeler,
+    model_spec_from_dict,
 )
 from dft_app.models import (
     ExperimentPlan,
@@ -130,6 +131,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--selected-candidate-id",
         help="For adsorption complex tasks, select a generated candidate id and continue into builder/submit in the same mainline command.",
     )
+    run_parser.add_argument("--candidate-id", dest="candidate_id", help="Alias for the selected Step 2 candidate id used for lineage.")
+    run_parser.add_argument("--model-spec-path", help="Step 2 model_spec.json to preserve model-authored build evidence.")
+    run_parser.add_argument("--step2-manifest-path", help="Step 2 candidate/structure manifest path to preserve lineage.")
     run_parser.add_argument(
         "--status", action="store_true", help="Show workflow status placeholder."
     )
@@ -466,7 +470,7 @@ def maybe_select_adsorption_candidate(
     run_record: RunRecord,
     adsorption_candidate_result: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    selected_candidate_id = getattr(args, "selected_candidate_id", None)
+    selected_candidate_id = getattr(args, "selected_candidate_id", None) or getattr(args, "candidate_id", None)
     if not selected_candidate_id:
         return None
     if not adsorption_candidate_result or adsorption_candidate_result.get("status") != "generated":
@@ -1029,19 +1033,34 @@ def handle_run(args: argparse.Namespace) -> int:
         spec=planning_result.spec,
         plan=planning_result.plan,
     )
+    model_spec = modeling_result.model_spec
+    if getattr(args, "model_spec_path", None):
+        model_spec = model_spec_from_dict(json.loads(Path(args.model_spec_path).read_text(encoding="utf-8")))
+    if getattr(args, "step2_manifest_path", None) or getattr(args, "candidate_id", None):
+        model_spec.metadata.setdefault("step2_lineage", {})
+        model_spec.metadata["step2_lineage"].update(
+            {
+                key: value
+                for key, value in {
+                    "step2_manifest_path": getattr(args, "step2_manifest_path", None),
+                    "candidate_id": getattr(args, "candidate_id", None),
+                }.items()
+                if value
+            }
+        )
     spec = planning_result.spec
     if args.dry_run and spec is None:
         print("=== Planning Result ===")
         print_json(PLANNER.explain(planning_result))
         print("=== ModelSpec ===")
-        print_json(modeling_result.model_spec.to_dict())
+        print_json(model_spec.to_dict())
         return 0
     if spec is None:
         run_record = create_complex_run_record(planning_result.plan)
         result = get_orchestrator().scaffold(
             planning_result.plan,
             run_record,
-            model_spec=modeling_result.model_spec,
+            model_spec=model_spec,
             structure_path=args.structure_path,
         )
         selected_candidate_result = maybe_select_adsorption_candidate(
@@ -1060,7 +1079,7 @@ def handle_run(args: argparse.Namespace) -> int:
         print("=== Planning Result ===")
         print_json(PLANNER.explain(planning_result))
         print("=== ModelSpec ===")
-        print_json(modeling_result.model_spec.to_dict())
+        print_json(model_spec.to_dict())
         print("=== RunRecord ===")
         print_json(run_record.to_dict())
         print("=== Complex Workflow Result ===")
@@ -1080,7 +1099,7 @@ def handle_run(args: argparse.Namespace) -> int:
         print("=== Planning Result ===")
         print_json(PLANNER.explain(planning_result))
         print("=== ModelSpec ===")
-        print_json(modeling_result.model_spec.to_dict())
+        print_json(model_spec.to_dict())
         print("=== ExperimentSpec ===")
         print_json(spec.to_dict())
         print("=== RunRecord ===")
@@ -1091,7 +1110,7 @@ def handle_run(args: argparse.Namespace) -> int:
     build_result = builder.build_initial_workspace(
         spec,
         run_record,
-        model_spec=modeling_result.model_spec,
+        model_spec=model_spec,
     )
     submit_result = None
     if args.submit and run_record.overall_status == RunStatus.READY:
@@ -1117,7 +1136,7 @@ def handle_run(args: argparse.Namespace) -> int:
     print("=== Planning Result ===")
     print_json(PLANNER.explain(planning_result))
     print("=== ModelSpec ===")
-    print_json(modeling_result.model_spec.to_dict())
+    print_json(model_spec.to_dict())
     print("=== ExperimentSpec ===")
     print_json(spec.to_dict())
     print("=== RunRecord ===")

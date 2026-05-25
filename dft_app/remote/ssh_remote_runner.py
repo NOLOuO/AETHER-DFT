@@ -10,6 +10,7 @@ from typing import Any
 from dft_app.models import ExperimentSpec, PhaseStatus, PipelinePhase, RunRecord, RunStatus
 from dft_app.remote.config import RemoteClusterConfig
 from dft_app.runner.slurm_runner import SlurmRunner
+from dft_app.submission_gate import verify_submission_evidence
 
 
 @dataclass
@@ -99,6 +100,49 @@ class SSHRemoteRunner:
         )
 
     def submit(self, spec: ExperimentSpec, run_record: RunRecord) -> RemoteExecutionResult:
+        run_root = Path(run_record.run_root)
+        local_gate = verify_submission_evidence(spec, run_record, mode="submit", write_report=False)
+        if local_gate["status"] != "ready":
+            gate = verify_submission_evidence(spec, run_record, mode="remote_submit", remote_probe=None)
+            message = "远程提交前证据核对未通过，已阻止上传和 sbatch。"
+            run_record.block_phase(PipelinePhase.SUBMIT, message)
+            return RemoteExecutionResult(
+                "blocked",
+                message,
+                {
+                    "gate_path": str(run_root / "metadata" / "pre_submit_gate.json"),
+                    "blockers": gate["blockers"],
+                    "warnings": gate["warnings"],
+                },
+            )
+
+        probe_result = self.probe()
+        probe_payload = {
+            "status": probe_result.status,
+            "message": probe_result.message,
+            "details": probe_result.details,
+        }
+        gate = verify_submission_evidence(
+            spec,
+            run_record,
+            mode="remote_submit",
+            remote_probe=probe_payload,
+        )
+        gate_path = run_root / "metadata" / "pre_submit_gate.json"
+        if gate["status"] != "ready":
+            message = "远程提交前集群/输入证据核对未通过，已阻止上传和 sbatch。"
+            run_record.block_phase(PipelinePhase.SUBMIT, message)
+            return RemoteExecutionResult(
+                "blocked",
+                message,
+                {
+                    "gate_path": str(gate_path),
+                    "blockers": gate["blockers"],
+                    "warnings": gate["warnings"],
+                    "probe": probe_payload,
+                },
+            )
+
         if run_record.phases[PipelinePhase.BUILD.value].status != PhaseStatus.COMPLETED:
             message = "build 阶段尚未完成，不能执行远程提交。"
             run_record.block_phase(PipelinePhase.SUBMIT, message)
@@ -111,7 +155,6 @@ class SSHRemoteRunner:
             run_record.block_phase(PipelinePhase.SUBMIT, tools_error)
             return RemoteExecutionResult("blocked", tools_error, {})
 
-        run_root = Path(run_record.run_root)
         remote_run_root = config.remote_run_root(spec.task_id, run_record.run_id)
         run_record.start_phase(
             PipelinePhase.SUBMIT,
@@ -189,7 +232,7 @@ class SSHRemoteRunner:
         )
         run_record.complete_phase(
             PipelinePhase.SUBMIT,
-            artifacts=[str(run_root / "inputs" / "job.slurm")],
+            artifacts=[str(run_root / "inputs" / "job.slurm"), str(gate_path)],
             message=f"已通过 {backend} 提交远程 Slurm 作业，job_id={job_id}",
         )
         run_record.overall_status = RunStatus.RUNNING

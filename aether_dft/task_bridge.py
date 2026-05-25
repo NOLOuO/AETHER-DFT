@@ -16,6 +16,7 @@ from dft_app.models import (
     TaskType,
     experiment_spec_from_dict,
 )
+from dft_app.modeling import ModelSpec, TaskModeler, model_spec_from_dict
 from dft_app.planner.auto_planner import AutoPlanner
 from dft_app.planner.rule_based_planner import RuleBasedPlanner
 
@@ -100,7 +101,7 @@ def _apply_research_vasp_template(
         prompt=prompt,
         material=material or spec.material_name,
     )
-    overrides = dict(template.get("incar_overrides") or {})
+    overrides = {} if template.get("requires_template_review") else dict(template.get("incar_overrides") or {})
     if overrides:
         spec.incar_overrides.update(overrides)
     if template.get("submit_profile") and not spec.submit_profile:
@@ -116,9 +117,47 @@ def _apply_research_vasp_template(
         "severity_by_key": template.get("severity_by_key", {}),
         "free_atom_policy": template.get("free_atom_policy"),
         "blocked_method_rules": template.get("blocked_method_rules", []),
+        "requires_template_review": template.get("requires_template_review", False),
+        "source_integrity": template.get("source_integrity"),
     }
     spec.notes = notes
     return template
+
+
+def _attach_step2_lineage(
+    spec: ExperimentSpec | None,
+    *,
+    model_spec_path: str | None = None,
+    step2_manifest_path: str | None = None,
+    candidate_id: str | None = None,
+) -> None:
+    if spec is None:
+        return
+    evidence = {
+        key: value
+        for key, value in {
+            "model_spec_path": model_spec_path,
+            "step2_manifest_path": step2_manifest_path,
+            "candidate_id": candidate_id,
+        }.items()
+        if value
+    }
+    if not evidence:
+        return
+    lineage = {
+        **evidence,
+        "principle": "Step 3 复用 Step 2 的模型证据；模型可按现有证据自适应选择工具，不固定重跑建模。",
+    }
+    notes = spec.notes if isinstance(spec.notes, dict) else {}
+    notes["step2_lineage"] = lineage
+    spec.notes = notes
+
+
+def _load_model_spec(path: str | None) -> ModelSpec | None:
+    if not path:
+        return None
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    return model_spec_from_dict(payload)
 
 
 def build_dft_run_args(
@@ -128,6 +167,9 @@ def build_dft_run_args(
     structure_path: str | None = None,
     task_type: str | None = None,
     submit_profile: str | None = None,
+    model_spec_path: str | None = None,
+    step2_manifest_path: str | None = None,
+    candidate_id: str | None = None,
     execution_mode: ExecutionMode = "dry_run",
 ) -> list[str]:
     args = ["run", prompt]
@@ -139,6 +181,12 @@ def build_dft_run_args(
         args.extend(["--structure-path", structure_path])
     if submit_profile:
         args.extend(["--submit-profile", submit_profile])
+    if model_spec_path:
+        args.extend(["--model-spec-path", model_spec_path])
+    if step2_manifest_path:
+        args.extend(["--step2-manifest-path", step2_manifest_path])
+    if candidate_id:
+        args.extend(["--candidate-id", candidate_id])
     if execution_mode == "dry_run":
         args.append("--dry-run")
     elif execution_mode == "submit":
@@ -160,6 +208,9 @@ def create_task_plan(
     structure_path: str | None = None,
     task_type: str | None = None,
     submit_profile: str | None = None,
+    model_spec_path: str | None = None,
+    step2_manifest_path: str | None = None,
+    candidate_id: str | None = None,
     planner_mode: PlannerMode = "rule",
     persist: bool = True,
 ) -> DftTaskEnvelope:
@@ -226,6 +277,12 @@ def create_task_plan(
         prompt=normalized_prompt,
         material=material,
     )
+    _attach_step2_lineage(
+        spec_obj,
+        model_spec_path=model_spec_path,
+        step2_manifest_path=step2_manifest_path,
+        candidate_id=candidate_id,
+    )
     plan_payload, spec_payload = _planning_result_to_payload(result, planner_mode=planner_mode)
     ready = "ready" if spec_payload is not None else "needs_confirmation"
     dft_command = build_dft_run_args(
@@ -234,6 +291,9 @@ def create_task_plan(
         structure_path=structure_path,
         task_type=task_type or (spec_payload or {}).get("task_type"),
         submit_profile=submit_profile or (spec_payload or {}).get("submit_profile"),
+        model_spec_path=model_spec_path,
+        step2_manifest_path=step2_manifest_path,
+        candidate_id=candidate_id,
         execution_mode="dry_run",
     )
     envelope = DftTaskEnvelope(
@@ -293,6 +353,9 @@ def run_dft_task(
     structure_path: str | None = None,
     task_type: str | None = None,
     submit_profile: str | None = None,
+    model_spec_path: str | None = None,
+    step2_manifest_path: str | None = None,
+    candidate_id: str | None = None,
     planner_mode: PlannerMode = "rule",
     execution_mode: ExecutionMode = "dry_run",
 ) -> dict[str, Any]:
@@ -303,6 +366,9 @@ def run_dft_task(
         structure_path=structure_path,
         task_type=task_type,
         submit_profile=submit_profile,
+        model_spec_path=model_spec_path,
+        step2_manifest_path=step2_manifest_path,
+        candidate_id=candidate_id,
         planner_mode=planner_mode,
         persist=True,
     )
@@ -319,6 +385,9 @@ def run_dft_task(
         structure_path=structure_path,
         task_type=task_type or str(envelope.spec.get("task_type") or ""),
         submit_profile=submit_profile or envelope.spec.get("submit_profile"),
+        model_spec_path=model_spec_path,
+        step2_manifest_path=step2_manifest_path,
+        candidate_id=candidate_id,
         execution_mode=execution_mode,
     )
     if execution_mode == "dry_run":
@@ -332,8 +401,23 @@ def run_dft_task(
         from dft_app.models import PipelinePhase, RunStatus
 
         spec = experiment_spec_from_dict(envelope.spec)
+        model_spec = _load_model_spec(model_spec_path)
+        if model_spec is None:
+            model_spec = TaskModeler().build(spec=spec).model_spec
+        if step2_manifest_path or candidate_id:
+            model_spec.metadata.setdefault("step2_lineage", {})
+            model_spec.metadata["step2_lineage"].update(
+                {
+                    key: value
+                    for key, value in {
+                        "step2_manifest_path": step2_manifest_path,
+                        "candidate_id": candidate_id,
+                    }.items()
+                    if value
+                }
+            )
         run_record = create_demo_run_record(spec)
-        build_result = get_builder().build_initial_workspace(spec, run_record)
+        build_result = get_builder().build_initial_workspace(spec, run_record, model_spec=model_spec)
         submit_result = None
         if execution_mode in {"submit", "remote_submit"}:
             if run_record.overall_status == RunStatus.READY:

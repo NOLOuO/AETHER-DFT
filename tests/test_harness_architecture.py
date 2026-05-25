@@ -222,6 +222,35 @@ def test_dft_run_task_tool_invokes_bridge(monkeypatch):
     assert captured["kwargs"]["execution_mode"] == "build"
 
 
+def test_dft_run_task_tool_preserves_step2_lineage_arguments(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_run_dft_task(prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["kwargs"] = kwargs
+        return {"status": "ok", "exit_code": 0, "execution_mode": kwargs.get("execution_mode"), "task": {"task_id": "task_1"}}
+
+    monkeypatch.setattr("aether_dft.runtime_harness.tool_registry.run_dft_task", fake_run_dft_task)
+    result = ToolRegistry().run_tool(
+        "dft_run_task",
+        {
+            "prompt": "把 Step2 候选放到集群前 build",
+            "project": "chem-demo",
+            "material": "Pt slab",
+            "structure_path": "candidate.POSCAR",
+            "task_type": "relax",
+            "model_spec_path": "model_spec.json",
+            "step2_manifest_path": "manifest.json",
+            "candidate_id": "model_pick_01",
+            "execution_mode": "build",
+        },
+    )
+    assert result["result"]["status"] == "ok"
+    assert captured["kwargs"]["model_spec_path"] == "model_spec.json"
+    assert captured["kwargs"]["step2_manifest_path"] == "manifest.json"
+    assert captured["kwargs"]["candidate_id"] == "model_pick_01"
+
+
 def test_cluster_remote_tools_route_to_runner_and_store(tmp_path: Path, monkeypatch):
     class FakeRunRecord:
         def __init__(self):
@@ -986,6 +1015,8 @@ def test_research_vasp_template_resolve_returns_mch_frequency_rules():
     assert "model_instructions" in result["result"]
     assert "not_a_fixed_program" in result["result"]["model_instructions"]
     assert all("sha256" in item for item in template["source_paths"] if item["exists"] and item["label"].startswith("project_common"))
+    assert template["source_integrity"]["status"] == "ok"
+    assert template["requires_template_review"] is False
 
 
 def test_vasp_input_preflight_blocks_dimer_research_parameter_mismatch(tmp_path: Path):
@@ -1046,6 +1077,28 @@ def test_create_task_plan_applies_research_template_to_spec():
     assert envelope.spec["notes"]["research_template"]["template_id"] == "mch_pt_br_stable_intermediate_frequency"
 
 
+def test_create_task_plan_records_step2_lineage_without_forcing_workflow():
+    from aether_dft.task_bridge import create_task_plan
+
+    envelope = create_task_plan(
+        "把模型选中的吸附构型准备为 relax 计算",
+        project="demo",
+        material="H2O/Pt(111)",
+        structure_path="candidate.POSCAR",
+        task_type="relax",
+        model_spec_path="model_spec.json",
+        step2_manifest_path="manifest.json",
+        candidate_id="model_pick_01",
+        persist=False,
+    )
+    assert envelope.spec is not None
+    lineage = envelope.spec["notes"]["step2_lineage"]
+    assert lineage["model_spec_path"] == "model_spec.json"
+    assert lineage["step2_manifest_path"] == "manifest.json"
+    assert lineage["candidate_id"] == "model_pick_01"
+    assert "--model-spec-path" in envelope.dft_command
+
+
 def test_vasp_input_preflight_accepts_frequency_when_research_template_matches(tmp_path: Path):
     run_root = tmp_path / "freq_ready"
     inputs = run_root / "inputs"
@@ -1074,6 +1127,67 @@ def test_vasp_input_preflight_accepts_frequency_when_research_template_matches(t
     assert payload["status"] == "ready"
     assert payload["research_template"]["template_id"] == "mch_pt_br_stable_intermediate_frequency"
     assert not payload["blockers"]
+
+
+def test_submit_runner_blocks_when_current_inputs_do_not_match_research_gate(tmp_path: Path):
+    from dft_app.models import ExperimentSpec, PipelinePhase, RunRecord, TaskType
+    from dft_app.runner import SlurmRunner
+
+    run_root = tmp_path / "run"
+    inputs = run_root / "inputs"
+    inputs.mkdir(parents=True)
+    atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[8, 8, 8], pbc=False)
+    write(inputs / "POSCAR", atoms, format="vasp")
+    (inputs / "INCAR").write_text("IBRION = 2\nNSW = 50\nMAGMOM = 2*0\n", encoding="utf-8")
+    (inputs / "KPOINTS").write_text("Gamma\n0\nGamma\n1 1 1\n0 0 0\n", encoding="utf-8")
+    (inputs / "job.slurm").write_text("#!/bin/bash\nsbatch should_not_run\n", encoding="utf-8")
+    (inputs / "POTCAR.mapping.json").write_text('{"H": "H"}\n', encoding="utf-8")
+    spec = ExperimentSpec(
+        task_id="task_gate",
+        task_type=TaskType.VIBRATIONAL_FREQUENCY,
+        material_name="H2",
+        source_prompt="freq",
+        structure_path=str(inputs / "POSCAR"),
+        notes={
+            "research_template": {
+                "template_found": True,
+                "template_id": "test_freq",
+                "expected_incar": {"IBRION": 5, "NSW": 1},
+                "severity_by_key": {"IBRION": "blocker", "NSW": "blocker"},
+            }
+        },
+    )
+    record = RunRecord(
+        task_id="task_gate",
+        run_id="run_gate",
+        run_root=str(run_root),
+        checkpoint_path=str(run_root / "outputs" / ".pipeline_checkpoint.json"),
+    )
+    record.complete_phase(PipelinePhase.BUILD, artifacts=[str(inputs / "POSCAR")])
+    record.mark_ready()
+
+    result = SlurmRunner().submit(spec, record)
+
+    assert result.status == "blocked"
+    assert any("IBRION=5" in item for item in result.details["blockers"])
+    assert (run_root / "metadata" / "pre_submit_gate.json").exists()
+
+
+def test_experiment_spec_from_dict_accepts_legacy_minimal_metadata():
+    from dft_app.models import experiment_spec_from_dict
+
+    spec = experiment_spec_from_dict(
+        {
+            "task_id": "legacy",
+            "task_type": "relax",
+            "material_name": "Pt",
+            "source_prompt": "legacy relax",
+            "structure_path": "POSCAR",
+        }
+    )
+    assert spec.task_id == "legacy"
+    assert spec.kpoints_strategy.mode == "auto_density"
+    assert spec.job_overrides.nodes == 1
 
 
 def test_structure_analysis_tools_run_on_real_structures(tmp_path: Path):
