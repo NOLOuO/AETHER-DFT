@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
+import tarfile
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -39,6 +43,9 @@ class SSHRemoteRunner:
     ]
 
     FETCH_PATTERNS = ["vasprun.xml", "OUTCAR", "OSZICAR", "CONTCAR", "vasp.out", "slurm.out"]
+    RESEARCH_EXCLUDE_DIRS = {".aether_backups", ".omx", "__pycache__"}
+    RESEARCH_EXCLUDE_SUFFIXES = {".pdf", ".pyc"}
+
     def __init__(self, config: RemoteClusterConfig | None = None):
         self.config = config
         self._slurm_runner = SlurmRunner()
@@ -419,6 +426,155 @@ class SSHRemoteRunner:
             {"backend": backend, "remote_run_root": remote_run_root, "synced_files": synced_files},
         )
 
+    def research_status(
+        self,
+        local_research_root: Path,
+        *,
+        remote_research_dir: str | None = None,
+    ) -> RemoteExecutionResult:
+        """Compare local research/ with the cluster research directory."""
+
+        config = self._load_config()
+        backend = self._select_backend(config)
+        tools_error = self._ensure_local_tools(config, backend)
+        if tools_error is not None:
+            return RemoteExecutionResult("blocked", tools_error, {"backend": backend})
+
+        local_manifest = self._local_research_manifest(local_research_root)
+        remote_dir = remote_research_dir or self._default_remote_research_dir(config)
+        remote_result = self._remote_research_manifest(config, backend, remote_dir)
+        if remote_result["status"] != "ok":
+            return RemoteExecutionResult(
+                remote_result["status"],
+                remote_result["message"],
+                {
+                    "backend": backend,
+                    "remote_research_dir": remote_dir,
+                    "local_count": len(local_manifest),
+                    **remote_result,
+                },
+            )
+        remote_manifest = remote_result["manifest"]
+        missing_remote = sorted(set(local_manifest) - set(remote_manifest))
+        missing_local = sorted(set(remote_manifest) - set(local_manifest))
+        differing = sorted(
+            rel
+            for rel in set(local_manifest).intersection(remote_manifest)
+            if local_manifest[rel]["sha256"] != remote_manifest[rel]["sha256"]
+        )
+        status = "in_sync" if not (missing_remote or missing_local or differing) else "out_of_sync"
+        return RemoteExecutionResult(
+            "ok",
+            "本地 research 与集群 ~/research 已一致。" if status == "in_sync" else "本地 research 与集群 ~/research 存在差异。",
+            {
+                "backend": backend,
+                "remote_research_dir": remote_dir,
+                "sync_status": status,
+                "local_count": len(local_manifest),
+                "remote_count": len(remote_manifest),
+                "missing_remote": missing_remote,
+                "missing_local": missing_local,
+                "differing": differing,
+                "excluded": {
+                    "dirs": sorted(self.RESEARCH_EXCLUDE_DIRS),
+                    "suffixes": sorted(self.RESEARCH_EXCLUDE_SUFFIXES),
+                },
+                "policy": "状态检查只读；同步时默认本地 research 为真源，远端冲突会先备份再覆盖，不删除远端独有文件。",
+            },
+        )
+
+    def sync_research_to_remote(
+        self,
+        local_research_root: Path,
+        *,
+        remote_research_dir: str | None = None,
+        dry_run: bool = True,
+    ) -> RemoteExecutionResult:
+        """Push local research/ to cluster ~/research without deleting remote-only files."""
+
+        status_result = self.research_status(local_research_root, remote_research_dir=remote_research_dir)
+        if status_result.status != "ok":
+            return status_result
+        details = dict(status_result.details)
+        to_upload = sorted(set(details["missing_remote"]) | set(details["differing"]))
+        if not to_upload:
+            return RemoteExecutionResult(
+                "ok",
+                "无需同步：集群 ~/research 已包含本地 research 的当前版本。",
+                {**details, "dry_run": dry_run, "uploaded": [], "backup_dir": None},
+            )
+        if dry_run:
+            return RemoteExecutionResult(
+                "planned",
+                f"需要上传/覆盖 {len(to_upload)} 个 research 文件；dry_run=True 未修改集群。",
+                {**details, "dry_run": True, "would_upload": to_upload, "backup_dir": None},
+            )
+
+        config = self._load_config()
+        backend = self._select_backend(config)
+        remote_dir = details["remote_research_dir"]
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        remote_sync_dir = str(PurePosixPath(remote_dir).parent / ".aether_research_sync")
+        remote_archive = f"{remote_sync_dir}/research-{timestamp}.tar.gz"
+        backup_dir = f"{remote_dir}/.aether_backups/{timestamp}"
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / "research-sync.tar.gz"
+            with tarfile.open(archive_path, "w:gz") as tar:
+                for rel in to_upload:
+                    tar.add(local_research_root / Path(*PurePosixPath(rel).parts), arcname=rel)
+            mkdir = self._run_remote_command(
+                config,
+                f"mkdir -p {self._quote(remote_sync_dir)} {self._quote(remote_dir)}",
+                timeout=30,
+                backend=backend,
+            )
+            if mkdir.returncode != 0:
+                return RemoteExecutionResult("failed", f"远端同步目录创建失败: {mkdir.stderr or mkdir.stdout}", {"backend": backend})
+            self._upload_to_remote(config, archive_path, remote_archive, timeout=180, backend=backend)
+
+        backup_commands = []
+        for rel in details["differing"]:
+            remote_file = str(PurePosixPath(remote_dir) / PurePosixPath(rel))
+            backup_file = str(PurePosixPath(backup_dir) / PurePosixPath(rel))
+            backup_commands.append(
+                "if [ -f {src} ]; then mkdir -p {dst_dir} && cp -p {src} {dst}; fi".format(
+                    src=self._quote(remote_file),
+                    dst_dir=self._quote(str(PurePosixPath(backup_file).parent)),
+                    dst=self._quote(backup_file),
+                )
+            )
+        remote_script = " && ".join(
+            [
+                *backup_commands,
+                f"tar -xzf {self._quote(remote_archive)} -C {self._quote(remote_dir)}",
+                f"rm -f {self._quote(remote_archive)}",
+            ]
+        )
+        apply_result = self._run_remote_command(config, remote_script, timeout=180, backend=backend)
+        if apply_result.returncode != 0:
+            return RemoteExecutionResult(
+                "failed",
+                f"research 同步到集群失败: {apply_result.stderr or apply_result.stdout}",
+                {
+                    **details,
+                    "dry_run": False,
+                    "uploaded": [],
+                    "backup_dir": backup_dir,
+                    "stderr": apply_result.stderr,
+                    "stdout": apply_result.stdout,
+                },
+            )
+        return RemoteExecutionResult(
+            "synced",
+            f"已将本地 research 同步到集群 {remote_dir}，上传/覆盖 {len(to_upload)} 个文件。",
+            {
+                **details,
+                "dry_run": False,
+                "uploaded": to_upload,
+                "backup_dir": backup_dir if details["differing"] else None,
+            },
+        )
+
     def _prepare_remote_directories(
         self, config: RemoteClusterConfig, remote_run_root: str, backend: str
     ) -> None:
@@ -494,6 +650,8 @@ class SSHRemoteRunner:
             command,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             check=False,
         )
@@ -531,6 +689,8 @@ class SSHRemoteRunner:
             command,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             check=False,
         )
@@ -565,6 +725,8 @@ class SSHRemoteRunner:
             command,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             check=False,
         )
@@ -781,3 +943,54 @@ class SSHRemoteRunner:
     def _winscp_quote(value: str) -> str:
         escaped = value.replace('"', '""')
         return f'"{escaped}"'
+
+    @classmethod
+    def _local_research_manifest(cls, root: Path) -> dict[str, dict[str, Any]]:
+        manifest: dict[str, dict[str, Any]] = {}
+        if not root.exists():
+            return manifest
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            rel_path = path.relative_to(root)
+            rel = rel_path.as_posix()
+            if cls._skip_research_path(rel_path):
+                continue
+            raw = path.read_bytes()
+            manifest[rel] = {"sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw)}
+        return manifest
+
+    @classmethod
+    def _skip_research_path(cls, rel_path: Path) -> bool:
+        parts = set(rel_path.parts)
+        if parts.intersection(cls.RESEARCH_EXCLUDE_DIRS):
+            return True
+        return rel_path.suffix.lower() in cls.RESEARCH_EXCLUDE_SUFFIXES
+
+    def _remote_research_manifest(self, config: RemoteClusterConfig, backend: str, remote_dir: str) -> dict[str, Any]:
+        command = (
+            f"if [ ! -d {self._quote(remote_dir)} ]; then echo '__AETHER_RESEARCH_MISSING__'; exit 0; fi; "
+            f"cd {self._quote(remote_dir)} && "
+            "find . -type f ! -path './.aether_backups/*' ! -path './.omx/*' ! -path './__pycache__/*' ! -name '*.pdf' ! -name '*.pyc' "
+            "-print0 | xargs -0 -r sha256sum"
+        )
+        process = self._run_remote_command(config, command, timeout=120, backend=backend)
+        if process.returncode != 0:
+            return {"status": "failed", "message": process.stderr.strip() or process.stdout.strip() or "远端 research manifest 读取失败。"}
+        stdout = process.stdout or ""
+        if "__AETHER_RESEARCH_MISSING__" in stdout:
+            return {"status": "ok", "message": "远端 research 目录不存在，将在同步时创建。", "manifest": {}}
+        manifest: dict[str, dict[str, Any]] = {}
+        for line in stdout.splitlines():
+            if not line.strip() or len(line) < 66:
+                continue
+            sha = line[:64]
+            rel = line[66:] if line[64:66].isspace() else line[64:].strip()
+            rel = rel[2:] if rel.startswith("./") else rel
+            if rel:
+                manifest[rel] = {"sha256": sha}
+        return {"status": "ok", "message": "远端 research manifest 已读取。", "manifest": manifest}
+
+    @staticmethod
+    def _default_remote_research_dir(config: RemoteClusterConfig) -> str:
+        return f"/home/{config.user}/research"

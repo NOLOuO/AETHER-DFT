@@ -168,6 +168,8 @@ class ToolRegistry:
         self._register(ToolSpec("dft_task_plan", "创建 DFT task plan。", {"prompt": {"type": "string"}, "project": {"type": "string"}, "material": {"type": "string"}, "structure_path": {"type": "string"}, "task_type": {"type": "string"}}, False, ("prompt",)), self._dft_task_plan)
         self._register(ToolSpec("cluster_probe", "探测 SSH/SLURM 集群。", {}, True), self._cluster_probe)
         self._register(ToolSpec("cluster_config", "读取集群配置。", {}, True), self._cluster_config)
+        self._register(ToolSpec("cluster_research_status", "只读比较本地 research/ 与集群 ~/research：文件数量、缺失、差异、远端独有文件。", {"remote_research_dir": {"type": "string"}}, True), self._cluster_research_status)
+        self._register(ToolSpec("cluster_research_sync", "把本地 research/ 同步到集群 ~/research。默认 dry_run；只有 apply=true 才上传/覆盖，远端冲突会先备份，不删除远端独有文件。", {"remote_research_dir": {"type": "string"}, "apply": {"type": "boolean"}}, False), self._cluster_research_sync)
         self._register(ToolSpec("cluster_remote_submit", "通过 SSH/SLURM 远程提交已建好的 run。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}}, False), self._cluster_remote_submit)
         self._register(ToolSpec("cluster_remote_monitor", "轮询远程 run 状态并在完成时同步输出。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}, "sync_outputs": {"type": "boolean"}}, False), self._cluster_remote_monitor)
         self._register(ToolSpec("cluster_remote_fetch", "同步远程 run 输出到本地。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}}, False), self._cluster_remote_fetch)
@@ -219,7 +221,7 @@ class ToolRegistry:
             "mainline": [
                 {"step": 1, "title": "discussion -> plan", "tools": ["research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "architecture_live_doc_update", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
                 {"step": 2, "title": "structure -> model", "tools": ["structure_modeling_tool_status", "structure_modeling_intent_plan", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
-                {"step": 3, "title": "execute -> explain -> write_back", "tools": ["cluster_execution_intent_plan", "research_onboarding_context", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "vasp_output_scan", "candidate_outcome_record", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show", "project_progress_append"]},
+                {"step": 3, "title": "execute -> explain -> write_back", "tools": ["cluster_execution_intent_plan", "research_onboarding_context", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "cluster_research_status", "cluster_research_sync", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "vasp_output_scan", "candidate_outcome_record", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show", "project_progress_append"]},
             ],
             "workflow": [
                 {"phase": "project_context"},
@@ -1022,10 +1024,17 @@ class ToolRegistry:
             },
             {
                 "purpose": "连接并探测集群",
-                "candidate_tools": ["cluster_config", "cluster_probe"],
+                "candidate_tools": ["cluster_config", "cluster_probe", "cluster_research_status"],
                 "call_when": "preflight ready 且用户目标包含提交/监控/回收时调用；只做连通性证据。",
                 "skip_when": "用户只要生成输入包，或 preflight blocked。",
-                "model_decision": "probe 成功只是允许进入提交候选，不等于已经提交。",
+                "model_decision": "probe 成功只是允许进入提交候选，不等于已经提交；若任务依赖 research 规则，先确认集群 ~/research 与本地 research 一致或解释差异。",
+            },
+            {
+                "purpose": "统一本地 research 与集群 ~/research",
+                "candidate_tools": ["cluster_research_status", "cluster_research_sync"],
+                "call_when": "用户要求同步 research，或 preflight/template 依赖本地 research 规则而集群端可能缺失/过期时调用。",
+                "skip_when": "只读讨论且不涉及集群端执行，或本轮 status 已证明 in_sync。",
+                "model_decision": "先 status；只有明确需要统一时 cluster_research_sync(apply=true)。同步不删除远端独有文件，覆盖前备份冲突文件。",
             },
             {
                 "purpose": "提交、监控和回收",
@@ -1089,6 +1098,7 @@ class ToolRegistry:
             "没有 research 规则证据时，不临时编造一套 INCAR。",
             "vasp_input_preflight_check.status 不是 ready 时，不 submit。",
             "cluster_probe 失败或当前 ToolRegistry 未启用 allow_cluster_submit 时，不 submit。",
+            "集群端需要读取 research 规则时，先用 cluster_research_status 判断 ~/research 是否与本地一致；不同步时必须说明风险。",
         ]
         if not allow_submit:
             stop_conditions.append("allow_submit=False：只允许 build/preflight/probe，不提交。")
@@ -1127,6 +1137,7 @@ class ToolRegistry:
             "adaptive_branches": [
                 {"situation": "已有 run_root，只想提交", "do": ["vasp_input_preflight_check", "cluster_probe", "cluster_remote_submit if allowed"], "skip": ["dft_run_task build"]},
                 {"situation": "只有 Step 2 POSCAR，想准备上集群", "do": ["research_onboarding_context", "research_vasp_template_resolve", "dft_run_task build", "vasp_input_preflight_check"], "skip": ["cluster_remote_submit until ready"]},
+                {"situation": "本地 research 与集群 ~/research 可能不一致", "do": ["cluster_research_status", "cluster_research_sync apply=true if user asked to unify"], "skip": ["remote submit until mismatch risk is resolved or explained"]},
                 {"situation": "用户问参数是否合适", "do": ["research_onboarding_context", "research_vasp_template_resolve"], "skip": ["dft_run_task", "cluster_probe", "cluster_remote_submit"]},
                 {"situation": "preflight blocked", "do": ["解释 blocker", "按 blocker 修 build 参数或要求补文件"], "skip": ["cluster_probe", "cluster_remote_submit"]},
                 {"situation": "任务已经在跑", "do": ["cluster_remote_monitor", "cluster_remote_fetch when complete", "vasp_output_scan"], "skip": ["重新 build"]},
@@ -1138,6 +1149,7 @@ class ToolRegistry:
                 "research_vasp_template_resolve 的 expected_incar 必须被 build 结果和 preflight 逐项核对。",
                 "结构同目录已有 INCAR/KPOINTS 时必须视为 research 模板来源，不能无故覆盖。",
                 "POTCAR 缺失时要报告 mapping 和集群端补齐要求。",
+                "集群 ~/research 若 out_of_sync，模型必须先同步或说明为什么不影响本次任务。",
                 "提交后必须记录 scheduler job id / remote_run_root；完成后 fetch + scan + 写回进展。",
             ],
             "stop_conditions": stop_conditions,
@@ -1489,6 +1501,22 @@ class ToolRegistry:
 
     def _cluster_config(self, _: dict[str, Any]) -> dict[str, Any]:
         return {"status": "ok", "config": SSHRemoteRunner().describe_config()}
+
+    def _cluster_research_status(self, payload: dict[str, Any]) -> dict[str, Any]:
+        result = SSHRemoteRunner().research_status(
+            PROJECT_ROOT / "research",
+            remote_research_dir=str(payload.get("remote_research_dir") or "").strip() or None,
+        )
+        return {"status": result.status, "message": result.message, "details": result.details}
+
+    def _cluster_research_sync(self, payload: dict[str, Any]) -> dict[str, Any]:
+        apply = bool(payload.get("apply", False))
+        result = SSHRemoteRunner().sync_research_to_remote(
+            PROJECT_ROOT / "research",
+            remote_research_dir=str(payload.get("remote_research_dir") or "").strip() or None,
+            dry_run=not apply,
+        )
+        return {"status": result.status, "message": result.message, "details": result.details}
 
     def _cluster_remote_submit(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.allow_cluster_submit:

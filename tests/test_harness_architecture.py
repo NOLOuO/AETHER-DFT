@@ -62,6 +62,8 @@ def test_root_tool_registry_discovers_domain_tools():
     assert "cluster_execution_intent_plan" in names
     assert "research_vasp_template_resolve" in names
     assert "vasp_input_preflight_check" in names
+    assert "cluster_research_status" in names
+    assert "cluster_research_sync" in names
     assert "research_onboarding_context" in names
     assert "research_proposal_plan" in names
     assert "research_progress_append" in names
@@ -314,6 +316,43 @@ def test_cluster_remote_tools_route_to_runner_and_store(tmp_path: Path, monkeypa
 
     fetch = registry.run_tool("cluster_remote_fetch", {"run_root": str(tmp_path / "run")})
     assert fetch["result"]["status"] == "synced"
+
+
+def test_cluster_research_tools_status_and_sync_dry_run(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    class FakeResult:
+        def __init__(self, status, message, details):
+            self.status = status
+            self.message = message
+            self.details = details
+
+    class FakeRunner:
+        def research_status(self, local_research_root, *, remote_research_dir=None):
+            captured["status_root"] = local_research_root
+            captured["status_remote"] = remote_research_dir
+            return FakeResult("ok", "out_of_sync", {"sync_status": "out_of_sync", "missing_remote": ["AGENTS.md"]})
+
+        def sync_research_to_remote(self, local_research_root, *, remote_research_dir=None, dry_run=True):
+            captured["sync_root"] = local_research_root
+            captured["sync_remote"] = remote_research_dir
+            captured["dry_run"] = dry_run
+            return FakeResult("planned" if dry_run else "synced", "sync", {"dry_run": dry_run})
+
+    monkeypatch.setattr("aether_dft.runtime_harness.tool_registry.SSHRemoteRunner", FakeRunner)
+    registry = ToolRegistry()
+
+    status = registry.run_tool("cluster_research_status", {"remote_research_dir": "/home/szhang/research"})
+    assert status["result"]["status"] == "ok"
+    assert status["result"]["details"]["missing_remote"] == ["AGENTS.md"]
+
+    dry = registry.run_tool("cluster_research_sync", {})
+    assert dry["result"]["status"] == "planned"
+    assert captured["dry_run"] is True
+
+    applied = registry.run_tool("cluster_research_sync", {"apply": True})
+    assert applied["result"]["status"] == "synced"
+    assert captured["dry_run"] is False
 
 
 class HugeToolResultAdapter:
