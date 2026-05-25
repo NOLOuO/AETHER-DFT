@@ -49,6 +49,7 @@ from aether_dft.candidate_outcomes import record_candidate_outcome
 from aether_dft.convergence import compose_convergence_plan
 from aether_dft.evaluation import list_adsorption_eval_cases, render_model_comparison_report, score_adsorption_plan_against_eval
 from aether_dft.knowledge import add_note, list_notes, search_for_system, search_notes, show_note
+from aether_dft.paths import PROJECT_ROOT
 from aether_dft.recommendations import recommend_next_tasks
 from aether_dft.research_workspace import append_research_progress, build_research_proposal, read_research_onboarding_context
 from aether_dft.task_bridge import create_task_plan, run_dft_task
@@ -154,6 +155,8 @@ class ToolRegistry:
         self._register(ToolSpec("neb_input_check", "检查 NEB 输入。", {"n_images": {"type": "integer"}}, True), self._neb_input_check)
         self._register(ToolSpec("dimer_input_check", "检查 Dimer 输入。", {"work_dir": {"type": "string"}}, True), self._dimer_input_check)
         self._register(ToolSpec("task_type_catalog", "列出任务类型。", {}, True), self._task_type_catalog)
+        self._register(ToolSpec("cluster_execution_intent_plan", "把 Step 3 集群执行意图转成 research 模板读取、build、preflight、probe、submit/monitor/fetch 的非固定工具导航。", {"intent": {"type": "string"}, "available_inputs": {"type": "object"}, "project": {"type": "string"}, "allow_submit": {"type": "boolean"}}, True, ("intent",)), self._cluster_execution_intent_plan)
+        self._register(ToolSpec("vasp_input_preflight_check", "提交集群前核对 VASP 输入包：POSCAR/INCAR/KPOINTS/job.slurm/POTCAR 映射、research 规则证据与阻塞项；只检查不提交。", {"run_root": {"type": "string"}, "inputs_dir": {"type": "string"}, "project": {"type": "string"}, "task_type": {"type": "string"}, "require_potcar": {"type": "boolean"}}, True), self._vasp_input_preflight_check)
         self._register(ToolSpec("dft_run_step", "执行单步 DFT 主线。", {"phase": {"type": "string"}}, False), self._dft_run_step)
         self._register(ToolSpec("dft_run_task", "创建并执行真实 DFT 任务。", {"prompt": {"type": "string"}, "project": {"type": "string"}, "material": {"type": "string"}, "structure_path": {"type": "string"}, "task_type": {"type": "string"}, "submit_profile": {"type": "string"}, "execution_mode": {"type": "string"}}, False, ("prompt",)), self._dft_run_task)
         self._register(ToolSpec("dft_run_report", "读取 run 报告。", {"run_id": {"type": "string"}, "run_root": {"type": "string"}}, True), self._dft_run_report)
@@ -214,7 +217,7 @@ class ToolRegistry:
             "mainline": [
                 {"step": 1, "title": "discussion -> plan", "tools": ["research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "architecture_live_doc_update", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
                 {"step": 2, "title": "structure -> model", "tools": ["structure_modeling_tool_status", "structure_modeling_intent_plan", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
-                {"step": 3, "title": "execute -> explain -> write_back", "tools": ["dft_run_task", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "candidate_outcome_record", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show"]},
+                {"step": 3, "title": "execute -> explain -> write_back", "tools": ["cluster_execution_intent_plan", "research_onboarding_context", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "vasp_output_scan", "candidate_outcome_record", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show", "project_progress_append"]},
             ],
             "workflow": [
                 {"phase": "project_context"},
@@ -935,6 +938,252 @@ class ToolRegistry:
 
         return {"status": "ok", "task_types": [{"task_type": item.value} for item in TaskType]}
 
+    def _cluster_execution_intent_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
+        intent = str(payload.get("intent") or "").strip()
+        if not intent:
+            return {"status": "error", "message": "intent 不能为空。"}
+        available = payload.get("available_inputs") or {}
+        if not isinstance(available, dict):
+            available = {}
+        project = str(payload.get("project") or "").strip() or None
+        allow_submit = bool(payload.get("allow_submit", False))
+        text = " ".join([intent, json.dumps(available, ensure_ascii=False)]).lower()
+
+        def has_any(*needles: str) -> bool:
+            return any(needle.lower() in text for needle in needles)
+
+        if has_any("freq", "frequency", "频率", "zpe", "自由能"):
+            task_stage = "frequency_correction"
+            recommended_task_type = "vibrational_frequency"
+        elif has_any("dimer", "ts", "过渡态"):
+            task_stage = "ts_dimer"
+            recommended_task_type = "transition_state_search"
+        elif has_any("scf", "single", "单点", "静态"):
+            task_stage = "single_point_or_scf"
+            recommended_task_type = "single_point"
+        elif has_any("relax", "优化", "结构优化"):
+            task_stage = "relax"
+            recommended_task_type = "relax"
+        else:
+            task_stage = "build_and_submit"
+            recommended_task_type = str(available.get("task_type") or "relax")
+
+        missing: list[str] = []
+        if not any(str(available.get(key) or "").strip() for key in ("structure_path", "poscar_path", "candidate_poscar_path")):
+            missing.append("structure_path_from_step2")
+        if not str(available.get("material") or "").strip():
+            missing.append("material")
+        if not (project or str(available.get("project") or "").strip()):
+            missing.append("project")
+
+        research_paths = self._research_rule_paths(project)
+        tool_groups = [
+            {
+                "purpose": "读取 research 规则和项目上下文",
+                "candidate_tools": ["research_onboarding_context"],
+                "call_when": "任何 VASP/集群任务 build 前；尤其 MCH-Pt-Br 频率/Dimer 必须读 common 规则。",
+            },
+            {
+                "purpose": "按 Step 2 结构和 research 模板生成本地计算输入包",
+                "candidate_tools": ["dft_run_task"],
+                "call_when": "structure_path、material、task_type 明确后，先用 execution_mode='build'；不要直接提交。",
+                "recommended_arguments": {
+                    "execution_mode": "build",
+                    "task_type": recommended_task_type,
+                    "structure_path": available.get("structure_path") or available.get("poscar_path") or available.get("candidate_poscar_path"),
+                    "material": available.get("material"),
+                    "project": project,
+                    "submit_profile": available.get("submit_profile") or "c32",
+                },
+            },
+            {
+                "purpose": "提交前核对 VASP/SLURM 输入包",
+                "candidate_tools": ["vasp_input_preflight_check", "vasp_input_summary"],
+                "call_when": "dft_run_task(build) 产生 run_root 后立即调用；preflight ready 才允许提交。",
+            },
+            {
+                "purpose": "连接并探测集群",
+                "candidate_tools": ["cluster_config", "cluster_probe"],
+                "call_when": "preflight ready 后；确认 SSH alias/用户/远程目录和 mn01/slurm 可用。",
+            },
+            {
+                "purpose": "提交、监控和回收",
+                "candidate_tools": ["cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch"],
+                "call_when": "只有 allow_submit=True、运行时允许提交且 preflight/probe 通过时才提交。",
+            },
+            {
+                "purpose": "解析输出并写回科研记忆",
+                "candidate_tools": ["vasp_output_scan", "candidate_outcome_record", "knowledge_note_add", "project_progress_append"],
+                "call_when": "fetch 后有 OUTCAR/OSZICAR/CONTCAR 或失败证据时；不能伪造结果。",
+            },
+        ]
+        stop_conditions = [
+            "没有 Step 2 结构文件路径时，不 build。",
+            "没有 research 规则证据时，不临时编造一套 INCAR。",
+            "vasp_input_preflight_check.status 不是 ready 时，不 submit。",
+            "cluster_probe 失败或当前 ToolRegistry 未启用 allow_cluster_submit 时，不 submit。",
+        ]
+        if not allow_submit:
+            stop_conditions.append("allow_submit=False：只允许 build/preflight/probe，不提交。")
+        return {
+            "status": "ok",
+            "step": 3,
+            "task_stage": task_stage,
+            "recommended_task_type": recommended_task_type,
+            "principle": "Step 3 是结构上集群的执行闭环导航，不是固定程序；模型必须按 research 模板生成输入并先核对再提交。",
+            "project": project,
+            "available_inputs": available,
+            "missing_inputs": missing,
+            "research_rule_paths": research_paths,
+            "tool_groups": tool_groups,
+            "quality_gates": [
+                "dft_run_task 先 build，生成 inputs/POSCAR、INCAR、KPOINTS、job.slurm。",
+                "结构同目录已有 INCAR/KPOINTS 时必须视为 research 模板来源，不能无故覆盖。",
+                "POTCAR 缺失时要报告 mapping 和集群端补齐要求。",
+                "提交后必须记录 scheduler job id / remote_run_root；完成后 fetch + scan + 写回进展。",
+            ],
+            "stop_conditions": stop_conditions,
+        }
+
+    @staticmethod
+    def _research_rule_paths(project: str | None = None) -> list[dict[str, Any]]:
+        root = PROJECT_ROOT / "research"
+        candidates = [
+            ("research_agents", root / "AGENTS.md"),
+            ("common_pitfalls", root / "Common" / "避坑清单.md"),
+        ]
+        if project:
+            project_root = root / project
+            candidates.append(("project_progress", project_root / "研究进展.md"))
+            common_dir = project_root / "common"
+            if common_dir.exists():
+                for path in sorted(common_dir.glob("*.md")):
+                    candidates.append((f"project_common:{path.name}", path))
+        return [
+            {"label": label, "path": str(path), "exists": path.exists()}
+            for label, path in candidates
+        ]
+
+    @staticmethod
+    def _resolve_vasp_inputs_dir(payload: dict[str, Any]) -> tuple[Path | None, Path | None, str | None]:
+        raw_inputs = str(payload.get("inputs_dir") or "").strip()
+        raw_root = str(payload.get("run_root") or "").strip()
+        if raw_inputs:
+            inputs_dir = Path(raw_inputs)
+            return inputs_dir.parent if inputs_dir.name == "inputs" else None, inputs_dir, None
+        if raw_root:
+            run_root = Path(raw_root)
+            if (run_root / "inputs").exists():
+                return run_root, run_root / "inputs", None
+            return run_root, run_root, None
+        return None, None, "run_root 或 inputs_dir 至少提供一个。"
+
+    @staticmethod
+    def _parse_incar_file(path: Path) -> dict[str, str]:
+        data: dict[str, str] = {}
+        if not path.exists():
+            return data
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            stripped = line.split("#", 1)[0].split("!", 1)[0].strip()
+            if "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            data[key.strip().upper()] = value.strip()
+        return data
+
+    def _vasp_input_preflight_check(self, payload: dict[str, Any]) -> dict[str, Any]:
+        run_root, inputs_dir, error = self._resolve_vasp_inputs_dir(payload)
+        if error or inputs_dir is None:
+            return {"status": "needs_inputs", "missing": ["run_root_or_inputs_dir"], "message": error}
+        project = str(payload.get("project") or "").strip() or None
+        task_type = str(payload.get("task_type") or "").strip().lower()
+        require_potcar = bool(payload.get("require_potcar", False))
+        files = {
+            "POSCAR": inputs_dir / "POSCAR",
+            "INCAR": inputs_dir / "INCAR",
+            "KPOINTS": inputs_dir / "KPOINTS",
+            "job.slurm": inputs_dir / "job.slurm",
+            "POTCAR": inputs_dir / "POTCAR",
+            "POTCAR.mapping.json": inputs_dir / "POTCAR.mapping.json",
+        }
+        exists = {name: path.exists() for name, path in files.items()}
+        blockers: list[str] = []
+        warnings: list[str] = []
+        for required_name in ("POSCAR", "INCAR", "KPOINTS", "job.slurm"):
+            if not exists[required_name]:
+                blockers.append(f"缺少 {required_name}")
+        if require_potcar and not exists["POTCAR"]:
+            blockers.append("缺少 POTCAR，且 require_potcar=True")
+        elif not exists["POTCAR"]:
+            if exists["POTCAR.mapping.json"]:
+                warnings.append("未生成真实 POTCAR；已存在 POTCAR.mapping.json，需要集群端 POTCAR 库或提交前补齐。")
+            else:
+                warnings.append("POTCAR 与 POTCAR.mapping.json 都不存在，提交前需确认赝势来源。")
+
+        incar = self._parse_incar_file(files["INCAR"])
+        if incar:
+            if task_type in {"vibrational_frequency", "frequency"}:
+                if incar.get("IBRION") != "5":
+                    blockers.append("频率任务期望 IBRION=5")
+                if incar.get("NSW") != "1":
+                    warnings.append("频率任务通常应 NSW=1；请核对 research 规则。")
+                if incar.get("ISYM") not in {"0", None}:
+                    warnings.append("频率任务通常 ISYM=0；请核对模板。")
+            if task_type in {"transition_state_search", "dimer", "ts"}:
+                if incar.get("ICHAIN") != "2":
+                    warnings.append("Dimer/TS 任务通常需要 ICHAIN=2；请核对模板。")
+                if incar.get("IOPT") not in {"1", None}:
+                    warnings.append("research 已定 Dimer 口径 IOPT=1；当前 INCAR 需核对。")
+            if "MAGMOM" not in incar:
+                warnings.append("INCAR 未显式 MAGMOM；若体系涉及自旋/开壳层/缺陷需补充或确认。")
+
+        poscar_summary = {"n_sites": 0, "readable": False}
+        if exists["POSCAR"]:
+            try:
+                atoms = read(files["POSCAR"])
+                poscar_summary = {"n_sites": len(atoms), "readable": True}
+                if len(atoms) <= 0:
+                    blockers.append("POSCAR 原子数为 0")
+            except Exception as exc:
+                blockers.append(f"POSCAR 不可读取: {exc}")
+
+        metadata_dir = (run_root / "metadata") if run_root is not None else inputs_dir.parent / "metadata"
+        report_dir = (run_root / "report") if run_root is not None else inputs_dir.parent / "report"
+        metadata = {
+            "experiment_spec": str(metadata_dir / "experiment_spec.json"),
+            "structure_resolution": str(metadata_dir / "structure_resolution.json"),
+            "build_summary": str(metadata_dir / "build_summary.json"),
+            "pre_submit_checklist": str(report_dir / "pre_submit_checklist.md"),
+        }
+        metadata_exists = {key: Path(path).exists() for key, path in metadata.items()}
+        if not metadata_exists["pre_submit_checklist"]:
+            warnings.append("缺少 report/pre_submit_checklist.md；建议 build 阶段重新生成核对清单。")
+        if not metadata_exists["experiment_spec"]:
+            warnings.append("缺少 metadata/experiment_spec.json；无法追踪任务来源。")
+
+        research_rule_paths = self._research_rule_paths(project)
+        if project and not any(item["exists"] and item["label"].startswith("project") for item in research_rule_paths):
+            warnings.append(f"未找到 project={project} 的 research 项目规则/进展文件。")
+        if project == "MCH-Pt-Br" and task_type in {"vibrational_frequency", "frequency", "transition_state_search", "dimer", "ts"}:
+            has_common = any(item["exists"] and "DFT任务与自由能校正规则" in item["path"] for item in research_rule_paths)
+            if not has_common:
+                blockers.append("MCH-Pt-Br 频率/Dimer 任务必须读取 common/DFT任务与自由能校正规则.md")
+
+        status = "ready" if not blockers else "blocked"
+        return {
+            "status": status,
+            "run_root": str(run_root) if run_root is not None else None,
+            "inputs_dir": str(inputs_dir),
+            "files": {name: {"path": str(path), "exists": exists[name]} for name, path in files.items()},
+            "incar": incar,
+            "poscar": poscar_summary,
+            "metadata": {key: {"path": path, "exists": metadata_exists[key]} for key, path in metadata.items()},
+            "research_rule_paths": research_rule_paths,
+            "blockers": blockers,
+            "warnings": warnings,
+            "readiness": "可以提交前继续 cluster_probe；若 probe 成功且运行时允许提交，可 cluster_remote_submit。" if status == "ready" else "不要提交；先修复 blockers。",
+        }
+
     def _dft_run_step(self, payload: dict[str, Any]) -> dict[str, Any]:
         phase = str(payload.get("phase") or "").strip()
         if not phase:
@@ -1032,22 +1281,35 @@ class ToolRegistry:
         }
 
     def _vasp_input_summary(self, payload: dict[str, Any]) -> dict[str, Any]:
-        run_root = Path(payload["run_root"])
-        incar = run_root / "INCAR"
-        poscar = run_root / "POSCAR"
-        incar_data: dict[str, str] = {}
-        if incar.exists():
-            for line in incar.read_text(encoding="utf-8", errors="replace").splitlines():
-                if "=" in line:
-                    key, value = line.split("=", 1)
-                    incar_data[key.strip()] = value.strip()
+        run_root, inputs_dir, error = self._resolve_vasp_inputs_dir(payload)
+        if error or inputs_dir is None:
+            return {"status": "needs_inputs", "missing": ["run_root_or_inputs_dir"], "message": error}
+        incar = inputs_dir / "INCAR"
+        poscar = inputs_dir / "POSCAR"
+        kpoints = inputs_dir / "KPOINTS"
+        slurm = inputs_dir / "job.slurm"
+        incar_data = self._parse_incar_file(incar)
         poscar_data = {"n_sites": 0}
         if poscar.exists():
             try:
                 poscar_data["n_sites"] = len(read(poscar))
             except Exception:
                 pass
-        return {"status": "ok", "incar": incar_data, "poscar": poscar_data}
+        return {
+            "status": "ok",
+            "run_root": str(run_root) if run_root is not None else None,
+            "inputs_dir": str(inputs_dir),
+            "incar": incar_data,
+            "poscar": poscar_data,
+            "files": {
+                "POSCAR": poscar.exists(),
+                "INCAR": incar.exists(),
+                "KPOINTS": kpoints.exists(),
+                "job.slurm": slurm.exists(),
+                "POTCAR": (inputs_dir / "POTCAR").exists(),
+                "POTCAR.mapping.json": (inputs_dir / "POTCAR.mapping.json").exists(),
+            },
+        }
 
     def _dft_task_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
         envelope = create_task_plan(payload["prompt"], project=payload.get("project"), material=payload.get("material"), structure_path=payload.get("structure_path"), task_type=payload.get("task_type"))

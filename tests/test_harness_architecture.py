@@ -59,6 +59,8 @@ def test_root_tool_registry_discovers_domain_tools():
     assert "computational_chemistry_workflow_map" in names
     assert "structure_modeling_tool_status" in names
     assert "structure_modeling_intent_plan" in names
+    assert "cluster_execution_intent_plan" in names
+    assert "vasp_input_preflight_check" in names
     assert "research_onboarding_context" in names
     assert "research_proposal_plan" in names
     assert "research_progress_append" in names
@@ -476,6 +478,10 @@ def test_workflow_map_exposes_full_computational_chemistry_flow():
     assert "structure_sanity_check" in result["result"]["mainline"][1]["tools"]
     assert "structure_defect" in result["result"]["mainline"][1]["tools"]
     assert "adsorption_plan" in result["result"]["mainline"][1]["tools"]
+    assert "cluster_execution_intent_plan" in result["result"]["mainline"][2]["tools"]
+    assert "research_onboarding_context" in result["result"]["mainline"][2]["tools"]
+    assert "vasp_input_preflight_check" in result["result"]["mainline"][2]["tools"]
+    assert "cluster_remote_submit" in result["result"]["mainline"][2]["tools"]
     phases = [item["phase"] for item in result["result"]["workflow"]]
     assert phases == [
         "project_context",
@@ -805,6 +811,96 @@ def test_dft_run_tools_return_safe_structured_outputs():
     assert report["result"]["status"] in {"failed", "error"}
     listed = registry.run_tool("dft_run_list", {"limit": 1})
     assert listed["result"]["status"] in {"ok", "failed"}
+
+
+def test_cluster_execution_intent_plan_teaches_build_preflight_submit_sequence():
+    result = ToolRegistry().run_tool(
+        "cluster_execution_intent_plan",
+        {
+            "intent": "把第二步生成的 H2O/Pt(111) POSCAR 按 research 模板生成 VASP 输入，核对后提交集群",
+            "project": "MCH-Pt-Br",
+            "available_inputs": {
+                "structure_path": "candidate.POSCAR",
+                "material": "Pt(111)-H2O",
+                "task_type": "relax",
+                "submit_profile": "c32",
+            },
+            "allow_submit": False,
+        },
+    )
+    payload = result["result"]
+    assert payload["status"] == "ok"
+    assert payload["step"] == 3
+    assert "research 模板" in payload["principle"]
+    assert payload["recommended_task_type"] == "relax"
+    assert "allow_submit=False" in payload["stop_conditions"][-1]
+    tool_names = {
+        tool
+        for group in payload["tool_groups"]
+        for tool in group["candidate_tools"]
+    }
+    assert "research_onboarding_context" in tool_names
+    assert "dft_run_task" in tool_names
+    assert "vasp_input_preflight_check" in tool_names
+    assert "cluster_probe" in tool_names
+    assert "cluster_remote_submit" in tool_names
+    assert any("DFT任务与自由能校正规则" in item["path"] for item in payload["research_rule_paths"])
+
+
+def test_vasp_input_preflight_checks_inputs_dir_and_research_rules(tmp_path: Path):
+    run_root = tmp_path / "run"
+    inputs = run_root / "inputs"
+    metadata = run_root / "metadata"
+    report = run_root / "report"
+    inputs.mkdir(parents=True)
+    metadata.mkdir()
+    report.mkdir()
+
+    atoms = Atoms("Pt2", positions=[[0, 0, 0], [2.7, 0, 0]], cell=[8, 8, 12], pbc=True)
+    write(inputs / "POSCAR", atoms, format="vasp")
+    (inputs / "INCAR").write_text("PREC = Normal\nEDIFF = 1E-5\nIBRION = 2\nNSW = 100\nMAGMOM = 2*0\n", encoding="utf-8")
+    (inputs / "KPOINTS").write_text("Gamma\n0\nGamma\n1 1 1\n0 0 0\n", encoding="utf-8")
+    (inputs / "job.slurm").write_text("#!/bin/bash\n#SBATCH -J test\nmpirun vasp_std > vasp.out\n", encoding="utf-8")
+    (inputs / "POTCAR.mapping.json").write_text('{"Pt": "Pt"}\n', encoding="utf-8")
+    (metadata / "experiment_spec.json").write_text('{"task_type": "relax"}\n', encoding="utf-8")
+    (report / "pre_submit_checklist.md").write_text("# checklist\n", encoding="utf-8")
+
+    result = ToolRegistry().run_tool(
+        "vasp_input_preflight_check",
+        {"run_root": str(run_root), "project": "MCH-Pt-Br", "task_type": "relax"},
+    )
+    payload = result["result"]
+    assert payload["status"] == "ready"
+    assert payload["files"]["POSCAR"]["exists"] is True
+    assert payload["files"]["INCAR"]["exists"] is True
+    assert payload["files"]["job.slurm"]["exists"] is True
+    assert payload["poscar"]["n_sites"] == 2
+    assert payload["incar"]["PREC"] == "Normal"
+    assert any("POTCAR.mapping.json" in warning for warning in payload["warnings"])
+
+    summary = ToolRegistry().run_tool("vasp_input_summary", {"run_root": str(run_root)})
+    assert summary["result"]["inputs_dir"].endswith("inputs")
+    assert summary["result"]["files"]["job.slurm"] is True
+    assert summary["result"]["incar"]["EDIFF"] == "1E-5"
+
+
+def test_vasp_input_preflight_blocks_frequency_without_research_parameters(tmp_path: Path):
+    run_root = tmp_path / "freq"
+    inputs = run_root / "inputs"
+    inputs.mkdir(parents=True)
+    atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[8, 8, 8], pbc=False)
+    write(inputs / "POSCAR", atoms, format="vasp")
+    (inputs / "INCAR").write_text("IBRION = 2\nNSW = 50\n", encoding="utf-8")
+    (inputs / "KPOINTS").write_text("Gamma\n0\nGamma\n1 1 1\n0 0 0\n", encoding="utf-8")
+    (inputs / "job.slurm").write_text("#!/bin/bash\n", encoding="utf-8")
+
+    result = ToolRegistry().run_tool(
+        "vasp_input_preflight_check",
+        {"run_root": str(run_root), "project": "MCH-Pt-Br", "task_type": "vibrational_frequency"},
+    )
+
+    assert result["result"]["status"] == "blocked"
+    assert "频率任务期望 IBRION=5" in result["result"]["blockers"]
 
 
 def test_structure_analysis_tools_run_on_real_structures(tmp_path: Path):

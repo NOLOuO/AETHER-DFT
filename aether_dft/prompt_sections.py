@@ -44,6 +44,7 @@ class PromptSectionCompiler:
         "evidence_contract",
         "tool_policy",
         "structure_modeling",
+        "cluster_execution",
         "adsorption_authoring",
     )
     DEFAULT_RUNTIME_ORDER = (
@@ -74,7 +75,7 @@ class PromptSectionCompiler:
             return {
                 "kind": "static",
                 "cache_scope": "stable_prefix",
-                "layer_class": "policy" if name in {"evidence_contract", "tool_policy", "structure_modeling", "adsorption_authoring"} else "role",
+                "layer_class": "policy" if name in {"evidence_contract", "tool_policy", "structure_modeling", "cluster_execution", "adsorption_authoring"} else "role",
                 "invalidation_rule": ("section_file",),
             }
         if name == "runtime_context":
