@@ -105,6 +105,7 @@ class ToolRegistry:
     def _register_all(self) -> None:
         self._register(ToolSpec("computational_chemistry_workflow_map", "列出 AETHER-DFT 两步主线与工作流阶段。", {}), self._workflow_map)
         self._register(ToolSpec("structure_modeling_tool_status", "报告 Step 2 结构建模工具能力、适用任务类型、证据门槛与当前完成度。", {}, True), self._structure_modeling_tool_status)
+        self._register(ToolSpec("structure_modeling_intent_plan", "把自然语言 Step 2 建模意图转成非强制的工具选择建议、缺失输入和证据门槛；这是导航，不是固定流水线。", {"intent": {"type": "string"}, "available_inputs": {"type": "object"}, "project": {"type": "string"}, "allow_writes": {"type": "boolean"}}, True, ("intent",)), self._structure_modeling_intent_plan)
         self._register(ToolSpec("research_onboarding_context", "读取 research 入职上下文：AGENTS、避坑清单、项目研究进展。", {"project": {"type": "string"}, "max_chars": {"type": "integer"}}, True), self._research_onboarding_context)
         self._register(ToolSpec("research_proposal_plan", "把自然语言课题讨论整理成科学问题、结构需求、证据需求和下一步。", {"prompt": {"type": "string"}, "project": {"type": "string"}}, True, ("prompt",)), self._research_proposal_plan)
         self._register(ToolSpec("research_progress_append", "按研究工作区格式倒序追加 research/<项目>/研究进展.md。", {"project": {"type": "string"}, "completed": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}}, False, ("project",)), self._research_progress_append)
@@ -212,7 +213,7 @@ class ToolRegistry:
             "status": "ok",
             "mainline": [
                 {"step": 1, "title": "discussion -> plan", "tools": ["research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "architecture_live_doc_update", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
-                {"step": 2, "title": "structure -> model", "tools": ["structure_modeling_tool_status", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
+                {"step": 2, "title": "structure -> model", "tools": ["structure_modeling_tool_status", "structure_modeling_intent_plan", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
                 {"step": 3, "title": "execute -> explain -> write_back", "tools": ["dft_run_task", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "candidate_outcome_record", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show"]},
             ],
             "workflow": [
@@ -225,6 +226,154 @@ class ToolRegistry:
                 {"phase": "knowledge_backflow"},
             ],
             "evaluation_tools": ["adsorption_eval_case_list", "adsorption_eval_score_plan"],
+        }
+
+    def _structure_modeling_intent_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
+        intent = str(payload.get("intent") or "").strip()
+        if not intent:
+            return {"status": "error", "message": "intent 不能为空。"}
+        available = payload.get("available_inputs") or {}
+        if not isinstance(available, dict):
+            available = {}
+        text = " ".join([intent, json.dumps(available, ensure_ascii=False)]).lower()
+
+        def has_any(*needles: str) -> bool:
+            return any(needle.lower() in text for needle in needles)
+
+        if has_any("吸附", "adsorption", "adsorbate", "candidate", "候选", "h2o", "co2", "co ", "oh", "ooh"):
+            task_type = "adsorption"
+        elif has_any("slab", "surface", "表面", "晶面", "miller", "(111)", "(100)", "(110)"):
+            task_type = "slab"
+        elif has_any("缺陷", "vacancy", "空位", "dopant", "掺杂", "substitution", "替换"):
+            task_type = "defect"
+        elif has_any("neb", "ts", "过渡态", "transition state", "反应路径", "插值"):
+            task_type = "ts_neb"
+        elif has_any("收敛", "convergence", "encut", "kpoint", "k-point"):
+            task_type = "convergence"
+        elif has_any("转换", "convert", "poscar", "cif", "xsd", "格式"):
+            task_type = "conversion"
+        else:
+            task_type = "unknown"
+
+        project = str(payload.get("project") or "").strip() or None
+        allow_writes = bool(payload.get("allow_writes", True))
+        missing: list[str] = []
+        groups: list[dict[str, Any]] = []
+        quality_gates: list[str] = []
+
+        def input_present(*keys: str) -> bool:
+            return any(str(available.get(key) or "").strip() for key in keys)
+
+        if task_type == "adsorption":
+            if not input_present("adsorbate"):
+                missing.append("adsorbate")
+            if not input_present("slab_path", "structure_path", "material", "mp_id"):
+                missing.append("slab_path_or_material_source")
+            if allow_writes and not input_present("output_dir"):
+                missing.append("output_dir")
+            groups = [
+                {
+                    "purpose": "判断吸附物如何结合",
+                    "candidate_tools": ["adsorbate_chemistry_hint"],
+                    "call_when": "adsorbate 已知且需要选择 anchor / motif / 初始高度。",
+                },
+                {
+                    "purpose": "查项目/体系先验",
+                    "candidate_tools": ["knowledge_search_for_system"],
+                    "call_when": "material 或 adsorbate 已知；命中为 prior，未命中也要记录 no project prior found。",
+                },
+                {
+                    "purpose": "理解当前表面和可选位点",
+                    "candidate_tools": ["structure_build_slab", "slab_surface_inspect", "structure_enumerate_sites"],
+                    "call_when": "没有 slab_path 时先建 slab；有 slab_path 时优先 inspect/enumerate。",
+                },
+                {
+                    "purpose": "模型写出少量有理由候选",
+                    "candidate_tools": ["adsorption_candidate_plan"],
+                    "call_when": "已有 anchor/motif、prior 状态和表面/位点证据；候选数量由 rationale 决定。",
+                },
+                {
+                    "purpose": "生成并检查候选结构",
+                    "candidate_tools": ["structure_add_adsorbate", "structure_sanity_check", "candidate_quality_score"],
+                    "call_when": "用户要实际建模且 output_path 明确；warning/failed 不能说成成功。",
+                },
+                {
+                    "purpose": "收编候选并沉淀知识",
+                    "candidate_tools": ["adsorption_candidate_manifest_compose", "knowledge_note_add"],
+                    "call_when": "已有 plan_id、候选 POSCAR、每个 candidate.reason 和质量检查结果。",
+                },
+            ]
+            quality_gates = [
+                "compose 前必须有 adsorption_candidate_plan.plan_id。",
+                "每个 candidate 需要 site_label、orientation、anchor_symbol、reason、POSCAR 路径。",
+                "adsorption_candidates 是 fallback_only，不作为默认主路径。",
+            ]
+        elif task_type == "slab":
+            if not input_present("material", "structure_path", "mp_id"):
+                missing.append("material_or_structure_source")
+            if not input_present("miller_index"):
+                missing.append("miller_index")
+            if allow_writes and not input_present("output_dir"):
+                missing.append("output_dir")
+            groups = [
+                {"purpose": "确认材料来源", "candidate_tools": ["structure_resolve"], "call_when": "来源可能是本地结构、mp-id 或 ASE bulk。"},
+                {"purpose": "构建表面模型", "candidate_tools": ["structure_build_slab"], "call_when": "miller/supercell/vacuum/fixed layer 已明确。"},
+                {"purpose": "检查表面边界", "candidate_tools": ["slab_surface_inspect", "structure_sanity_check"], "call_when": "slab 生成后立即检查真空、原子数、表面对称。"},
+            ]
+            quality_gates = ["不要默认 (111)；除非用户给出或材料常识明确且要说明。", "固定层和真空厚度要写入回答。"]
+        elif task_type == "defect":
+            if not input_present("structure_path", "slab_path"):
+                missing.append("structure_path")
+            if not input_present("species"):
+                missing.append("species")
+            if allow_writes and not input_present("output_path"):
+                missing.append("output_path")
+            groups = [
+                {"purpose": "枚举可操作位点", "candidate_tools": ["defect_site_enumerate"], "call_when": "需要选择 vacancy/substitution 原子 index。"},
+                {"purpose": "生成缺陷结构", "candidate_tools": ["structure_defect"], "call_when": "已说明 atom_index 选择依据；不能默认第一个原子。"},
+                {"purpose": "检查缺陷结构", "candidate_tools": ["structure_sanity_check"], "call_when": "写出 POSCAR 后检查最短距离和物种。"},
+            ]
+            quality_gates = ["必须解释 index 选择依据。", "surface_only 与体相缺陷要区分。"]
+        elif task_type == "ts_neb":
+            missing.extend([key for key in ("initial_path", "final_path", "output_dir") if not input_present(key)])
+            groups = [
+                {"purpose": "检查 IS/FS 是否可插值", "candidate_tools": ["neb_input_check"], "call_when": "有初态/终态路径时先检查原子数和元素顺序。"},
+                {"purpose": "生成 NEB/TS 初猜", "candidate_tools": ["ts_midpoint_candidates_enumerate"], "call_when": "检查通过后才插值；这不是 TS 结果。"},
+            ]
+            quality_gates = ["只声称生成初猜，不声称找到过渡态。"]
+        elif task_type == "convergence":
+            missing.extend([key for key in ("target_property", "tolerance") if not input_present(key)])
+            groups = [
+                {"purpose": "生成收敛测试矩阵", "candidate_tools": ["convergence_plan_compose"], "call_when": "目标性质、误差阈值和预算明确。"},
+            ]
+            quality_gates = ["只生成计划，不提交作业或声称已收敛。"]
+        elif task_type == "conversion":
+            missing.extend([key for key in ("input_path", "output_path") if not input_present(key)])
+            groups = [
+                {"purpose": "读取/检查输入结构", "candidate_tools": ["structure_resolve", "structure_sanity_check"], "call_when": "先确认输入存在且可解析。"},
+                {"purpose": "转换格式", "candidate_tools": ["structure_convert"], "call_when": "输出路径和目标格式明确。"},
+            ]
+            quality_gates = ["转换后应再 sanity_check，不能只说文件已写。"]
+        else:
+            groups = [
+                {"purpose": "先识别建模任务类型", "candidate_tools": ["structure_modeling_tool_status", "research_proposal_plan"], "call_when": "用户意图不清或缺少结构来源/目标。"},
+            ]
+            quality_gates = ["先追问或读取项目上下文；不要猜测并写结构。"]
+
+        return {
+            "status": "ok",
+            "task_type": task_type,
+            "project": project,
+            "principle": "这是工具选择导航，不是固定程序；模型应根据已有证据跳过不必要工具，并解释取舍。",
+            "available_inputs": available,
+            "missing_inputs": missing,
+            "tool_groups": groups,
+            "quality_gates": quality_gates,
+            "stop_conditions": [
+                "关键输入缺失且无法从项目状态/文件系统推断时，先说明缺口。",
+                "工具返回 warning/failed/unavailable 时，先修正建模假设或降低声明强度。",
+                "用户只要讨论/规划时，不要写结构文件。",
+            ],
         }
 
     def _structure_modeling_tool_status(self, _: dict[str, Any]) -> dict[str, Any]:
@@ -245,7 +394,7 @@ class ToolRegistry:
                 {
                     "intent": "已有结构读取/格式转换",
                     "evidence": ["input_path/source", "format", "sanity boundary"],
-                    "tools": ["structure_resolve", "structure_convert", "structure_sanity_check"],
+                    "tools": ["structure_modeling_intent_plan", "structure_resolve", "structure_convert", "structure_sanity_check"],
                     "not_a_fixed_program": "只在需要转换或检查时调用；不要为聊天式讨论无意义写文件。",
                 },
                 {
@@ -258,6 +407,7 @@ class ToolRegistry:
                     "intent": "吸附候选",
                     "evidence": ["adsorbate anchor/motif", "system prior", "surface symmetry/coordination"],
                     "tools": [
+                        "structure_modeling_intent_plan",
                         "adsorbate_chemistry_hint",
                         "knowledge_search_for_system",
                         "slab_surface_inspect",

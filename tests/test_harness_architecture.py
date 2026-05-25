@@ -58,6 +58,7 @@ def test_root_tool_registry_discovers_domain_tools():
     names = {item["name"] for item in tools}
     assert "computational_chemistry_workflow_map" in names
     assert "structure_modeling_tool_status" in names
+    assert "structure_modeling_intent_plan" in names
     assert "research_onboarding_context" in names
     assert "research_proposal_plan" in names
     assert "research_progress_append" in names
@@ -470,6 +471,7 @@ def test_workflow_map_exposes_full_computational_chemistry_flow():
     assert "architecture_live_doc_snapshot" in result["result"]["mainline"][0]["tools"]
     assert "architecture_live_doc_update" in result["result"]["mainline"][0]["tools"]
     assert "structure_modeling_tool_status" in result["result"]["mainline"][1]["tools"]
+    assert "structure_modeling_intent_plan" in result["result"]["mainline"][1]["tools"]
     assert "structure_resolve" in result["result"]["mainline"][1]["tools"]
     assert "structure_sanity_check" in result["result"]["mainline"][1]["tools"]
     assert "structure_defect" in result["result"]["mainline"][1]["tools"]
@@ -498,6 +500,283 @@ def test_structure_modeling_tool_status_is_decision_matrix_not_fixed_pipeline():
     assert "adsorption_candidate_plan" in adsorption["tools"]
     assert "候选数量、位点、取向由 plan.rationale 决定" in adsorption["not_a_fixed_program"]
     assert payload["completion"]["adsorption_model_authored_candidates"] == "ready"
+
+
+def test_structure_modeling_intent_plan_guides_adsorption_without_fixed_pipeline(tmp_path: Path):
+    result = ToolRegistry().run_tool(
+        "structure_modeling_intent_plan",
+        {
+            "intent": "为 H2O 在 Pt(111) 上生成少量有科学理由的吸附候选",
+            "available_inputs": {
+                "adsorbate": "H2O",
+                "material": "Pt(111)",
+                "output_dir": str(tmp_path / "candidates"),
+            },
+            "project": "chem-demo",
+        },
+    )
+    payload = result["result"]
+    assert payload["status"] == "ok"
+    assert payload["task_type"] == "adsorption"
+    assert "固定程序" in payload["principle"]
+    assert "slab_path_or_material_source" not in payload["missing_inputs"]
+    tool_names = {
+        tool
+        for group in payload["tool_groups"]
+        for tool in group["candidate_tools"]
+    }
+    assert "adsorbate_chemistry_hint" in tool_names
+    assert "adsorption_candidate_plan" in tool_names
+    assert "structure_add_adsorbate" in tool_names
+    assert "candidate_quality_score" in tool_names
+    assert any("fallback_only" in gate for gate in payload["quality_gates"])
+
+
+def test_agent_can_use_step2_tools_to_create_model_authored_adsorption_manifest(tmp_path: Path, monkeypatch):
+    project_dir = tmp_path / "projects"
+    knowledge_dir = tmp_path / "knowledge_base"
+    runtime_dir = tmp_path / "runtime"
+    monkeypatch.setattr(paths, "PROJECTS_DIR", project_dir)
+    monkeypatch.setattr(paths, "KNOWLEDGE_BASE_DIR", knowledge_dir)
+    monkeypatch.setattr(paths, "RUNTIME_DIR", runtime_dir)
+    monkeypatch.setattr(project_state, "PROJECTS_DIR", project_dir)
+    monkeypatch.setattr(project_state, "KNOWLEDGE_BASE_DIR", knowledge_dir)
+
+    slab_path = tmp_path / "POSCAR_Pt111"
+    atoms = fcc111("Pt", size=(2, 2, 3), vacuum=8.0)
+    AseAtomsAdaptor.get_structure(atoms).to(fmt="poscar", filename=str(slab_path))
+    candidate_path = tmp_path / "model_pick_01.POSCAR"
+    manifest_dir = tmp_path / "manifest"
+
+    class Step2ModelingAdapter:
+        runtime = type("Runtime", (), {"model_id": "fake:step2-model"})()
+
+        def __init__(self):
+            self.calls = 0
+            self.site_id = "ontop_default"
+            self.site_coords = None
+            self.plan_id = None
+
+        @staticmethod
+        def _tool_payload(messages: list[dict[str, Any]], name: str) -> dict[str, Any]:
+            for message in reversed(messages):
+                if message.get("role") == "tool" and message.get("name") == name:
+                    return json.loads(str(message.get("content") or "{}"))
+            return {}
+
+        def chat(self, messages, *, tools=None, tool_choice="auto", max_tokens=None):
+            self.calls += 1
+            if self.calls == 1:
+                assert any(tool["function"]["name"] == "structure_modeling_intent_plan" for tool in tools)
+                return {
+                    "content": "",
+                    "finish_reason": "tool_calls",
+                    "tool_calls": [
+                        {
+                            "id": "call_intent",
+                            "type": "function",
+                            "function": {
+                                "name": "structure_modeling_intent_plan",
+                                "arguments": json.dumps(
+                                    {
+                                        "intent": "为 H2O/Pt(111) 生成一个模型自主选择的吸附候选并检查质量",
+                                        "available_inputs": {
+                                            "slab_path": str(slab_path),
+                                            "adsorbate": "H2O",
+                                            "material": "Pt(111)",
+                                            "output_dir": str(manifest_dir),
+                                        },
+                                        "project": "step2-demo",
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        }
+                    ],
+                }
+            if self.calls == 2:
+                return {
+                    "content": "",
+                    "finish_reason": "tool_calls",
+                    "tool_calls": [
+                        {
+                            "id": "call_hint",
+                            "type": "function",
+                            "function": {"name": "adsorbate_chemistry_hint", "arguments": '{"adsorbate":"H2O"}'},
+                        },
+                        {
+                            "id": "call_prior",
+                            "type": "function",
+                            "function": {
+                                "name": "knowledge_search_for_system",
+                                "arguments": '{"material":"Pt(111)","adsorbate":"H2O","max_results":3}',
+                            },
+                        },
+                        {
+                            "id": "call_surface",
+                            "type": "function",
+                            "function": {"name": "slab_surface_inspect", "arguments": json.dumps({"slab_path": str(slab_path)})},
+                        },
+                        {
+                            "id": "call_sites",
+                            "type": "function",
+                            "function": {
+                                "name": "structure_enumerate_sites",
+                                "arguments": json.dumps({"slab_path": str(slab_path), "max_sites_per_family": 1}),
+                            },
+                        },
+                    ],
+                }
+            if self.calls == 3:
+                enum_payload = self._tool_payload(messages, "structure_enumerate_sites")
+                sites = enum_payload.get("sites") or []
+                if sites:
+                    self.site_id = str(sites[0]["site_id"])
+                    self.site_coords = sites[0]["cart_coords"]
+                return {
+                    "content": "",
+                    "finish_reason": "tool_calls",
+                    "tool_calls": [
+                        {
+                            "id": "call_plan",
+                            "type": "function",
+                            "function": {
+                                "name": "adsorption_candidate_plan",
+                                "arguments": json.dumps(
+                                    {
+                                        "material": "Pt(111)",
+                                        "adsorbate": "H2O",
+                                        "rationale": "H2O 以 O 原子 lone pair 与 Pt 表面配位，先选一个对称代表位点做 O-down upright 候选，避免无脑全枚举。",
+                                        "expected_binding_motif": "O-down upright atop/near-surface Pt coordination",
+                                        "anchor_atom": "O",
+                                        "target_sites": [
+                                            {
+                                                "site_id": self.site_id,
+                                                "reason": "表面对称代表位点，用于验证 O-down 初猜是否稳定。",
+                                            }
+                                        ],
+                                        "target_orientations": ["upright"],
+                                        "symmetry_pruning_applied": True,
+                                        "priors_consulted": {"chemistry_hint": "H2O O anchor", "project_prior_hits": 0},
+                                        "project": "step2-demo",
+                                        "task_id": "step2_model_authored",
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        }
+                    ],
+                }
+            if self.calls == 4:
+                plan_payload = self._tool_payload(messages, "adsorption_candidate_plan")
+                self.plan_id = str(plan_payload["plan_id"])
+                add_args = {
+                    "slab_path": str(slab_path),
+                    "adsorbate": "H2O",
+                    "output_path": str(candidate_path),
+                    "orientation": "upright",
+                    "anchor_symbol": "O",
+                    "fixed_bottom_layers": 2,
+                }
+                if self.site_coords is not None:
+                    add_args["cart_coords"] = self.site_coords
+                return {
+                    "content": "",
+                    "finish_reason": "tool_calls",
+                    "tool_calls": [
+                        {
+                            "id": "call_add",
+                            "type": "function",
+                            "function": {"name": "structure_add_adsorbate", "arguments": json.dumps(add_args)},
+                        },
+                        {
+                            "id": "call_quality",
+                            "type": "function",
+                            "function": {
+                                "name": "candidate_quality_score",
+                                "arguments": json.dumps(
+                                    {
+                                        "slab_path": str(slab_path),
+                                        "candidate_path": str(candidate_path),
+                                        "adsorbate": "H2O",
+                                        "anchor_symbol": "O",
+                                    }
+                                ),
+                            },
+                        },
+                    ],
+                }
+            if self.calls == 5:
+                return {
+                    "content": "",
+                    "finish_reason": "tool_calls",
+                    "tool_calls": [
+                        {
+                            "id": "call_manifest",
+                            "type": "function",
+                            "function": {
+                                "name": "adsorption_candidate_manifest_compose",
+                                "arguments": json.dumps(
+                                    {
+                                        "task_id": "step2_model_authored",
+                                        "material_name": "Pt(111)",
+                                        "source_prompt": "模型自主调用 Step 2 工具生成一个 H2O/Pt(111) 候选",
+                                        "slab_source": str(slab_path),
+                                        "adsorbate_source": "H2O",
+                                        "output_dir": str(manifest_dir),
+                                        "plan_id": self.plan_id,
+                                        "project": "step2-demo",
+                                        "candidates": [
+                                            {
+                                                "candidate_id": "model_pick_01",
+                                                "poscar_path": str(candidate_path),
+                                                "site_label": self.site_id,
+                                                "site_family": self.site_id.split("_", 1)[0],
+                                                "orientation_label": "upright",
+                                                "anchor_symbol": "O",
+                                                "height": 2.0,
+                                                "reason": "基于 H2O 的 O anchor 化学先验和 Pt(111) 表面对称代表位点生成，作为少量候选而非全枚举。",
+                                            }
+                                        ],
+                                        "metadata": {"step2_model_driven": True},
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        }
+                    ],
+                }
+            return {
+                "content": "Step 2 已按模型判断调用工具完成：识别意图、收集证据、生成候选、质量检查并写入 manifest。",
+                "finish_reason": "stop",
+                "tool_calls": [],
+            }
+
+    harness = AgentHarness(
+        adapter=Step2ModelingAdapter(),
+        registry=ToolRegistry(permission_mode="dev"),
+        sessions=HarnessSessionStore(tmp_path / "sessions"),
+    )
+
+    record = harness.run_turn("请完成 H2O 在 Pt(111) 上的第二步建模", project="step2-demo", max_steps=8)
+
+    tool_names = [item["name"] for item in record["tool_executions"]]
+    assert tool_names[:5] == [
+        "structure_modeling_intent_plan",
+        "adsorbate_chemistry_hint",
+        "knowledge_search_for_system",
+        "slab_surface_inspect",
+        "structure_enumerate_sites",
+    ]
+    assert "adsorption_candidate_plan" in tool_names
+    assert "structure_add_adsorbate" in tool_names
+    assert "candidate_quality_score" in tool_names
+    assert "adsorption_candidate_manifest_compose" in tool_names
+    manifest_result = record["tool_executions"][-1]["result"]
+    assert manifest_result["status"] == "composed"
+    assert Path(manifest_result["manifest_json"]).exists()
+    assert candidate_path.exists()
+    assert "Step 2 已按模型判断调用工具完成" in record["response"]
 
 
 def test_transition_state_tools_are_available():
