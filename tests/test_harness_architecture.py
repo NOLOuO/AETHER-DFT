@@ -60,6 +60,7 @@ def test_root_tool_registry_discovers_domain_tools():
     assert "structure_modeling_tool_status" in names
     assert "structure_modeling_intent_plan" in names
     assert "cluster_execution_intent_plan" in names
+    assert "research_vasp_template_resolve" in names
     assert "vasp_input_preflight_check" in names
     assert "research_onboarding_context" in names
     assert "research_proposal_plan" in names
@@ -480,6 +481,7 @@ def test_workflow_map_exposes_full_computational_chemistry_flow():
     assert "adsorption_plan" in result["result"]["mainline"][1]["tools"]
     assert "cluster_execution_intent_plan" in result["result"]["mainline"][2]["tools"]
     assert "research_onboarding_context" in result["result"]["mainline"][2]["tools"]
+    assert "research_vasp_template_resolve" in result["result"]["mainline"][2]["tools"]
     assert "vasp_input_preflight_check" in result["result"]["mainline"][2]["tools"]
     assert "cluster_remote_submit" in result["result"]["mainline"][2]["tools"]
     phases = [item["phase"] for item in result["result"]["workflow"]]
@@ -840,6 +842,7 @@ def test_cluster_execution_intent_plan_teaches_build_preflight_submit_sequence()
         for tool in group["candidate_tools"]
     }
     assert "research_onboarding_context" in tool_names
+    assert "research_vasp_template_resolve" in tool_names
     assert "dft_run_task" in tool_names
     assert "vasp_input_preflight_check" in tool_names
     assert "cluster_probe" in tool_names
@@ -901,6 +904,67 @@ def test_vasp_input_preflight_blocks_frequency_without_research_parameters(tmp_p
 
     assert result["result"]["status"] == "blocked"
     assert "频率任务期望 IBRION=5" in result["result"]["blockers"]
+    assert result["result"]["research_template"]["template_id"] == "mch_pt_br_stable_intermediate_frequency"
+
+
+def test_research_vasp_template_resolve_returns_mch_frequency_rules():
+    result = ToolRegistry().run_tool(
+        "research_vasp_template_resolve",
+        {"project": "MCH-Pt-Br", "task_type": "vibrational_frequency", "prompt": "已优化中间体频率自由能校正"},
+    )
+    template = result["result"]["template"]
+    assert template["template_found"] is True
+    assert template["template_id"] == "mch_pt_br_stable_intermediate_frequency"
+    assert template["incar_overrides"]["IBRION"] == 5
+    assert template["incar_overrides"]["POTIM"] == 0.015
+    assert any(item["exists"] and "DFT任务与自由能校正规则" in item["path"] for item in template["source_paths"])
+
+
+def test_create_task_plan_applies_research_template_to_spec():
+    from aether_dft.task_bridge import create_task_plan
+
+    envelope = create_task_plan(
+        "MCH-Pt-Br 已优化中间体做振动频率计算",
+        project="MCH-Pt-Br",
+        material="MCH/Pt(111)",
+        structure_path="candidate.POSCAR",
+        task_type="vibrational_frequency",
+        persist=False,
+    )
+    assert envelope.spec is not None
+    assert envelope.spec["incar_overrides"]["IBRION"] == 5
+    assert envelope.spec["incar_overrides"]["PREC"] == "Normal"
+    assert envelope.spec["notes"]["research_template"]["template_id"] == "mch_pt_br_stable_intermediate_frequency"
+
+
+def test_vasp_input_preflight_accepts_frequency_when_research_template_matches(tmp_path: Path):
+    run_root = tmp_path / "freq_ready"
+    inputs = run_root / "inputs"
+    metadata = run_root / "metadata"
+    report = run_root / "report"
+    inputs.mkdir(parents=True)
+    metadata.mkdir()
+    report.mkdir()
+    atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[8, 8, 8], pbc=False)
+    write(inputs / "POSCAR", atoms, format="vasp")
+    (inputs / "INCAR").write_text(
+        "IBRION = 5\nNFREE = 2\nPOTIM = 0.015\nNSW = 1\nISYM = 0\nPREC = Normal\nLREAL = Auto\nEDIFF = 1E-5\nEDIFFG = -0.03\nMAGMOM = 2*0\n",
+        encoding="utf-8",
+    )
+    (inputs / "KPOINTS").write_text("Gamma\n0\nGamma\n1 1 1\n0 0 0\n", encoding="utf-8")
+    (inputs / "job.slurm").write_text("#!/bin/bash\n#SBATCH -J freq\nmpirun vasp_std > vasp.out\n", encoding="utf-8")
+    (inputs / "POTCAR.mapping.json").write_text('{"H": "H"}\n', encoding="utf-8")
+    (metadata / "experiment_spec.json").write_text('{"task_type": "vibrational_frequency"}\n', encoding="utf-8")
+    (report / "pre_submit_checklist.md").write_text("# checklist\n", encoding="utf-8")
+
+    result = ToolRegistry().run_tool(
+        "vasp_input_preflight_check",
+        {"run_root": str(run_root), "project": "MCH-Pt-Br", "task_type": "vibrational_frequency"},
+    )
+    payload = result["result"]
+    assert payload["status"] == "ready"
+    assert payload["research_template"]["template_id"] == "mch_pt_br_stable_intermediate_frequency"
+    assert not payload["blockers"]
 
 
 def test_structure_analysis_tools_run_on_real_structures(tmp_path: Path):

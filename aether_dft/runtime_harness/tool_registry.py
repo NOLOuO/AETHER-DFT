@@ -51,6 +51,7 @@ from aether_dft.evaluation import list_adsorption_eval_cases, render_model_compa
 from aether_dft.knowledge import add_note, list_notes, search_for_system, search_notes, show_note
 from aether_dft.paths import PROJECT_ROOT
 from aether_dft.recommendations import recommend_next_tasks
+from aether_dft.research_vasp_templates import resolve_research_vasp_template
 from aether_dft.research_workspace import append_research_progress, build_research_proposal, read_research_onboarding_context
 from aether_dft.task_bridge import create_task_plan, run_dft_task
 
@@ -156,6 +157,7 @@ class ToolRegistry:
         self._register(ToolSpec("dimer_input_check", "检查 Dimer 输入。", {"work_dir": {"type": "string"}}, True), self._dimer_input_check)
         self._register(ToolSpec("task_type_catalog", "列出任务类型。", {}, True), self._task_type_catalog)
         self._register(ToolSpec("cluster_execution_intent_plan", "把 Step 3 集群执行意图转成 research 模板读取、build、preflight、probe、submit/monitor/fetch 的非固定工具导航。", {"intent": {"type": "string"}, "available_inputs": {"type": "object"}, "project": {"type": "string"}, "allow_submit": {"type": "boolean"}}, True, ("intent",)), self._cluster_execution_intent_plan)
+        self._register(ToolSpec("research_vasp_template_resolve", "把 project/task_type/prompt 映射成 research 中可安全自动应用的 VASP 模板约束和 INCAR 核对项；只解析不提交。", {"project": {"type": "string"}, "task_type": {"type": "string"}, "prompt": {"type": "string"}, "material": {"type": "string"}}, True), self._research_vasp_template_resolve)
         self._register(ToolSpec("vasp_input_preflight_check", "提交集群前核对 VASP 输入包：POSCAR/INCAR/KPOINTS/job.slurm/POTCAR 映射、research 规则证据与阻塞项；只检查不提交。", {"run_root": {"type": "string"}, "inputs_dir": {"type": "string"}, "project": {"type": "string"}, "task_type": {"type": "string"}, "require_potcar": {"type": "boolean"}}, True), self._vasp_input_preflight_check)
         self._register(ToolSpec("dft_run_step", "执行单步 DFT 主线。", {"phase": {"type": "string"}}, False), self._dft_run_step)
         self._register(ToolSpec("dft_run_task", "创建并执行真实 DFT 任务。", {"prompt": {"type": "string"}, "project": {"type": "string"}, "material": {"type": "string"}, "structure_path": {"type": "string"}, "task_type": {"type": "string"}, "submit_profile": {"type": "string"}, "execution_mode": {"type": "string"}}, False, ("prompt",)), self._dft_run_task)
@@ -217,7 +219,7 @@ class ToolRegistry:
             "mainline": [
                 {"step": 1, "title": "discussion -> plan", "tools": ["research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "architecture_live_doc_update", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
                 {"step": 2, "title": "structure -> model", "tools": ["structure_modeling_tool_status", "structure_modeling_intent_plan", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
-                {"step": 3, "title": "execute -> explain -> write_back", "tools": ["cluster_execution_intent_plan", "research_onboarding_context", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "vasp_output_scan", "candidate_outcome_record", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show", "project_progress_append"]},
+                {"step": 3, "title": "execute -> explain -> write_back", "tools": ["cluster_execution_intent_plan", "research_onboarding_context", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "vasp_output_scan", "candidate_outcome_record", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show", "project_progress_append"]},
             ],
             "workflow": [
                 {"phase": "project_context"},
@@ -980,8 +982,8 @@ class ToolRegistry:
         tool_groups = [
             {
                 "purpose": "读取 research 规则和项目上下文",
-                "candidate_tools": ["research_onboarding_context"],
-                "call_when": "任何 VASP/集群任务 build 前；尤其 MCH-Pt-Br 频率/Dimer 必须读 common 规则。",
+                "candidate_tools": ["research_onboarding_context", "research_vasp_template_resolve"],
+                "call_when": "任何 VASP/集群任务 build 前；尤其 MCH-Pt-Br 频率/Dimer 必须读 common 规则并解析可执行模板。",
             },
             {
                 "purpose": "按 Step 2 结构和 research 模板生成本地计算输入包",
@@ -1038,11 +1040,23 @@ class ToolRegistry:
             "tool_groups": tool_groups,
             "quality_gates": [
                 "dft_run_task 先 build，生成 inputs/POSCAR、INCAR、KPOINTS、job.slurm。",
+                "research_vasp_template_resolve 的 expected_incar 必须被 build 结果和 preflight 逐项核对。",
                 "结构同目录已有 INCAR/KPOINTS 时必须视为 research 模板来源，不能无故覆盖。",
                 "POTCAR 缺失时要报告 mapping 和集群端补齐要求。",
                 "提交后必须记录 scheduler job id / remote_run_root；完成后 fetch + scan + 写回进展。",
             ],
             "stop_conditions": stop_conditions,
+        }
+
+    def _research_vasp_template_resolve(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "status": "ok",
+            "template": resolve_research_vasp_template(
+                str(payload.get("project") or "").strip() or None,
+                str(payload.get("task_type") or "").strip() or None,
+                prompt=str(payload.get("prompt") or ""),
+                material=str(payload.get("material") or "").strip() or None,
+            ),
         }
 
     @staticmethod
@@ -1091,6 +1105,31 @@ class ToolRegistry:
             data[key.strip().upper()] = value.strip()
         return data
 
+    @staticmethod
+    def _incar_value_matches(actual: str | None, expected: Any) -> bool:
+        if actual is None:
+            return False
+        actual_clean = str(actual).strip().strip("\"'")
+        if isinstance(expected, bool):
+            return actual_clean.lower().strip(".") in {"true", "t", "1", "yes"} if expected else actual_clean.lower().strip(".") in {"false", "f", "0", "no"}
+        if isinstance(expected, int) and not isinstance(expected, bool):
+            try:
+                return int(float(actual_clean.replace("D", "E").replace("d", "e"))) == expected
+            except ValueError:
+                pass
+        if isinstance(expected, float):
+            try:
+                return abs(float(actual_clean.replace("D", "E").replace("d", "e")) - expected) <= max(1e-12, abs(expected) * 1e-6)
+            except ValueError:
+                pass
+        return actual_clean.lower() == str(expected).strip().strip("\"'").lower()
+
+    @staticmethod
+    def _format_expected_incar_value(value: Any) -> str:
+        if isinstance(value, float):
+            return f"{value:.8g}"
+        return str(value)
+
     def _vasp_input_preflight_check(self, payload: dict[str, Any]) -> dict[str, Any]:
         run_root, inputs_dir, error = self._resolve_vasp_inputs_dir(payload)
         if error or inputs_dir is None:
@@ -1098,6 +1137,7 @@ class ToolRegistry:
         project = str(payload.get("project") or "").strip() or None
         task_type = str(payload.get("task_type") or "").strip().lower()
         require_potcar = bool(payload.get("require_potcar", False))
+        research_template = resolve_research_vasp_template(project, task_type)
         files = {
             "POSCAR": inputs_dir / "POSCAR",
             "INCAR": inputs_dir / "INCAR",
@@ -1122,6 +1162,20 @@ class ToolRegistry:
 
         incar = self._parse_incar_file(files["INCAR"])
         if incar:
+            expected_incar = dict(research_template.get("expected_incar") or {})
+            severity_by_key = {str(key).upper(): str(value) for key, value in (research_template.get("severity_by_key") or {}).items()}
+            for key, expected in expected_incar.items():
+                key_upper = str(key).upper()
+                if self._incar_value_matches(incar.get(key_upper), expected):
+                    continue
+                message = (
+                    f"research 模板 `{research_template.get('template_id')}` 期望 "
+                    f"{key_upper}={self._format_expected_incar_value(expected)}，当前为 {incar.get(key_upper, '<missing>')}"
+                )
+                if severity_by_key.get(key_upper, "warning") == "blocker":
+                    blockers.append(message)
+                else:
+                    warnings.append(message)
             if task_type in {"vibrational_frequency", "frequency"}:
                 if incar.get("IBRION") != "5":
                     blockers.append("频率任务期望 IBRION=5")
@@ -1179,6 +1233,7 @@ class ToolRegistry:
             "poscar": poscar_summary,
             "metadata": {key: {"path": path, "exists": metadata_exists[key]} for key, path in metadata.items()},
             "research_rule_paths": research_rule_paths,
+            "research_template": research_template,
             "blockers": blockers,
             "warnings": warnings,
             "readiness": "可以提交前继续 cluster_probe；若 probe 成功且运行时允许提交，可 cluster_remote_submit。" if status == "ready" else "不要提交；先修复 blockers。",
@@ -1214,6 +1269,9 @@ class ToolRegistry:
             return {"status": "error", "message": str(exc)}
 
     def _dft_run_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        execution_mode = str(payload.get("execution_mode") or "dry_run").strip() or "dry_run"
+        if execution_mode in {"submit", "remote_submit"} and not self.allow_cluster_submit:
+            return {"status": "blocked", "message": "当前 ToolRegistry 未启用 allow_cluster_submit；只能 build/preflight/probe。"}
         result = run_dft_task(
             str(payload.get("prompt") or ""),
             project=str(payload.get("project") or "").strip() or None,
@@ -1221,7 +1279,7 @@ class ToolRegistry:
             structure_path=str(payload.get("structure_path") or "").strip() or None,
             task_type=str(payload.get("task_type") or "").strip() or None,
             submit_profile=str(payload.get("submit_profile") or "").strip() or None,
-            execution_mode=str(payload.get("execution_mode") or "dry_run").strip() or "dry_run",
+            execution_mode=execution_mode,
         )
         return {"status": result.get("status", "ok"), "result": result}
 
