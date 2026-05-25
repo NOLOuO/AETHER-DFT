@@ -12,6 +12,7 @@ from .experiment_spec import (
     StructureConstraint,
     StructureSource,
     TaskType,
+    experiment_spec_from_dict,
 )
 from .experiment_plan import ExecutionReadiness, ExperimentPlan, PlanComplexity, PlanSubtask
 from .parsed_result import LatticeParameters, ParsedResult
@@ -40,4 +41,5 @@ __all__ = [
     "StructureConstraint",
     "StructureSource",
     "TaskType",
+    "experiment_spec_from_dict",
 ]

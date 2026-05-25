@@ -219,3 +219,48 @@ class ExperimentSpec:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def experiment_spec_from_dict(data: dict[str, Any]) -> ExperimentSpec:
+    """Rehydrate an ExperimentSpec from its JSON/dict representation."""
+
+    kpoints_value = data["kpoints_strategy"].get("value")
+    if isinstance(kpoints_value, list):
+        kpoints_value = tuple(kpoints_value)
+
+    return ExperimentSpec(
+        task_id=data["task_id"],
+        task_type=TaskType(data["task_type"]),
+        material_name=data["material_name"],
+        source_prompt=data["source_prompt"],
+        created_at=data["created_at"],
+        chemical_formula=data.get("chemical_formula"),
+        description=data.get("description"),
+        structure_source=StructureSource(data["structure_source"]),
+        structure_path=data.get("structure_path"),
+        structure_id=data.get("structure_id"),
+        structure_constraints=StructureConstraint(**data["structure_constraints"]),
+        workflow=data.get("workflow", []),
+        code=data.get("code", "vasp"),
+        functional=data.get("functional", "PBE"),
+        task_goal=data.get("task_goal"),
+        incar_overrides=data.get("incar_overrides", {}),
+        kpoints_strategy=KpointsStrategy(
+            mode=data["kpoints_strategy"]["mode"],
+            value=kpoints_value,
+        ),
+        encut_strategy=EncutStrategy(**data["encut_strategy"]),
+        smearing=SmearingSettings(**data["smearing"]),
+        spin_settings=SpinSettings(**data["spin_settings"]),
+        convergence_settings=ConvergenceSettings(**data["convergence_settings"]),
+        workflow_parameters=data.get("workflow_parameters", {}),
+        submit_profile=data.get("submit_profile"),
+        scheduler=data.get("scheduler", "slurm"),
+        job_overrides=JobSettings(**data["job_overrides"]),
+        requires_confirmation=data.get("requires_confirmation", True),
+        confirmation_items=[ConfirmationItem(item) for item in data.get("confirmation_items", [])],
+        allow_reuse_previous_results=data.get("allow_reuse_previous_results", True),
+        restart_from_task_id=data.get("restart_from_task_id"),
+        tags=data.get("tags", []),
+        notes=data.get("notes", {}),
+    )

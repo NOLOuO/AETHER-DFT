@@ -855,6 +855,64 @@ def test_cluster_execution_intent_plan_teaches_build_preflight_submit_sequence()
     assert "cluster_remote_submit" in tool_names
     assert any("DFT任务与自由能校正规则" in item["path"] for item in payload["research_rule_paths"])
     assert all("model_decision" in group for group in payload["tool_groups"])
+    assert payload["next_decision"]["next_action"] == "resolve_research_constraints"
+
+
+def test_cluster_execution_intent_uses_project_from_available_inputs():
+    result = ToolRegistry().run_tool(
+        "cluster_execution_intent_plan",
+        {
+            "intent": "给 MCH-Pt-Br 已优化中间体做频率计算输入",
+            "available_inputs": {
+                "project": "MCH-Pt-Br",
+                "structure_path": "candidate.POSCAR",
+                "material": "MCH/Pt(111)",
+            },
+        },
+    )
+    payload = result["result"]
+    assert payload["project"] == "MCH-Pt-Br"
+    assert payload["template_preview"]["template_id"] == "mch_pt_br_stable_intermediate_frequency"
+    build_group = next(group for group in payload["tool_groups"] if "dft_run_task" in group["candidate_tools"])
+    assert build_group["recommended_arguments"]["project"] == "MCH-Pt-Br"
+
+
+def test_cluster_execution_intent_adapts_when_run_root_already_exists():
+    result = ToolRegistry().run_tool(
+        "cluster_execution_intent_plan",
+        {
+            "intent": "这个 run 已经 build 好了，帮我核对后提交",
+            "project": "MCH-Pt-Br",
+            "available_inputs": {
+                "run_root": ".aether/runs/task_x/run_y",
+                "structure_path": "candidate.POSCAR",
+                "material": "MCH/Pt(111)",
+                "task_type": "relax",
+            },
+        },
+    )
+    assert result["result"]["next_decision"]["next_action"] == "preflight_existing_run"
+    assert "dft_run_task build" in result["result"]["next_decision"]["do_not_call"]
+
+
+def test_cluster_execution_intent_blocks_submit_when_preflight_blocked():
+    result = ToolRegistry().run_tool(
+        "cluster_execution_intent_plan",
+        {
+            "intent": "preflight 有 blocker 但我想提交",
+            "project": "MCH-Pt-Br",
+            "available_inputs": {
+                "run_root": ".aether/runs/task_x/run_y",
+                "structure_path": "candidate.POSCAR",
+                "material": "MCH/Pt(111)",
+                "task_type": "relax",
+                "preflight_status": "blocked",
+            },
+        },
+    )
+    decision = result["result"]["next_decision"]
+    assert decision["next_action"] == "fix_preflight_blockers"
+    assert "cluster_remote_submit" in decision["do_not_call"]
 
 
 def test_vasp_input_preflight_checks_inputs_dir_and_research_rules(tmp_path: Path):
@@ -927,6 +985,48 @@ def test_research_vasp_template_resolve_returns_mch_frequency_rules():
     assert any(item["exists"] and "DFT任务与自由能校正规则" in item["path"] for item in template["source_paths"])
     assert "model_instructions" in result["result"]
     assert "not_a_fixed_program" in result["result"]["model_instructions"]
+    assert all("sha256" in item for item in template["source_paths"] if item["exists"] and item["label"].startswith("project_common"))
+
+
+def test_vasp_input_preflight_blocks_dimer_research_parameter_mismatch(tmp_path: Path):
+    run_root = tmp_path / "dimer"
+    inputs = run_root / "inputs"
+    inputs.mkdir(parents=True)
+    atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[8, 8, 8], pbc=False)
+    write(inputs / "POSCAR", atoms, format="vasp")
+    (inputs / "INCAR").write_text(
+        "PREC = Accurate\nEDIFF = 1E-6\nIOPT = 2\nICHAIN = 1\nMAGMOM = 2*0\n",
+        encoding="utf-8",
+    )
+    (inputs / "KPOINTS").write_text("Gamma\n0\nGamma\n1 1 1\n0 0 0\n", encoding="utf-8")
+    (inputs / "job.slurm").write_text("#!/bin/bash\n", encoding="utf-8")
+
+    result = ToolRegistry().run_tool(
+        "vasp_input_preflight_check",
+        {"run_root": str(run_root), "project": "MCH-Pt-Br", "task_type": "transition_state_search"},
+    )
+    payload = result["result"]
+    assert payload["status"] == "blocked"
+    assert payload["research_template"]["template_id"] == "mch_pt_br_vasp_dimer_refinement"
+    assert any("PREC=Normal" in blocker for blocker in payload["blockers"])
+    assert any("IOPT=1" in blocker for blocker in payload["blockers"])
+
+
+def test_dft_run_task_submit_is_blocked_without_submit_permission(monkeypatch):
+    called = False
+
+    def fake_run_dft_task(*args, **kwargs):
+        nonlocal called
+        called = True
+        return {"status": "ok"}
+
+    monkeypatch.setattr("aether_dft.runtime_harness.tool_registry.run_dft_task", fake_run_dft_task)
+    result = ToolRegistry(allow_cluster_submit=False).run_tool(
+        "dft_run_task",
+        {"prompt": "submit", "execution_mode": "remote_submit"},
+    )
+    assert result["result"]["status"] == "blocked"
+    assert called is False
 
 
 def test_create_task_plan_applies_research_template_to_spec():

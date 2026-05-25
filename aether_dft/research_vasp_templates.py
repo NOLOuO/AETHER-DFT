@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from .paths import PROJECT_ROOT
@@ -44,7 +45,21 @@ def normalize_research_task_type(task_type: str | None, prompt: str = "") -> str
 
 def _source(label: str, *parts: str) -> dict[str, Any]:
     path = PROJECT_ROOT.joinpath(*parts)
-    return {"label": label, "path": str(path), "exists": path.exists()}
+    return _source_from_path(label, path)
+
+
+def _source_from_path(label: str, path: Any) -> dict[str, Any]:
+    source_path = PROJECT_ROOT.joinpath(path) if isinstance(path, str) else path
+    payload: dict[str, Any] = {
+        "label": label,
+        "path": str(source_path),
+        "exists": source_path.exists(),
+    }
+    if source_path.exists() and source_path.is_file():
+        raw = source_path.read_bytes()
+        payload["sha256"] = hashlib.sha256(raw).hexdigest()
+        payload["mtime_ns"] = source_path.stat().st_mtime_ns
+    return payload
 
 
 def _base_sources(project: str | None) -> list[dict[str, Any]]:
@@ -57,7 +72,7 @@ def _base_sources(project: str | None) -> list[dict[str, Any]]:
         project_common = PROJECT_ROOT / "research" / project / "common"
         if project_common.exists():
             for path in sorted(project_common.glob("*.md")):
-                sources.append({"label": f"project_common:{path.name}", "path": str(path), "exists": True})
+                sources.append(_source_from_path(f"project_common:{path.name}", path))
     return sources
 
 
@@ -211,4 +226,3 @@ def resolve_research_vasp_template(
         }
     template["material"] = material
     return template
-

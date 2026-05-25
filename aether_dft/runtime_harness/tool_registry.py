@@ -947,7 +947,7 @@ class ToolRegistry:
         available = payload.get("available_inputs") or {}
         if not isinstance(available, dict):
             available = {}
-        project = str(payload.get("project") or "").strip() or None
+        project = str(payload.get("project") or "").strip() or str(available.get("project") or "").strip() or None
         allow_submit = bool(payload.get("allow_submit", False))
         text = " ".join([intent, json.dumps(available, ensure_ascii=False)]).lower()
 
@@ -1039,12 +1039,48 @@ class ToolRegistry:
                 "model_decision": "把真实结果/失败原因写回，不把未完成任务包装成科研结论。",
             },
         ]
-        if missing:
-            next_tool_to_call = "research_onboarding_context" if "project" not in missing else None
+        preflight_status = str(available.get("preflight_status") or "").strip().lower()
+        if preflight_status in {"blocked", "failed", "needs_inputs"}:
+            next_decision = {
+                "next_action": "fix_preflight_blockers",
+                "recommended_tools": ["vasp_input_preflight_check"],
+                "reason": "preflight 尚未 ready；先修复 blockers 或补齐输入，不进入 probe/submit。",
+                "do_not_call": ["cluster_probe", "cluster_remote_submit"],
+            }
         elif available.get("run_root") or available.get("inputs_dir"):
-            next_tool_to_call = "vasp_input_preflight_check"
+            next_decision = {
+                "next_action": "preflight_existing_run",
+                "recommended_tools": ["vasp_input_preflight_check"],
+                "reason": "已有 run_root/inputs_dir，先核对现有输入包，不重复 build。",
+                "do_not_call": ["dft_run_task build"],
+            }
+        elif "structure_path_from_step2" in missing:
+            next_decision = {
+                "next_action": "return_to_step2_or_supply_structure",
+                "recommended_tools": ["structure_modeling_intent_plan"],
+                "reason": "缺少 Step 2 结构文件路径，不能伪造 POSCAR 或进入 build。",
+                "missing": missing,
+            }
+        elif "material" in missing:
+            next_decision = {
+                "next_action": "collect_material_label",
+                "recommended_tools": [],
+                "reason": "缺少 material，生成任务记录前需要材料/体系标签用于追踪和模板判断。",
+                "missing": missing,
+            }
+        elif "project" in missing:
+            next_decision = {
+                "next_action": "collect_project_or_read_context",
+                "recommended_tools": ["research_onboarding_context"],
+                "reason": "缺少 project，不能安全选择 research 规则。",
+                "missing": missing,
+            }
         else:
-            next_tool_to_call = "research_vasp_template_resolve"
+            next_decision = {
+                "next_action": "resolve_research_constraints",
+                "recommended_tools": ["research_vasp_template_resolve"],
+                "reason": "结构、材料和 project 已明确；先解析 research 约束，再决定是否 build。",
+            }
         stop_conditions = [
             "没有 Step 2 结构文件路径时，不 build。",
             "没有 research 规则证据时，不临时编造一套 INCAR。",
@@ -1090,7 +1126,7 @@ class ToolRegistry:
                 {"situation": "preflight blocked", "do": ["解释 blocker", "按 blocker 修 build 参数或要求补文件"], "skip": ["cluster_probe", "cluster_remote_submit"]},
                 {"situation": "任务已经在跑", "do": ["cluster_remote_monitor", "cluster_remote_fetch when complete", "vasp_output_scan"], "skip": ["重新 build"]},
             ],
-            "next_tool_to_call": next_tool_to_call,
+            "next_decision": next_decision,
             "tool_groups": tool_groups,
             "quality_gates": [
                 "若没有 run_root 且用户目标是生成输入包，模型才调用 dft_run_task build。",
