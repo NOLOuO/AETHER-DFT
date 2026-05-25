@@ -1,0 +1,22 @@
+# Python / build artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.tmp/
+
+# local runtime and secrets
+api_keys.local.json
+*.local.json
+.secrets/
+runtime/
+.aether/
+.omc/
+.omx/
+.learnings/
+
+# generated scientific runs; keep docs/config/source tracked separately
+runs/
+projects/*/runs/
+
+# literature PDFs are local reference material; avoid uploading copyrighted/heavy files
+research/**/*.pdf

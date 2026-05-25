@@ -1,0 +1,9 @@
+{
+  "permission_mode": "auto",
+  "safe_by_default": true,
+  "destructive_operations_require_confirmation": true,
+  "notes": [
+    "Codex/Claude-Code style runtime guardrail placeholder.",
+    "Actual enforcement will be implemented in aether_dft runtime layer."
+  ]
+}

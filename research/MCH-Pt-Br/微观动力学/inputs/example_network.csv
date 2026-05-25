@@ -1,0 +1,10 @@
+step_id,type,equation,Gaf_eV,Gar_eV,dG_eV,sticking,mass_amu,site_area_A2,tof_label,notes
+R_ads_MCH,adsorption,C7H14_g + 4* <-> C7H14*,,,-0.55,1.0,98.186,10.0,MCH_ads,placeholder standard dG at 1 bar; replace by DFT adsorption free energy
+R1_deH,surface,C7H14* + * <-> C7H13* + H*,0.95,0.80,,1.0,,10.0,deH1,placeholder barrier
+R2_deH,surface,C7H13* + * <-> C7H12* + H*,1.05,0.85,,1.0,,10.0,deH2,placeholder barrier
+R3_deH,surface,C7H12* + * <-> C7H11* + H*,1.10,0.90,,1.0,,10.0,deH3,placeholder barrier
+R4_deH,surface,C7H11* + * <-> C7H10* + H*,1.10,0.90,,1.0,,10.0,deH4,placeholder barrier
+R5_deH,surface,C7H10* + * <-> C7H9* + H*,1.05,0.85,,1.0,,10.0,deH5,placeholder barrier
+R6_deH,surface,C7H9* + * <-> C7H8* + H*,1.00,0.80,,1.0,,10.0,deH6,placeholder barrier
+R_ads_H2,adsorption,H2_g + 2* <-> 2H*,,,0.20,1.0,2.01588,10.0,H2_ads_des,placeholder standard dG at 1 bar; negative net = H2 desorption
+R_ads_TOL,adsorption,C7H8_g + 4* <-> C7H8*,,,-0.75,1.0,92.141,10.0,toluene_ads_des,placeholder standard dG at 1 bar; negative net = toluene desorption

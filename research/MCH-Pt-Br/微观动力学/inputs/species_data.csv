@@ -1,0 +1,13 @@
+species,phase,site_size,molar_mass_amu,carbon_pool
+*,site,1,,false
+H2_g,gas,0,2.01588,false
+C7H14_g,gas,0,98.186,false
+C7H8_g,gas,0,92.141,false
+H*,surface,1,1.00794,false
+C7H14*,surface,4,98.186,true
+C7H13*,surface,4,97.178,true
+C7H12*,surface,4,96.170,true
+C7H11*,surface,4,95.162,true
+C7H10*,surface,4,94.154,true
+C7H9*,surface,4,93.149,true
+C7H8*,surface,4,92.141,true

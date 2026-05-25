@@ -1,0 +1,110 @@
+from pathlib import Path
+
+import pytest
+
+from aether_dft.model_catalog import load_model_catalog
+from dft_app.llm import DomesticCopilotLLM
+from dft_app.llm.llm_client import _chat_tools_to_responses_tools, _messages_to_responses_payload
+from dft_app.llm.provider_presets import build_provider_model_config
+
+
+def test_aether_default_model_is_deepseek_v4_pro(monkeypatch, tmp_path):
+    monkeypatch.delenv("AETHER_DFT_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("AETHER_DFT_LLM_MODEL", raising=False)
+    monkeypatch.delenv("SEMI_DFT_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("SEMI_DFT_LLM_MODEL", raising=False)
+    runtime = DomesticCopilotLLM(tmp_path).describe_runtime()
+    assert runtime["default_model"] == {"provider": "deepseek", "model": "deepseek-v4-pro"}
+
+
+def test_deepseek_v4_pro_uses_thinking_mode_and_1m_context():
+    config = build_provider_model_config("deepseek", "deepseek-v4-pro")
+    assert config["model"] == "deepseek-v4-pro"
+    assert config["base_url"] == "https://api.deepseek.com"
+    assert config["api_key_env"] == "DEEPSEEK_API_KEY"
+    assert config["context_window"] == 1_000_000
+    assert config["extra_body"]["thinking"]["type"] == "enabled"
+    assert config["reasoning_effort"] == "max"
+
+
+def test_qwen37_uses_dashscope_beijing_openai_compatible_endpoint():
+    config = build_provider_model_config("bailian", "qwen3.7-max")
+    assert config["model"] == "qwen3.7-max"
+    assert config["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert config["api_key_env"] == "DASHSCOPE_API_KEY"
+
+
+def test_model_catalog_only_lists_project_fit_models():
+    catalog = load_model_catalog(Path.cwd())
+    assert set(catalog) == {"deepseek:deepseek-v4-pro", "bailian:qwen3.7-max"}
+
+
+def test_domestic_runtime_reads_aether_model_preferences(monkeypatch, tmp_path):
+    monkeypatch.delenv("AETHER_DFT_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("AETHER_DFT_LLM_MODEL", raising=False)
+    monkeypatch.delenv("SEMI_DFT_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("SEMI_DFT_LLM_MODEL", raising=False)
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    (runtime_dir / "model-preferences.json").write_text(
+        '{"global_default_model_id": "bailian:qwen3.7-max"}',
+        encoding="utf-8",
+    )
+    assert DomesticCopilotLLM(tmp_path).resolve_default_model() == ("bailian", "qwen3.7-max")
+
+
+def test_unsupported_model_is_rejected():
+    with pytest.raises(KeyError):
+        build_provider_model_config("deepseek", "deepseek-chat")
+
+
+def test_responses_payload_conversion_preserves_tool_calls():
+    instructions, conversation = _messages_to_responses_payload(
+        [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "project_state_read", "arguments": "{\"project\":\"demo\"}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "{\"status\":\"ok\"}"},
+        ]
+    )
+
+    assert instructions == "system prompt"
+    assert conversation[0] == {"role": "user", "content": "hello"}
+    assert conversation[1]["type"] == "function_call"
+    assert conversation[1]["name"] == "project_state_read"
+    assert conversation[2]["type"] == "function_call_output"
+    assert conversation[2]["call_id"] == "call_1"
+
+
+def test_responses_tool_schema_is_flattened():
+    tools = _chat_tools_to_responses_tools(
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "project_state_read",
+                    "description": "read project state",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+    )
+
+    assert tools == [
+        {
+            "type": "function",
+            "name": "project_state_read",
+            "description": "read project state",
+            "parameters": {"type": "object", "properties": {}},
+        }
+    ]

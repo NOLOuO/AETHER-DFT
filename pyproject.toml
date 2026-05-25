@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aether-dft"
+version = "0.1.0"
+description = "A conversational computational-chemistry research partner built from local DFT automation references."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.12",
+    "pydantic-settings>=2.13",
+    "typer>=0.24",
+    "rich>=14.3",
+    "rapidfuzz>=3.14",
+    "tenacity>=9.1",
+    "jinja2>=3.1",
+    "openai>=1.57.4",
+    "ase>=3.23",
+    "pymatgen>=2025.10",
+    "mp-api>=0.46",
+]
+
+[project.scripts]
+aether = "aether_dft.cli:main"
+aether-dft = "aether_dft.cli:main"
+dft = "dft_app.cli.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["aether_dft*", "dft_app*", "dft_shared*", "harness*", "tools*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+cache_dir = ".tmp/pytest_cache"
+markers = [
+    "requires_llm: live OpenAI-compatible model/API tests, skipped unless explicitly enabled",
+]

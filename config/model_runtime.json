@@ -1,0 +1,13 @@
+{
+  "default_provider": "deepseek",
+  "default_model": "deepseek-v4-pro",
+  "base_url": "https://api.deepseek.com",
+  "api_key_env": "DEEPSEEK_API_KEY",
+  "style": "openai-compatible",
+  "notes": [
+    "AETHER-DFT runtime defaults to DeepSeek V4 Pro, but the architecture is model-switchable.",
+    "Supported built-in models are deepseek:deepseek-v4-pro and bailian:qwen3.7-max.",
+    "Both built-in models are configured with 1M-token context metadata.",
+    "Secrets live in api_keys.local.json or environment variables, not in tracked config."
+  ]
+}

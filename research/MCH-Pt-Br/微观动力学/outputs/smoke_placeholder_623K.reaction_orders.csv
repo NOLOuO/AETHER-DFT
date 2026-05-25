@@ -1,0 +1,4 @@
+gas,target,reaction_order,base_rate,perturbed_rate,pressure_factor,notes
+C7H14_g,net_dehydrogenation,-8.727262545139e-01,-1.578568712610e+01,-1.429913051579e+01,1.12,
+H2_g,net_dehydrogenation,5.049510321931e-01,-1.578568712610e+01,-1.671537723060e+01,1.12,
+C7H8_g,net_dehydrogenation,8.762427135797e-01,-1.578568712610e+01,-1.743373436945e+01,1.12,

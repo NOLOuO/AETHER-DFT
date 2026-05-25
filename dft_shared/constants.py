@@ -1,0 +1,5 @@
+from __future__ import annotations
+
+EV_TO_CM1 = 8065.54429
+POSCAR_DEFAULT_DECIMALS = 8
+POSCAR_SNAP_TOLERANCE = 5e-6

@@ -1,0 +1,10 @@
+step_id,tof_label,target,drc,perturbed_target_rate,notes
+R_ads_MCH,MCH_ads,net_dehydrogenation,8.156535713076e-02,-1.591444364690e+01,
+R1_deH,deH1,net_dehydrogenation,1.517802067400e-03,-1.578808308095e+01,
+R2_deH,deH2,net_dehydrogenation,3.852692240126e-03,-1.579176886553e+01,
+R3_deH,deH3,net_dehydrogenation,9.781971646774e-03,-1.580112864049e+01,
+R4_deH,deH4,net_dehydrogenation,9.778047396710e-03,-1.580112244579e+01,
+R5_deH,deH5,net_dehydrogenation,3.846675782255e-03,-1.579175936814e+01,
+R6_deH,deH6,net_dehydrogenation,1.511549420558e-03,-1.578807321072e+01,
+R_ads_H2,H2_ads_des,net_dehydrogenation,8.989729211852e-07,-1.578568854519e+01,
+R_ads_TOL,toluene_ads_des,net_dehydrogenation,8.671184627713e-01,-1.715449320155e+01,
