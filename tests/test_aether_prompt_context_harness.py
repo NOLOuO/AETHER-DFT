@@ -61,6 +61,7 @@ def test_prompt_packet_compiles_aether_domain_prompt():
     assert "计算化学" in compiled or "DFT" in compiled
     assert "持续科研合伙人契约" in compiled
     assert "计算化学阶段图" in compiled
+    assert "Step 2：结构建模工具调用策略" in compiled
     assert "研究执行闭环" in compiled
     assert packet["prompt"]["runtime_contract"]
     assert packet["prompt"]["tool_policy"]
@@ -68,6 +69,7 @@ def test_prompt_packet_compiles_aether_domain_prompt():
     layer_names = [item["name"] for item in packet["prompt"]["layers"] if item["included"]]
     assert "base_role" in layer_names
     assert "tool_discovery" in layer_names
+    assert "structure_modeling" in layer_names
     assert "architecture_live_doc" in layer_names
     assert packet["prompt"]["compile_projection"]["compile_strategy"] == "aether_section_compiler"
 

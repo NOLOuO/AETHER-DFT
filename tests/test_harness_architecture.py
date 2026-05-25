@@ -57,6 +57,7 @@ def test_root_tool_registry_discovers_domain_tools():
     tools = registry.list_tools()
     names = {item["name"] for item in tools}
     assert "computational_chemistry_workflow_map" in names
+    assert "structure_modeling_tool_status" in names
     assert "research_onboarding_context" in names
     assert "research_proposal_plan" in names
     assert "research_progress_append" in names
@@ -468,6 +469,7 @@ def test_workflow_map_exposes_full_computational_chemistry_flow():
     assert "research_proposal_plan" in result["result"]["mainline"][0]["tools"]
     assert "architecture_live_doc_snapshot" in result["result"]["mainline"][0]["tools"]
     assert "architecture_live_doc_update" in result["result"]["mainline"][0]["tools"]
+    assert "structure_modeling_tool_status" in result["result"]["mainline"][1]["tools"]
     assert "structure_resolve" in result["result"]["mainline"][1]["tools"]
     assert "structure_sanity_check" in result["result"]["mainline"][1]["tools"]
     assert "structure_defect" in result["result"]["mainline"][1]["tools"]
@@ -482,6 +484,20 @@ def test_workflow_map_exposes_full_computational_chemistry_flow():
         "parse",
         "knowledge_backflow",
     ]
+
+
+def test_structure_modeling_tool_status_is_decision_matrix_not_fixed_pipeline():
+    result = ToolRegistry().run_tool("structure_modeling_tool_status", {})
+    payload = result["result"]
+    assert payload["status"] == "ok"
+    assert "固定流水线" in payload["principle"]
+    intents = {item["intent"] for item in payload["decision_matrix"]}
+    assert "吸附候选" in intents
+    assert "缺陷/掺杂" in intents
+    adsorption = next(item for item in payload["decision_matrix"] if item["intent"] == "吸附候选")
+    assert "adsorption_candidate_plan" in adsorption["tools"]
+    assert "候选数量、位点、取向由 plan.rationale 决定" in adsorption["not_a_fixed_program"]
+    assert payload["completion"]["adsorption_model_authored_candidates"] == "ready"
 
 
 def test_transition_state_tools_are_available():

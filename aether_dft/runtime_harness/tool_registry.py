@@ -104,6 +104,7 @@ class ToolRegistry:
 
     def _register_all(self) -> None:
         self._register(ToolSpec("computational_chemistry_workflow_map", "列出 AETHER-DFT 两步主线与工作流阶段。", {}), self._workflow_map)
+        self._register(ToolSpec("structure_modeling_tool_status", "报告 Step 2 结构建模工具能力、适用任务类型、证据门槛与当前完成度。", {}, True), self._structure_modeling_tool_status)
         self._register(ToolSpec("research_onboarding_context", "读取 research 入职上下文：AGENTS、避坑清单、项目研究进展。", {"project": {"type": "string"}, "max_chars": {"type": "integer"}}, True), self._research_onboarding_context)
         self._register(ToolSpec("research_proposal_plan", "把自然语言课题讨论整理成科学问题、结构需求、证据需求和下一步。", {"prompt": {"type": "string"}, "project": {"type": "string"}}, True, ("prompt",)), self._research_proposal_plan)
         self._register(ToolSpec("research_progress_append", "按研究工作区格式倒序追加 research/<项目>/研究进展.md。", {"project": {"type": "string"}, "completed": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}}, False, ("project",)), self._research_progress_append)
@@ -211,7 +212,7 @@ class ToolRegistry:
             "status": "ok",
             "mainline": [
                 {"step": 1, "title": "discussion -> plan", "tools": ["research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "architecture_live_doc_update", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
-                {"step": 2, "title": "structure -> model", "tools": ["structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
+                {"step": 2, "title": "structure -> model", "tools": ["structure_modeling_tool_status", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
                 {"step": 3, "title": "execute -> explain -> write_back", "tools": ["dft_run_task", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "candidate_outcome_record", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show"]},
             ],
             "workflow": [
@@ -224,6 +225,75 @@ class ToolRegistry:
                 {"phase": "knowledge_backflow"},
             ],
             "evaluation_tools": ["adsorption_eval_case_list", "adsorption_eval_score_plan"],
+        }
+
+    def _structure_modeling_tool_status(self, _: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "status": "ok",
+            "principle": "Step 2 提供结构建模原语；模型根据科研意图选择工具并写明判断，不执行固定流水线。",
+            "completion": {
+                "structure_io": "ready",
+                "slab_build_and_inspect": "ready",
+                "adsorption_model_authored_candidates": "ready",
+                "candidate_quality_and_short_relax": "ready",
+                "defect_primitives": "ready_minimal",
+                "ts_midpoint_primitives": "ready_minimal",
+                "convergence_plan_primitives": "ready_minimal",
+                "black_box_adsorption_baseline": "fallback_only",
+            },
+            "decision_matrix": [
+                {
+                    "intent": "已有结构读取/格式转换",
+                    "evidence": ["input_path/source", "format", "sanity boundary"],
+                    "tools": ["structure_resolve", "structure_convert", "structure_sanity_check"],
+                    "not_a_fixed_program": "只在需要转换或检查时调用；不要为聊天式讨论无意义写文件。",
+                },
+                {
+                    "intent": "slab 建模",
+                    "evidence": ["material or structure_path/mp_id", "miller_index", "vacuum/fixed layers"],
+                    "tools": ["structure_build_slab", "slab_surface_inspect", "structure_sanity_check"],
+                    "not_a_fixed_program": "slab_surface_inspect 用于解释表面环境，不替模型决定研究方向。",
+                },
+                {
+                    "intent": "吸附候选",
+                    "evidence": ["adsorbate anchor/motif", "system prior", "surface symmetry/coordination"],
+                    "tools": [
+                        "adsorbate_chemistry_hint",
+                        "knowledge_search_for_system",
+                        "slab_surface_inspect",
+                        "structure_enumerate_sites",
+                        "adsorption_candidate_plan",
+                        "structure_add_adsorbate",
+                        "candidate_quality_score",
+                        "adsorption_candidate_manifest_compose",
+                    ],
+                    "not_a_fixed_program": "这些是证据门槛；候选数量、位点、取向由 plan.rationale 决定，adsorption_candidates 只作兜底。",
+                },
+                {
+                    "intent": "缺陷/掺杂",
+                    "evidence": ["candidate atom_index", "surface_only or bulk", "vacancy/substitution reason"],
+                    "tools": ["defect_site_enumerate", "structure_defect", "structure_sanity_check"],
+                    "not_a_fixed_program": "不要默认删除第一个原子；必须解释 atom_index 选择依据。",
+                },
+                {
+                    "intent": "TS/NEB 初猜",
+                    "evidence": ["IS/FS atom count", "element order", "reaction coordinate rationale"],
+                    "tools": ["ts_midpoint_candidates_enumerate", "neb_input_check"],
+                    "not_a_fixed_program": "插值只是初猜，不声称找到 TS。",
+                },
+                {
+                    "intent": "收敛性测试",
+                    "evidence": ["target property", "tolerance", "budget"],
+                    "tools": ["convergence_plan_compose"],
+                    "not_a_fixed_program": "只生成测试矩阵，不提交或声称收敛。",
+                },
+            ],
+            "quality_gates": [
+                "写结构前确认输入/输出路径和科研目标。",
+                "compose manifest 前必须有 adsorption_candidate_plan.plan_id。",
+                "warning/failed/unavailable 不能包装成成功。",
+                "候选结构必须带 reason、sanity/quality 结果和下一步建议。",
+            ],
         }
 
     def _research_onboarding_context(self, payload: dict[str, Any]) -> dict[str, Any]:

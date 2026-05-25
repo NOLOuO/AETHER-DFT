@@ -273,3 +273,6 @@ def test_prompt_includes_adsorption_authoring_section():
     rendered = render_compiled_system_prompt()
     assert "吸附候选生成的科学推理心理模型" in rendered
     assert "adsorption_candidate_plan" in rendered
+    assert "Step 2：结构建模工具调用策略" in rendered
+    assert "证据门槛，而不是死流程" in rendered
+    assert "不是固定程序" in rendered
