@@ -978,22 +978,34 @@ class ToolRegistry:
         if not (project or str(available.get("project") or "").strip()):
             missing.append("project")
 
+        structure_path = available.get("structure_path") or available.get("poscar_path") or available.get("candidate_poscar_path")
+        material = available.get("material")
         research_paths = self._research_rule_paths(project)
+        template_preview = resolve_research_vasp_template(
+            project,
+            recommended_task_type,
+            prompt=intent,
+            material=str(material) if material else None,
+        )
         tool_groups = [
             {
                 "purpose": "读取 research 规则和项目上下文",
                 "candidate_tools": ["research_onboarding_context", "research_vasp_template_resolve"],
-                "call_when": "任何 VASP/集群任务 build 前；尤其 MCH-Pt-Br 频率/Dimer 必须读 common 规则并解析可执行模板。",
+                "call_when": "模型判断任务涉及 VASP/INCAR/KPOINTS/集群，且还没有本轮 research 证据时调用。",
+                "skip_when": "本轮已经有等价 research 上下文和 template_id/expected_incar 证据时可跳过重复读取。",
+                "model_decision": "先判定 project + task_type；再把 prose 规则转成 expected_incar/blocked_method_rules，作为后续 build/preflight 的判断依据。",
             },
             {
                 "purpose": "按 Step 2 结构和 research 模板生成本地计算输入包",
                 "candidate_tools": ["dft_run_task"],
-                "call_when": "structure_path、material、task_type 明确后，先用 execution_mode='build'；不要直接提交。",
+                "call_when": "模型确认已有结构路径、材料标签、任务类型，且 research 模板/模板缺失状态已经明确后调用 build。",
+                "skip_when": "用户只是在讨论方案，或结构路径/任务类型/project 缺失，或已有可核对 run_root。",
+                "model_decision": "把 Step 2 产物作为 structure_path；把 research_vasp_template_resolve 的约束当作 spec 约束，不自己临时发明 INCAR。",
                 "recommended_arguments": {
                     "execution_mode": "build",
                     "task_type": recommended_task_type,
-                    "structure_path": available.get("structure_path") or available.get("poscar_path") or available.get("candidate_poscar_path"),
-                    "material": available.get("material"),
+                    "structure_path": structure_path,
+                    "material": material,
                     "project": project,
                     "submit_profile": available.get("submit_profile") or "c32",
                 },
@@ -1001,24 +1013,38 @@ class ToolRegistry:
             {
                 "purpose": "提交前核对 VASP/SLURM 输入包",
                 "candidate_tools": ["vasp_input_preflight_check", "vasp_input_summary"],
-                "call_when": "dft_run_task(build) 产生 run_root 后立即调用；preflight ready 才允许提交。",
+                "call_when": "已有 run_root/inputs_dir 后调用；用于判断能否进入集群，而不是为了完成固定步骤。",
+                "skip_when": "没有 run_root/inputs_dir；先不要猜测文件是否齐全。",
+                "model_decision": "逐项读 preflight blockers/warnings：blocker 必须修，warning 必须解释或降级声明。",
             },
             {
                 "purpose": "连接并探测集群",
                 "candidate_tools": ["cluster_config", "cluster_probe"],
-                "call_when": "preflight ready 后；确认 SSH alias/用户/远程目录和 mn01/slurm 可用。",
+                "call_when": "preflight ready 且用户目标包含提交/监控/回收时调用；只做连通性证据。",
+                "skip_when": "用户只要生成输入包，或 preflight blocked。",
+                "model_decision": "probe 成功只是允许进入提交候选，不等于已经提交。",
             },
             {
                 "purpose": "提交、监控和回收",
                 "candidate_tools": ["cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch"],
-                "call_when": "只有 allow_submit=True、运行时允许提交且 preflight/probe 通过时才提交。",
+                "call_when": "只有 allow_submit=True、运行时允许提交、preflight/probe 通过、且用户目标确实是提交/跟踪时才调用。",
+                "skip_when": "任一门槛未过；这时模型应报告下一步需要什么，而不是继续跑。",
+                "model_decision": "submit 返回 job id/remote_run_root 后再 monitor/fetch；没有 job id 不许声称已提交。",
             },
             {
                 "purpose": "解析输出并写回科研记忆",
                 "candidate_tools": ["vasp_output_scan", "candidate_outcome_record", "knowledge_note_add", "project_progress_append"],
-                "call_when": "fetch 后有 OUTCAR/OSZICAR/CONTCAR 或失败证据时；不能伪造结果。",
+                "call_when": "已有真实 OUTCAR/OSZICAR/CONTCAR 或明确失败日志后调用。",
+                "skip_when": "只有输入包或队列状态，没有计算输出。",
+                "model_decision": "把真实结果/失败原因写回，不把未完成任务包装成科研结论。",
             },
         ]
+        if missing:
+            next_tool_to_call = "research_onboarding_context" if "project" not in missing else None
+        elif available.get("run_root") or available.get("inputs_dir"):
+            next_tool_to_call = "vasp_input_preflight_check"
+        else:
+            next_tool_to_call = "research_vasp_template_resolve"
         stop_conditions = [
             "没有 Step 2 结构文件路径时，不 build。",
             "没有 research 规则证据时，不临时编造一套 INCAR。",
@@ -1032,14 +1058,42 @@ class ToolRegistry:
             "step": 3,
             "task_stage": task_stage,
             "recommended_task_type": recommended_task_type,
-            "principle": "Step 3 是结构上集群的执行闭环导航，不是固定程序；模型必须按 research 模板生成输入并先核对再提交。",
+            "principle": "Step 3 教模型如何判断和调用工具，不是固定程序；模型必须先说明证据、选择工具、读取结果，再决定下一步。",
             "project": project,
             "available_inputs": available,
             "missing_inputs": missing,
             "research_rule_paths": research_paths,
+            "template_preview": {
+                "template_found": template_preview.get("template_found"),
+                "template_id": template_preview.get("template_id"),
+                "expected_incar": template_preview.get("expected_incar", {}),
+                "blocked_method_rules": template_preview.get("blocked_method_rules", []),
+            },
+            "model_operating_contract": [
+                "先用用户目标判断当前是 build、preflight、submit、monitor、fetch、parse 还是 write_back；不要默认从头跑。",
+                "每次只调用能消除当前最大不确定性的工具；已有证据时跳过重复工具。",
+                "工具输出是证据：必须读 status/blockers/warnings/artifacts 后再决定下一步。",
+                "research 模板是约束和核对项，不是替模型选择科研路线；路线选择仍由用户目标、结构证据和项目上下文决定。",
+                "提交是高风险动作：只有用户目标、运行时权限、preflight ready、cluster_probe 成功同时满足才提交。",
+            ],
+            "decision_loop": [
+                {"question": "我现在缺什么证据？", "if_missing": "先读 project/research/structure/run_root 相关工具，不 build/submit。"},
+                {"question": "用户要讨论还是要执行？", "if_discussion": "只给方案和需要的工具，不写文件、不提交。"},
+                {"question": "是否已有 Step 2 结构？", "if_yes": "把它作为 structure_path；不要重新建模。", "if_no": "回到 Step 2 工具而不是伪造 POSCAR。"},
+                {"question": "任务类型对应哪套 research 约束？", "if_known": "用 research_vasp_template_resolve 取 expected_incar。", "if_unknown": "读取 research 并说明需要人工确认的参数。"},
+                {"question": "build/preflight 是否给出 blocker？", "if_blocked": "修正输入或报告阻塞，不提交。", "if_ready": "再考虑 cluster_probe/submit。"},
+            ],
+            "adaptive_branches": [
+                {"situation": "已有 run_root，只想提交", "do": ["vasp_input_preflight_check", "cluster_probe", "cluster_remote_submit if allowed"], "skip": ["dft_run_task build"]},
+                {"situation": "只有 Step 2 POSCAR，想准备上集群", "do": ["research_onboarding_context", "research_vasp_template_resolve", "dft_run_task build", "vasp_input_preflight_check"], "skip": ["cluster_remote_submit until ready"]},
+                {"situation": "用户问参数是否合适", "do": ["research_onboarding_context", "research_vasp_template_resolve"], "skip": ["dft_run_task", "cluster_probe", "cluster_remote_submit"]},
+                {"situation": "preflight blocked", "do": ["解释 blocker", "按 blocker 修 build 参数或要求补文件"], "skip": ["cluster_probe", "cluster_remote_submit"]},
+                {"situation": "任务已经在跑", "do": ["cluster_remote_monitor", "cluster_remote_fetch when complete", "vasp_output_scan"], "skip": ["重新 build"]},
+            ],
+            "next_tool_to_call": next_tool_to_call,
             "tool_groups": tool_groups,
             "quality_gates": [
-                "dft_run_task 先 build，生成 inputs/POSCAR、INCAR、KPOINTS、job.slurm。",
+                "若没有 run_root 且用户目标是生成输入包，模型才调用 dft_run_task build。",
                 "research_vasp_template_resolve 的 expected_incar 必须被 build 结果和 preflight 逐项核对。",
                 "结构同目录已有 INCAR/KPOINTS 时必须视为 research 模板来源，不能无故覆盖。",
                 "POTCAR 缺失时要报告 mapping 和集群端补齐要求。",
@@ -1049,14 +1103,24 @@ class ToolRegistry:
         }
 
     def _research_vasp_template_resolve(self, payload: dict[str, Any]) -> dict[str, Any]:
+        template = resolve_research_vasp_template(
+            str(payload.get("project") or "").strip() or None,
+            str(payload.get("task_type") or "").strip() or None,
+            prompt=str(payload.get("prompt") or ""),
+            material=str(payload.get("material") or "").strip() or None,
+        )
         return {
             "status": "ok",
-            "template": resolve_research_vasp_template(
-                str(payload.get("project") or "").strip() or None,
-                str(payload.get("task_type") or "").strip() or None,
-                prompt=str(payload.get("prompt") or ""),
-                material=str(payload.get("material") or "").strip() or None,
-            ),
+            "template": template,
+            "model_instructions": {
+                "how_to_use": [
+                    "把 incar_overrides 交给 dft_run_task/build 的 spec 层或本地模板层；不要在回答里只口头提参数。",
+                    "把 expected_incar 交给 preflight 核对；blocker 不匹配时不提交。",
+                    "把 blocked_method_rules 当作禁止建议；例如 MCH-Pt-Br Dimer 不要建议 PREC=Accurate 或纯 VASP NEB 主路线。",
+                    "template_found=False 时，不能编造模板；继续读 research 或要求补充模板证据。",
+                ],
+                "not_a_fixed_program": "该工具只教模型 project/task 的计算口径；是否 build/submit/monitor 仍由当前用户目标和已有证据决定。",
+            },
         }
 
     @staticmethod

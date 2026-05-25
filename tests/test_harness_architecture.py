@@ -833,9 +833,15 @@ def test_cluster_execution_intent_plan_teaches_build_preflight_submit_sequence()
     payload = result["result"]
     assert payload["status"] == "ok"
     assert payload["step"] == 3
-    assert "research 模板" in payload["principle"]
+    assert "教模型如何判断和调用工具" in payload["principle"]
     assert payload["recommended_task_type"] == "relax"
     assert "allow_submit=False" in payload["stop_conditions"][-1]
+    assert "model_operating_contract" in payload
+    assert "decision_loop" in payload
+    assert "adaptive_branches" in payload
+    assert any("不要默认从头跑" in item for item in payload["model_operating_contract"])
+    assert any(branch["situation"] == "已有 run_root，只想提交" for branch in payload["adaptive_branches"])
+    assert payload["template_preview"]["template_id"] == "mch_pt_br_local_relax_alignment"
     tool_names = {
         tool
         for group in payload["tool_groups"]
@@ -848,6 +854,7 @@ def test_cluster_execution_intent_plan_teaches_build_preflight_submit_sequence()
     assert "cluster_probe" in tool_names
     assert "cluster_remote_submit" in tool_names
     assert any("DFT任务与自由能校正规则" in item["path"] for item in payload["research_rule_paths"])
+    assert all("model_decision" in group for group in payload["tool_groups"])
 
 
 def test_vasp_input_preflight_checks_inputs_dir_and_research_rules(tmp_path: Path):
@@ -918,6 +925,8 @@ def test_research_vasp_template_resolve_returns_mch_frequency_rules():
     assert template["incar_overrides"]["IBRION"] == 5
     assert template["incar_overrides"]["POTIM"] == 0.015
     assert any(item["exists"] and "DFT任务与自由能校正规则" in item["path"] for item in template["source_paths"])
+    assert "model_instructions" in result["result"]
+    assert "not_a_fixed_program" in result["result"]["model_instructions"]
 
 
 def test_create_task_plan_applies_research_template_to_spec():
