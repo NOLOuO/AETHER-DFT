@@ -13,6 +13,7 @@ from .permissions import get_permission_mode, permission_mode_label, permission_
 from .paths import CONFIG_DIR, PROJECT_ROOT, ensure_runtime_dir
 from .prompt_sections import PromptSectionCompiler
 from .project_state import read_project_context, read_project_context_digest
+from .context_digests import build_cluster_runtime_digest, build_research_workspace_digest, build_relevant_priors_digest
 from .research_workspace import read_research_onboarding_context
 
 PROMPT_ASSETS_DIR = Path(__file__).resolve().parent / "prompt_assets"
@@ -75,7 +76,7 @@ def load_architecture_live_doc_snapshot(*, max_chars: int = 2400) -> dict[str, s
     }
 
 
-def _tool_discovery_digest(*, max_tools: int = 45) -> str:
+def _tool_discovery_digest(*, max_tools: int = 80) -> str:
     """Summarize visible tools without making the prompt a schema dump."""
 
     try:
@@ -104,6 +105,9 @@ def _runtime_data(*, project: str | None = None, session_context: str | None = N
         project_context = (project_context + "\n\n## Research workspace onboarding\n" + research_context).strip()
     tool_digest = _tool_discovery_digest()
     architecture = load_architecture_live_doc_snapshot()
+    cluster_runtime_digest = build_cluster_runtime_digest(project=project)
+    research_workspace_digest = build_research_workspace_digest(project=project) if project else ""
+    relevant_priors_digest = build_relevant_priors_digest(project=project, query=session_context or project or "")
     response_contract = "\n".join(
         [
             "当前回复应服务科研推进，而不是泛泛解释。",
@@ -134,6 +138,12 @@ def _runtime_data(*, project: str | None = None, session_context: str | None = N
         "session_context_digest": _digest(session_context or ""),
         "tool_discovery_digest": tool_digest,
         "tool_discovery_digest_hash": _digest(tool_digest),
+        "cluster_runtime_digest": cluster_runtime_digest,
+        "cluster_runtime_digest_hash": _digest(cluster_runtime_digest),
+        "research_workspace_digest": research_workspace_digest,
+        "research_workspace_digest_hash": _digest(research_workspace_digest),
+        "relevant_priors_digest": relevant_priors_digest,
+        "relevant_priors_digest_hash": _digest(relevant_priors_digest),
         "response_contract": response_contract,
         "response_contract_digest": _digest(response_contract),
     }

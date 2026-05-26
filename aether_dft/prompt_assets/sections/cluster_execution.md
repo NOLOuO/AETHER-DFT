@@ -29,11 +29,11 @@
 
 ### 先读 research 规则，再生成输入
 
-涉及集群 / VASP / INCAR / KPOINTS / 频率 / Dimer / TS 任务时，必须先获取研究规则：
+涉及集群 / VASP / INCAR / KPOINTS / 频率 / Dimer / TS 任务时，通常先获取研究规则；真正 build/submit 前必须有项目规则证据：
 
 - `research_onboarding_context(project=...)`：读取 `research/AGENTS.md`、`research/Common/避坑清单.md`、项目 `研究进展.md`。
 - `research_vasp_template_resolve(project=..., task_type=..., prompt=...)`：把 research 中已经固化的项目口径解析成可执行的 `incar_overrides` / `expected_incar` / `blocked_method_rules`；这是给模型用的约束，不是固定流水线。
-- 对 MCH-Pt-Br 的 VASP 优化 / 频率 / TS 任务，必须遵守 `research/MCH-Pt-Br/common/DFT任务与自由能校正规则.md`。
+- 对 MCH-Pt-Br 的 VASP 优化 / 频率 / TS 任务，提交前要核对并遵守 `research/MCH-Pt-Br/common/DFT任务与自由能校正规则.md`。
 - 如果结构文件同目录已有 `INCAR` / `KPOINTS`，builder 会把它们识别为本地模板；不要无故覆盖 research 已跑通模板。
 
 ### Step 3 工具导航

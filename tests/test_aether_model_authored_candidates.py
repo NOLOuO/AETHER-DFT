@@ -214,8 +214,10 @@ def test_candidate_quality_score_flags_good_and_floating_candidates(tmp_path):
     assert any("过远" in issue or "floating" in issue.lower() for issue in floating["issues"])
 
 
-def test_compose_rejects_empty_or_dup(tmp_path):
-    with pytest.raises(ValueError):
+def test_compose_still_raises_on_truly_structural_errors(tmp_path):
+    """空候选 / candidate_id 重复 / POSCAR 文件丢失这类"结构性错误"仍然 raise，
+    因为它们不是质量问题，是输入畸形。"""
+    with pytest.raises(ValueError, match="candidates"):
         compose_manifest_from_authored_candidates(
             task_id="t",
             material_name="m",
@@ -225,22 +227,38 @@ def test_compose_rejects_empty_or_dup(tmp_path):
             output_dir=str(tmp_path / "empty"),
             candidates=[],
         )
-    fake_poscar = tmp_path / "fake.POSCAR"
-    fake_poscar.write_text("garbage", encoding="utf-8")
-    with pytest.raises(ValueError):
-        compose_manifest_from_authored_candidates(
-            task_id="t",
-            material_name="m",
-            source_prompt="p",
-            slab_source="s",
-            adsorbate_source="H2O",
-            output_dir=str(tmp_path / "shortreason"),
-            candidates=[
-                {
-                    "candidate_id": "x",
-                    "poscar_path": str(fake_poscar),
-                    "site_label": "ontop-01",
-                    "reason": "too short",
-                }
-            ],
-        )
+
+
+def test_compose_short_reason_returns_warning_not_raise(tmp_path):
+    """guided-not-enforced：reason 太短不再 raise，而是写到 quality_warnings。"""
+    slab_path = write_pt111_poscar(tmp_path / "POSCAR")
+    site = enumerate_adsorption_sites(str(slab_path), max_sites_per_family=1)["sites"][0]
+    out_poscar = tmp_path / "c.POSCAR"
+    add_adsorbate(
+        slab_path=str(slab_path),
+        adsorbate="H2O",
+        output_path=str(out_poscar),
+        cart_coords=site["cart_coords"],
+    )
+    result = compose_manifest_from_authored_candidates(
+        task_id="short_reason_test",
+        material_name="Pt(111)",
+        source_prompt="short reason warning test",
+        slab_source=str(slab_path),
+        adsorbate_source="H2O",
+        output_dir=str(tmp_path / "shortreason"),
+        candidates=[
+            {
+                "candidate_id": "x",
+                "poscar_path": str(out_poscar),
+                "site_label": site["site_id"],
+                "reason": "too short",
+            }
+        ],
+    )
+    assert result["status"] == "composed"
+    assert result["has_warnings"] is True
+    codes = {w["code"] for w in result["quality_warnings"]}
+    assert "reason_too_short" in codes
+    # plan 缺失也应该被警告而不是 raise
+    assert "plan_missing" in codes

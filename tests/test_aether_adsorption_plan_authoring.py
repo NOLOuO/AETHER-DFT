@@ -116,7 +116,8 @@ def _write_pt111_poscar(path: Path) -> Path:
     return path
 
 
-def test_compose_rejects_missing_plan_id_via_registry(tmp_path):
+def test_compose_missing_plan_id_returns_warning_via_registry(tmp_path):
+    """guided-not-enforced：缺 plan_id 不再 error；compose 通过 + quality_warnings 包含 plan_missing。"""
     slab_path = _write_pt111_poscar(tmp_path / "POSCAR")
     sites = enumerate_adsorption_sites(str(slab_path))["sites"][:1]
     added = add_adsorbate(
@@ -127,7 +128,7 @@ def test_compose_rejects_missing_plan_id_via_registry(tmp_path):
     )
     assert added["status"] == "ok"
     registry = ToolRegistry()
-    result = registry.run_tool(
+    raw = registry.run_tool(
         "adsorption_candidate_manifest_compose",
         {
             "task_id": "t",
@@ -141,16 +142,23 @@ def test_compose_rejects_missing_plan_id_via_registry(tmp_path):
                     "candidate_id": "c1",
                     "poscar_path": str(tmp_path / "c.POSCAR"),
                     "site_label": sites[0]["site_id"],
-                    "reason": "atop O-down 主测，符合 chemistry hint",
+                    "reason": "atop O-down 主测，符合 chemistry hint 与对称依据",
                 }
             ],
         },
     )
-    assert result["result"]["status"] == "error"
-    assert "plan_id" in result["result"]["message"]
+    result = raw["result"]
+    assert result["status"] == "composed"
+    assert result["has_warnings"] is True
+    codes = {w["code"] for w in result["quality_warnings"]}
+    assert "plan_missing" in codes
+    # 自动 audit 也应跟随
+    assert "audit" in result
+    assert result["audit"]["status"] == "ok"
 
 
-def test_compose_rejects_site_label_not_in_plan(tmp_path):
+def test_compose_site_label_not_in_plan_returns_warning(tmp_path):
+    """guided-not-enforced：site_label 不在 plan 不再 raise；改为 warning。"""
     slab_path = _write_pt111_poscar(tmp_path / "POSCAR")
     sites = enumerate_adsorption_sites(str(slab_path))["sites"][:1]
     added = add_adsorbate(
@@ -161,33 +169,36 @@ def test_compose_rejects_site_label_not_in_plan(tmp_path):
     )
     assert added["status"] == "ok"
     plan = create_candidate_plan(**_good_plan_kwargs())
-    with pytest.raises(ValueError, match="site_label"):
-        compose_manifest_from_authored_candidates(
-            task_id="t",
-            material_name="Pt(111)",
-            source_prompt="p",
-            slab_source=str(slab_path),
-            adsorbate_source="H2O",
-            output_dir=str(tmp_path / "out"),
-            candidates=[
-                {
-                    "candidate_id": "c1",
-                    "poscar_path": str(tmp_path / "c.POSCAR"),
-                    "site_label": "ghost-99",
-                    "reason": "atop O-down 主测，符合 chemistry hint 与对称依据",
-                }
-            ],
-            plan_payload=plan.to_dict(),
-        )
+    result = compose_manifest_from_authored_candidates(
+        task_id="t",
+        material_name="Pt(111)",
+        source_prompt="p",
+        slab_source=str(slab_path),
+        adsorbate_source="H2O",
+        output_dir=str(tmp_path / "out"),
+        candidates=[
+            {
+                "candidate_id": "c1",
+                "poscar_path": str(tmp_path / "c.POSCAR"),
+                "site_label": "ghost-99",
+                "reason": "atop O-down 主测，符合 chemistry hint 与对称依据",
+            }
+        ],
+        plan_payload=plan.to_dict(),
+    )
+    assert result["status"] == "composed"
+    assert result["has_warnings"] is True
+    codes = {w["code"] for w in result["quality_warnings"]}
+    assert "site_label_not_in_plan" in codes
 
 
-def test_compose_requires_prune_rationale_above_threshold(tmp_path):
+def test_compose_too_many_candidates_returns_warning(tmp_path):
+    """guided-not-enforced：候选数超阈值无 prune_rationale 不再 raise；改为 warning。"""
     slab_path = _write_pt111_poscar(tmp_path / "POSCAR")
     sites = enumerate_adsorption_sites(str(slab_path), max_sites_per_family=4)["sites"]
     assert len(sites) >= 7, "Pt(111) 需要足够多位点触发阈值"
     used = sites[:7]
 
-    # 构 plan 让 7 个 site 都合法
     plan_kwargs = _good_plan_kwargs()
     plan_kwargs["target_sites"] = [
         {"site_id": site["site_id"], "reason": f"plan 覆盖 {site['site_family']} 测试"}
@@ -210,20 +221,23 @@ def test_compose_requires_prune_rationale_above_threshold(tmp_path):
                 "candidate_id": f"c_{index:02d}",
                 "poscar_path": str(poscar),
                 "site_label": site["site_id"],
-                "reason": "broad 覆盖测试，验证 prune_rationale 约束生效",
+                "reason": "broad 覆盖测试，超阈值 + 无 prune_rationale 应该出 warning",
             }
         )
-    with pytest.raises(ValueError, match="prune_rationale"):
-        compose_manifest_from_authored_candidates(
-            task_id="broad",
-            material_name="Pt(111)",
-            source_prompt="broad coverage test",
-            slab_source=str(slab_path),
-            adsorbate_source="H2O",
-            output_dir=str(tmp_path / "broad"),
-            candidates=entries,
-            plan_payload=plan.to_dict(),
-        )
+    result = compose_manifest_from_authored_candidates(
+        task_id="broad",
+        material_name="Pt(111)",
+        source_prompt="broad coverage test",
+        slab_source=str(slab_path),
+        adsorbate_source="H2O",
+        output_dir=str(tmp_path / "broad"),
+        candidates=entries,
+        plan_payload=plan.to_dict(),
+    )
+    assert result["status"] == "composed"
+    assert result["has_warnings"] is True
+    codes = {w["code"] for w in result["quality_warnings"]}
+    assert "prune_rationale_missing" in codes
 
 
 def test_compose_succeeds_with_prune_rationale(tmp_path):
@@ -271,8 +285,57 @@ def test_compose_succeeds_with_prune_rationale(tmp_path):
 
 def test_prompt_includes_adsorption_authoring_section():
     rendered = render_compiled_system_prompt()
-    assert "吸附候选生成的科学推理心理模型" in rendered
+    assert "一个有经验的同组合作者通常这样想" in rendered
     assert "adsorption_candidate_plan" in rendered
-    assert "Step 2：结构建模工具调用策略" in rendered
-    assert "证据门槛，而不是死流程" in rendered
-    assert "不是固定程序" in rendered
+    assert "manifest_audit" in rendered
+    # 不再期望存在硬性"红线"/"必须"段落
+    assert "### 红线" not in rendered
+
+
+def test_manifest_audit_returns_scored_findings(tmp_path):
+    """新增 manifest_audit 工具：读已存盘 manifest 给行为画像评分。"""
+    slab_path = _write_pt111_poscar(tmp_path / "POSCAR")
+    sites = enumerate_adsorption_sites(str(slab_path))["sites"][:2]
+    plan_kwargs = _good_plan_kwargs()
+    plan_kwargs["target_sites"] = [
+        {"site_id": site["site_id"], "reason": f"{site['site_family']} 位点科学依据"}
+        for site in sites
+    ]
+    plan = create_candidate_plan(**plan_kwargs)
+    entries = []
+    for index, site in enumerate(sites, start=1):
+        poscar = tmp_path / f"c_{index}.POSCAR"
+        add_adsorbate(
+            slab_path=str(slab_path),
+            adsorbate="H2O",
+            output_path=str(poscar),
+            cart_coords=site["cart_coords"],
+        )
+        entries.append(
+            {
+                "candidate_id": f"c_{index}",
+                "poscar_path": str(poscar),
+                "site_label": site["site_id"],
+                "reason": "atop O-down 主测，基于 curated chemistry hint + 对称等价合并",
+            }
+        )
+    result = compose_manifest_from_authored_candidates(
+        task_id="audit_test",
+        material_name="Pt(111)",
+        source_prompt="audit",
+        slab_source=str(slab_path),
+        adsorbate_source="H2O",
+        output_dir=str(tmp_path / "audit_out"),
+        candidates=entries,
+        plan_payload=plan.to_dict(),
+    )
+    registry = ToolRegistry()
+    raw = registry.run_tool("manifest_audit", {"manifest_path": result["manifest_json"]})
+    audit = raw["result"]
+    assert audit["status"] == "ok"
+    assert 0.0 <= audit["total_score"] <= 1.0
+    assert set(audit["score_breakdown"].keys()) == {
+        "plan_link", "reason_quality", "site_alignment", "prior_consultation", "candidate_size",
+    }
+    assert isinstance(audit["findings"], list)
+    assert isinstance(audit["suggestions"], list)

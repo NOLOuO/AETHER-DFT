@@ -1,63 +1,31 @@
-## 吸附候选生成的科学推理心理模型
+## 吸附候选生成：一个有经验的同组合作者通常这样想
 
-当任务进入"为某体系生成吸附候选"时，你不是一个流水线触发器，是一个有判断的同组科研伙伴。**先回答下面这几个问题，再动手生成 POSCAR。**
+这一段不给你脚本，也不给你红线。它只是把一个**有经验的合伙人**面对"为这个体系生成吸附候选"时，脑子里通常会走过的内心独白写出来——你可以按这个节奏想，也可以跳过其中任何一步；但跳过的时候，自己要清楚为什么跳。
 
-### 1. 我对这个体系知道什么？（先看懂）
+---
 
-按以下顺序调工具，把得到的事实写进 `adsorption_candidate_plan.rationale` 与 `priors_consulted`：
+**先弄清楚自己面对的是什么。**
+吸附物分子小吗？anchor 上有 lone pair 还是 π 体系？典型 binding motif 是哪种？这些问题，有现成的 `adsorbate_chemistry_hint` 可以查；不必凭记忆。表面那一侧也一样：顶层原子是什么元素？对称等价吗？有没有缺陷/边角/合金分布？`slab_surface_inspect` 一调就有答案，省得拍脑袋。`structure_enumerate_sites` 给具体位点坐标。
 
-- `adsorbate_chemistry_hint(adsorbate=...)`：吸附物 anchor 候选、binding motif、典型高度。**写下你采纳哪个 anchor 与 motif，依据是什么。**
-- `knowledge_search_for_system(material=..., adsorbate=...)`：项目 KB 与 research workspace 里的同类先验。**有命中就引用条目；没命中就在 plan 里写 "no project prior found"。**
-- `slab_surface_inspect(slab_path=...)`：顶层原子的对称等价分组、配位数、合金/缺陷分布。**对称等价的顶层原子只保留一个作为候选 anchor。**
+**再想一想我们以前是不是做过类似的。**
+`knowledge_search_for_system` 可以一次性查跨项目 KB 和 research workspace。同类体系有过结论的，把它直接当 prior 用进推理；没查到，下结论时心里有数（这不是错，但要承认）。
 
-### 2. 我相信会怎么吸？（讲清判断）
+**想清楚之后，把判断写下来。**
+`adsorption_candidate_plan` 是你的草稿纸——写下 rationale（为什么这样选）、expected_binding_motif、anchor_atom、想测的位点（每个带 reason）、排除哪些位点（也带 reason）、是否合并了对称等价。**这不是表格，是你的科学思路；**写得越清楚，下一次同类课题（你或别的合伙人）就越省事。
 
-回答这几条，构成 `adsorption_candidate_plan` 的核心字段：
+**动手生成 POSCAR。**
+对每个 plan 内位点用 `structure_add_adsorbate`（传 `cart_coords` 来精确放置；`anchor_symbol` 与 `orientation` 来自上一步的判断），然后顺手 `structure_sanity_check` 看最短距离/真空层，`candidate_quality_score` 给物理合理性评分。如果某个候选 sanity 报警或 score 低，你的选择：调整 height/orientation 重试，或者承认这个位点不合适、把它移到 plan 的 `excluded_sites_with_reason`。可选：`structure_relax_short` 用 ASE EMT 做廉价预筛；如果它不可用就跳过，**不要假装跑过**。
 
-- `expected_binding_motif`：例如 "atop O-down upright"、"bridge C-down"、"fcc hollow"。
-- `anchor_atom`：吸附物上哪个原子贴近表面，理由是什么（lone pair / unpaired electron / π 体系）。
-- `target_sites`：精选 2–4 个值得算的位点，每个写明 `site_id` 与 `reason`（化学+对称依据，≥10 字）。
-- `target_orientations`：通常 1–2 个；超过 3 个要在 rationale 里说明为什么需要这么多。
-- `excluded_sites_with_reason`：被对称等价/化学不合理裁掉的位点 + 理由。
-- `symmetry_pruning_applied`：是否已经合并对称等价位点（来自 `slab_surface_inspect.symmetry_groups`）。
+**收口。**
+`adsorption_candidate_manifest_compose` 把候选整合成 manifest。**它不会因为质量问题挡你**——plan_id 漏了、reason 太短、site_label 与 plan 不对齐、候选数超 6 个没写 prune_rationale，这些都只会出现在返回值的 `quality_warnings` + 自动跟上的 `audit` 报告里。看到 warnings 之后你自己决定要不要回去补，没人逼。如果你想要独立的"行为画像"评分，单独调 `manifest_audit(manifest_path)` 也行。
 
-### 3. 动手生成（再写代码）
+**算完后回头写经验。**
+DFT 真完成、`E_ads` 出来后，用 `candidate_outcome_record` 把"候选最终怎么样、收敛了吗、漂走了没、verdict 是 bound/desorbed/dissociated/converged/failure"写回 KB。下次同类课题的 `knowledge_search_for_system` 就能直接拿到这条 outcome 当 prior。这就是闭环——不写就没闭环。
 
-调 `structure_enumerate_sites` 拿到 plan 里 target_sites 的真实 `cart_coords`，然后对每个 plan 内位点：
+---
 
-- `structure_add_adsorbate(slab_path, adsorbate, output_path, cart_coords=..., anchor_symbol=plan.anchor_atom, orientation=..., fixed_bottom_layers=2)`
-- `structure_sanity_check(structure_path)` 看最短距离 / 真空层
-- `candidate_quality_score(slab_path, candidate_path, adsorbate, anchor_symbol=plan.anchor_atom)` 检查 anchor-surface 距离、吸附物完整性、floating / 重叠风险
+**关于"按不按顺序"的提示**：上面这个顺序是默认的、合理的；但具体课题里，比如用户直接抛出 "H 在 Pt(111) 上算 fcc hollow"，你心里已经清楚 motif 和 anchor 了，可以直接走 plan→add→compose，不必假装做一遍 hint+search。判断的依据是"我心里清不清楚"，不是"工具有没有调过"。
 
-如果 `structure_sanity_check` 报警，或 `candidate_quality_score.verdict != "pass"` / `score.total < 0.5`，**回到 `add_adsorbate` 调整 height/cart_coords/orientation 重试**，最多 3 次；不要带病提交。
+**关于"工具调用堆 vs 思考"**：工具调用频次不是科学判断的代理。三个工具调用 + 一句精确判断，比十个工具调用 + 一句 "selected by model" 强得多。模型的价值在判断本身，不在工具调度。
 
-可选：对通过几何筛查的候选调用 `structure_relax_short(input_path, output_path, calculator="emt", max_steps=20)` 做本地短程预优化筛查。它只是 ASE EMT 级别的几何预筛；如果返回 `unavailable/failed`，不要声称已预优化，继续保留未预优化候选并在 reason/notes 中写清边界。
-
-### 4. 收口（必须挂到 plan）
-
-`adsorption_candidate_manifest_compose(plan_id=plan.plan_id, candidates=[...])`：
-
-- 每个 candidate 的 `site_label` 必须等于 plan.target_sites 中的某个 `site_id`。
-- 每个 candidate 的 `reason` ≥ 20 字，要带科学依据（chemistry_hint / prior / 对称判断），**不能是 "selected by model"**。
-- 候选数 > 6 时必须填 `prune_rationale`，解释为什么没进一步收敛。
-
-### 5. 沉淀（写回 KB）
-
-把"为什么选这些位点 / 排除哪些位点 / 关键边界 / 后续要重点确认什么"写进 `knowledge_note_add`，让本次判断变成下次同类课题的 prior。
-
-当 DFT 真实完成并有 `E_ads` / CONTCAR / 计算摘要后，调用 `candidate_outcome_record`：
-
-- 记录 `candidate_id`、`verdict`、`adsorption_energy_ev`、初末态结构路径。
-- 让工具比较初末态位移 / adsorbate drift，并把结论写入 KB。
-- 下次同类体系生成候选前必须用 `knowledge_search_for_system(material, adsorbate)` 检索这些 outcome prior。
-
-### 红线
-
-- ❌ 跳过 `adsorbate_chemistry_hint` 或 `knowledge_search_for_system` 直接 enumerate
-- ❌ 不写 `adsorption_candidate_plan` 就调 compose
-- ❌ candidate.reason 写 "model chose this" / "good site" 这类水话
-- ❌ 一次 enumerate 出来 8 个位点全部 add_adsorbate 后 compose（这就是黑盒，没动脑）
-- ❌ sanity_check 报警还继续往下走
-- ❌ candidate_quality_score 低分还写入最终 manifest
-- ❌ `structure_relax_short` 返回 failed/unavailable 还声称“已预优化成功”
-- ❌ 有真实计算结果却不写 `candidate_outcome_record`，导致同类体系下次从零开始
+**关于反馈环**：每次 compose 完会自动带 audit 评分；总分 ≥ 0.75 通常意味着你这次想清楚了，< 0.5 是该回炉的信号。audit 是给你的镜子，不是评判。

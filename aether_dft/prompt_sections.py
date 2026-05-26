@@ -39,18 +39,24 @@ class PromptSectionCompiler:
     DEFAULT_STATIC_ORDER = (
         "base_role",
         "research_partner",
+        "general_agent_voice",
         "computational_chemistry_workflow",
         "research_execution_loop",
         "evidence_contract",
         "tool_policy",
         "structure_modeling",
         "cluster_execution",
+        "cluster_realtime_disposition",
+        "research_workspace_habit",
         "adsorption_authoring",
     )
     DEFAULT_RUNTIME_ORDER = (
         "runtime_context",
         "architecture_live_doc",
         "project_context",
+        "cluster_runtime_digest",
+        "research_workspace_digest",
+        "relevant_priors_digest",
         "session_context",
         "tool_discovery",
         "response_contract",
@@ -75,7 +81,7 @@ class PromptSectionCompiler:
             return {
                 "kind": "static",
                 "cache_scope": "stable_prefix",
-                "layer_class": "policy" if name in {"evidence_contract", "tool_policy", "structure_modeling", "cluster_execution", "adsorption_authoring"} else "role",
+                "layer_class": "policy" if name in {"evidence_contract", "tool_policy", "structure_modeling", "cluster_execution", "cluster_realtime_disposition", "research_workspace_habit", "adsorption_authoring"} else "role",
                 "invalidation_rule": ("section_file",),
             }
         if name == "runtime_context":
@@ -105,6 +111,27 @@ class PromptSectionCompiler:
                 "cache_scope": "volatile_suffix",
                 "layer_class": "session",
                 "invalidation_rule": ("session_context_digest",),
+            }
+        if name == "cluster_runtime_digest":
+            return {
+                "kind": "dynamic",
+                "cache_scope": "volatile_suffix",
+                "layer_class": "cluster_runtime",
+                "invalidation_rule": ("cluster_runtime_digest_hash",),
+            }
+        if name == "research_workspace_digest":
+            return {
+                "kind": "dynamic",
+                "cache_scope": "volatile_suffix",
+                "layer_class": "research_workspace",
+                "invalidation_rule": ("research_workspace_digest_hash",),
+            }
+        if name == "relevant_priors_digest":
+            return {
+                "kind": "dynamic",
+                "cache_scope": "volatile_suffix",
+                "layer_class": "knowledge_priors",
+                "invalidation_rule": ("relevant_priors_digest_hash",),
             }
         if name == "tool_discovery":
             return {

@@ -10,7 +10,7 @@
 
 ## 吸附候选生成的证据门槛
 
-吸附候选的生成默认走"模型自主驱动"路径，而不是 `adsorption_candidates` 黑盒。**生成候选前必须先看懂体系**，但这不是僵硬的程序清单；你要根据任务目标决定最小必要工具，并能解释为什么调用。
+吸附候选的生成默认走"模型自主驱动"路径，而不是 `adsorption_candidates` 黑盒。生成候选前通常要先看懂体系；这不是僵硬的程序清单，你要根据任务目标决定最小必要工具，并能解释为什么调用。
 
 **证据 A — 吸附物怎么可能结合**
 
@@ -22,14 +22,14 @@
 
 **证据 C — 当前 slab 的表面环境**
 
-- `slab_surface_inspect(slab_path=...)`：拿到顶层原子的对称等价分组、配位数、合金/缺陷分布。**对称等价的位点只展开一个**。
+- `slab_surface_inspect(slab_path=...)`：拿到顶层原子的对称等价分组、配位数、合金/缺陷分布。通常对称等价位点只展开一个；若故意保留多个，要说明原因。
 
 **生成与检查**
 
 - `structure_enumerate_sites` 拿到位点坐标。
 - 用 A/B/C 的结论判断哪些位点 × 取向 × anchor 值得算，写明理由，**不要无脑全枚举**。
 - 对每个候选 `structure_add_adsorbate`（传 `cart_coords` + `anchor_symbol`；默认 `fixed_bottom_layers=2`），紧接着 `structure_sanity_check` 和 `candidate_quality_score` 检查几何质量。
-- `adsorption_candidate_manifest_compose` 收编成 manifest，每个 candidate 的 `reason` 必须带科学依据（来自 hint / prior / 对称判断），不能是 "selected by model"。
+- `adsorption_candidate_manifest_compose` 收编成 manifest；每个 candidate 的 `reason` 建议带科学依据（来自 hint / prior / 对称判断），不要只写 "selected by model"。
 - 把"为什么选这些位点 / 排除哪些位点 / 关键边界"写进 `knowledge_note_add`，让判断成为下次同类课题的 prior。
 
 只有以下情况才退回 `adsorption_candidates` 黑盒兜底：

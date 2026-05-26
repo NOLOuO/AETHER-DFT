@@ -13,6 +13,9 @@ from aether_dft.permissions import get_permission_mode, permission_mode_label, s
 from .session import HarnessSessionStore
 from .tool_registry import ToolRegistry
 
+DISCUSSION_MAX_STEPS = 4
+EXECUTION_MAX_STEPS = 15
+
 
 def _runtime_log_path() -> Path:
     from aether_dft.paths import ensure_runtime_dir
@@ -123,6 +126,35 @@ def require_permission(action: str, *, destructive: bool = False) -> dict[str, A
     return payload
 
 
+def infer_turn_mode(prompt: str) -> str:
+    text = str(prompt or "").lower()
+    execution_markers = [
+        "提交",
+        "集群",
+        "slurm",
+        "sbatch",
+        "生成输入",
+        "incar",
+        "poscar",
+        "建模",
+        "构建",
+        "建一个",
+        "生成结构",
+        "build",
+        "run",
+        "跑计算",
+        "计算文件",
+        "计算包",
+        "开始计算",
+        "同步",
+        "sync",
+        "fetch",
+        "monitor",
+        "vasp",
+    ]
+    return "execution" if any(marker in text for marker in execution_markers) else "discussion"
+
+
 class AgentHarness:
     def __init__(
         self,
@@ -145,11 +177,14 @@ class AgentHarness:
         project: str | None = None,
         session_id: str | None = None,
         max_tokens: int | None = None,
-        max_steps: int = 6,
+        max_steps: int | None = None,
         progress_callback: Any | None = None,
         permission_prompt_callback: Any | None = None,
     ) -> dict[str, Any]:
         session_store = self.sessions.store if hasattr(self.sessions, "store") else self.sessions
+        interaction_mode = infer_turn_mode(prompt)
+        if max_steps is None:
+            max_steps = EXECUTION_MAX_STEPS if interaction_mode == "execution" else DISCUSSION_MAX_STEPS
         session_id = session_store.ensure_session(session_id=session_id, project=project, first_prompt=prompt)
         session_context = ""
         if session_id and hasattr(session_store, "build_session_context"):
@@ -278,6 +313,8 @@ class AgentHarness:
             "prompt": prompt,
             "response": response,
             "finish_reason": finish_reason,
+            "interaction_mode": interaction_mode,
+            "max_steps_used": max_steps,
             "tool_executions": tool_executions,
             "session_id": session_id,
             "model_id": getattr(getattr(self.adapter, "runtime", None), "model_id", ""),

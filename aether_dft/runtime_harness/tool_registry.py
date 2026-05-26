@@ -27,7 +27,10 @@ from dft_shared.structure_analyzer.operations import (
     structure_relax_short,
 )
 from dft_shared.chemistry_hints import get_adsorbate_chemistry_hint
-from dft_app.modeling.candidate_manifest import compose_manifest_from_authored_candidates
+from dft_app.modeling.candidate_manifest import (
+    audit_manifest,
+    compose_manifest_from_authored_candidates,
+)
 from dft_shared.workflow_config import load_workflow_config
 
 from aether_dft.adsorption import (
@@ -48,11 +51,26 @@ from aether_dft.adsorption_authoring import (
 from aether_dft.candidate_outcomes import record_candidate_outcome
 from aether_dft.convergence import compose_convergence_plan
 from aether_dft.evaluation import list_adsorption_eval_cases, render_model_comparison_report, score_adsorption_plan_against_eval
+from aether_dft.general_agent_tools import (
+    chemistry_compute,
+    discussion_state_snapshot,
+    image_understand,
+    literature_search,
+    web_search,
+)
 from aether_dft.knowledge import add_note, list_notes, search_for_system, search_notes, show_note
 from aether_dft.paths import PROJECT_ROOT
 from aether_dft.recommendations import recommend_next_tasks
+from aether_dft.research_sync import (
+    research_learning_capture,
+    research_workspace_diff,
+    research_workspace_pull_logs,
+    research_workspace_sync_from_cluster,
+    research_workspace_sync_to_cluster,
+)
 from aether_dft.research_vasp_templates import resolve_research_vasp_template
 from aether_dft.research_workspace import append_research_progress, build_research_proposal, read_research_onboarding_context
+from aether_dft.result_insight import interpret_result, propose_next_experiments
 from aether_dft.task_bridge import create_task_plan, run_dft_task
 
 
@@ -111,6 +129,11 @@ class ToolRegistry:
         self._register(ToolSpec("research_onboarding_context", "读取 research 入职上下文：AGENTS、避坑清单、项目研究进展。", {"project": {"type": "string"}, "max_chars": {"type": "integer"}}, True), self._research_onboarding_context)
         self._register(ToolSpec("research_proposal_plan", "把自然语言课题讨论整理成科学问题、结构需求、证据需求和下一步。", {"prompt": {"type": "string"}, "project": {"type": "string"}}, True, ("prompt",)), self._research_proposal_plan)
         self._register(ToolSpec("research_progress_append", "按研究工作区格式倒序追加 research/<项目>/研究进展.md。", {"project": {"type": "string"}, "completed": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}}, False, ("project",)), self._research_progress_append)
+        self._register(ToolSpec("web_search", "通用网页检索入口。若本地未接 live connector，会返回 query_urls 与 connector_required，不会伪造结果。", {"query": {"type": "string"}, "max_results": {"type": "integer"}, "live": {"type": "boolean"}}, True, ("query",)), self._web_search)
+        self._register(ToolSpec("literature_search", "文献检索入口：默认给出 arXiv/Semantic Scholar/Scholar 查询 envelope；live=true 时尝试 arXiv Atom fallback。", {"query": {"type": "string"}, "max_results": {"type": "integer"}, "source": {"type": "string"}, "live": {"type": "boolean"}}, True, ("query",)), self._literature_search)
+        self._register(ToolSpec("chemistry_compute", "讨论阶段小计算器：单位换算、Boltzmann population、TST/Eyring 速率、Delta G。", {"operation": {"type": "string"}, "value": {"type": "number"}, "energies_ev": {"type": "array", "items": {"type": "number"}}, "temperature_k": {"type": "number"}, "barrier_ev": {"type": "number"}, "delta_h_ev": {"type": "number"}, "delta_s_ev_k": {"type": "number"}}, True, ("operation",)), self._chemistry_compute)
+        self._register(ToolSpec("image_understand", "图像理解入口。当前本地只做文件存在/格式检查；真正视觉结论需要外层 vision connector。", {"image_path": {"type": "string"}, "prompt": {"type": "string"}}, True, ("image_path",)), self._image_understand)
+        self._register(ToolSpec("discussion_state_snapshot", "把当前讨论目标、已知事实、开放问题、下一步压缩成结构化快照；可选持久化。", {"project": {"type": "string"}, "goal": {"type": "string"}, "known_facts": {"type": "array", "items": {"type": "string"}}, "open_questions": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}, "persist_path": {"type": "string"}}, False), self._discussion_state_snapshot)
         self._register(ToolSpec("project_state_read", "读取项目 state 与 progress。", {"project": {"type": "string"}, "max_chars": {"type": "integer"}}, True, ("project",)), self._project_state_read)
         self._register(ToolSpec("project_progress_append", "追加研究进展。", {"project": {"type": "string"}, "completed": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}}, False, ("project",)), self._project_progress_append)
         self._register(ToolSpec("knowledge_note_add", "把重要结论/参数经验写入项目知识库。", {"project": {"type": "string"}, "title": {"type": "string"}, "content": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, False, ("project", "title", "content")), self._knowledge_note_add)
@@ -140,9 +163,10 @@ class ToolRegistry:
         self._register(ToolSpec("adsorption_plan", "吸附任务规划。", {"prompt": {"type": "string"}, "project": {"type": "string"}, "adsorbate": {"type": "string"}, "material": {"type": "string"}, "slab_path": {"type": "string"}, "preferred_site": {"type": "string"}, "preferred_orientation": {"type": "string"}, "persist": {"type": "boolean"}}, True, ("prompt",)), self._adsorption_plan)
         self._register(ToolSpec("adsorption_build_slab", "构建 slab（structure_build_slab 的兼容别名）。", {"material": {"type": "string"}, "output_dir": {"type": "string"}, "miller_index": {"type": "array", "items": {"type": "integer"}, "minItems": 3, "maxItems": 3}, "supercell": {"type": "array", "items": {"type": "integer"}, "minItems": 3, "maxItems": 3}, "structure_path": {"type": "string"}, "mp_id": {"type": "string"}, "source": {"type": "string"}, "min_slab_size": {"type": "number"}, "min_vacuum_size": {"type": "number"}, "fixed_bottom_layers": {"type": "integer"}}, False, ("material", "output_dir")), self._adsorption_build_slab)
         self._register(ToolSpec("adsorption_candidates", "批量自动枚举所有 site×orientation 的兜底生成器，不做领域判断；优先用 structure_enumerate_sites + structure_add_adsorbate + adsorption_candidate_manifest_compose 走模型自主路径，仅在 slab/吸附物特别陌生或想要快速 baseline 时回退到本工具。", {"slab_path": {"type": "string"}, "adsorbate": {"type": "string"}, "material": {"type": "string"}, "prompt": {"type": "string"}, "project": {"type": "string"}, "output_dir": {"type": "string"}, "task_id": {"type": "string"}, "candidate_height": {"type": "number"}, "max_sites_per_family": {"type": "integer"}, "preferred_site": {"type": "string"}, "preferred_orientation": {"type": "string"}, "vacancy_species": {"type": "string"}}, False, ("slab_path", "adsorbate", "material")), self._adsorption_candidates)
-        self._register(ToolSpec("adsorption_candidate_plan", "创建结构化推理 plan：rationale / expected_binding_motif / anchor_atom / target_sites(含 reason) / target_orientations / 排除位点。compose_manifest 之前必须先调它。", {"material": {"type": "string"}, "adsorbate": {"type": "string"}, "rationale": {"type": "string"}, "expected_binding_motif": {"type": "string"}, "anchor_atom": {"type": "string"}, "target_sites": {"type": "array", "items": {"type": "object"}}, "target_orientations": {"type": "array", "items": {"type": "string"}}, "excluded_sites_with_reason": {"type": "array", "items": {"type": "object"}}, "symmetry_pruning_applied": {"type": "boolean"}, "priors_consulted": {"type": "object"}, "project": {"type": "string"}, "task_id": {"type": "string"}, "notes": {"type": "string"}}, False, ("material", "adsorbate", "rationale", "expected_binding_motif", "anchor_atom", "target_sites", "target_orientations")), self._adsorption_candidate_plan)
+        self._register(ToolSpec("adsorption_candidate_plan", "创建结构化推理 plan：rationale / expected_binding_motif / anchor_atom / target_sites(含 reason) / target_orientations / 排除位点。compose_manifest 之前建议先调它；跳过也只会进入 soft audit。", {"material": {"type": "string"}, "adsorbate": {"type": "string"}, "rationale": {"type": "string"}, "expected_binding_motif": {"type": "string"}, "anchor_atom": {"type": "string"}, "target_sites": {"type": "array", "items": {"type": "object"}}, "target_orientations": {"type": "array", "items": {"type": "string"}}, "excluded_sites_with_reason": {"type": "array", "items": {"type": "object"}}, "symmetry_pruning_applied": {"type": "boolean"}, "priors_consulted": {"type": "object"}, "project": {"type": "string"}, "task_id": {"type": "string"}, "notes": {"type": "string"}}, False, ("material", "adsorbate", "rationale", "expected_binding_motif", "anchor_atom", "target_sites", "target_orientations")), self._adsorption_candidate_plan)
         self._register(ToolSpec("adsorption_candidate_plan_list", "列出某项目（或 runtime）下已创建的 adsorption candidate plans。", {"project": {"type": "string"}}, True), self._adsorption_candidate_plan_list)
-        self._register(ToolSpec("adsorption_candidate_manifest_compose", "把模型自己生成的 POSCAR 收编成 manifest.json；必须传 plan_id（由 adsorption_candidate_plan 产生），每个 candidate 的 reason ≥ 20 字，site_label 需与 plan.target_sites 对齐。", {"task_id": {"type": "string"}, "material_name": {"type": "string"}, "source_prompt": {"type": "string"}, "slab_source": {"type": "string"}, "adsorbate_source": {"type": "string"}, "output_dir": {"type": "string"}, "candidates": {"type": "array", "items": {"type": "object"}}, "metadata": {"type": "object"}, "plan_id": {"type": "string"}, "project": {"type": "string"}, "prune_rationale": {"type": "string"}}, False, ("task_id", "material_name", "source_prompt", "slab_source", "adsorbate_source", "output_dir", "candidates", "plan_id")), self._adsorption_candidate_manifest_compose)
+        self._register(ToolSpec("adsorption_candidate_manifest_compose", "把模型生成的 POSCAR 收编成 manifest.json。本工具不会拦截：plan_id / reason 长度 / site_label 对齐 / 候选数阈值 等质量问题会通过返回值的 quality_warnings 反馈给你，由你决定是否回炉。", {"task_id": {"type": "string"}, "material_name": {"type": "string"}, "source_prompt": {"type": "string"}, "slab_source": {"type": "string"}, "adsorbate_source": {"type": "string"}, "output_dir": {"type": "string"}, "candidates": {"type": "array", "items": {"type": "object"}}, "metadata": {"type": "object"}, "plan_id": {"type": "string"}, "project": {"type": "string"}, "prune_rationale": {"type": "string"}}, False, ("task_id", "material_name", "source_prompt", "slab_source", "adsorbate_source", "output_dir", "candidates")), self._adsorption_candidate_manifest_compose)
+        self._register(ToolSpec("manifest_audit", "读已存盘 candidate_manifest.json 给行为画像：plan 链接 / reason 质量 / site 对齐 / prior 引用 / 候选规模 五维评分 + suggestions。不挡路，纯反馈。", {"manifest_path": {"type": "string"}}, True, ("manifest_path",)), self._manifest_audit)
         self._register(ToolSpec("candidate_outcome_record", "把已完成候选的 DFT 结果复盘写回 KB：E_ads、verdict、初末态位移/漂移、可复用经验。只记录证据，不假装执行。", {"project": {"type": "string"}, "material": {"type": "string"}, "adsorbate": {"type": "string"}, "candidate_id": {"type": "string"}, "verdict": {"type": "string"}, "adsorption_energy_ev": {"type": "number"}, "initial_path": {"type": "string"}, "final_path": {"type": "string"}, "manifest_path": {"type": "string"}, "calculation_summary": {"type": "string"}, "notes": {"type": "string"}}, False, ("project", "material", "adsorbate", "candidate_id", "verdict")), self._candidate_outcome_record)
         self._register(ToolSpec("adsorption_full_workflow", "生成吸附全流程工作区。", {"material": {"type": "string"}, "adsorbate": {"type": "string"}, "output_dir": {"type": "string"}}, False, ("material", "adsorbate", "output_dir")), self._adsorption_full_workflow)
         self._register(ToolSpec("transition_state_plan", "TS 任务规划。", {"prompt": {"type": "string"}, "material": {"type": "string"}}, True), self._transition_state_plan)
@@ -168,13 +192,26 @@ class ToolRegistry:
         self._register(ToolSpec("dft_task_plan", "创建 DFT task plan。", {"prompt": {"type": "string"}, "project": {"type": "string"}, "material": {"type": "string"}, "structure_path": {"type": "string"}, "task_type": {"type": "string"}}, False, ("prompt",)), self._dft_task_plan)
         self._register(ToolSpec("cluster_probe", "探测 SSH/SLURM 集群。", {}, True), self._cluster_probe)
         self._register(ToolSpec("cluster_config", "读取集群配置。", {}, True), self._cluster_config)
+        self._register(ToolSpec("cluster_job_status_brief", "用户问'看看怎么样了'时秒回的轻量查询：单 job 的 squeue/sacct 状态 + elapsed + 节点。< 2 秒。", {"job_id": {"type": "string"}}, True, ("job_id",)), self._cluster_job_status_brief)
+        self._register(ToolSpec("cluster_my_jobs", "squeue --me 简化版：列当前所有 running/pending job。< 2 秒。", {"limit": {"type": "integer"}}, True), self._cluster_my_jobs)
+        self._register(ToolSpec("cluster_job_tail_log", "tail -n <lines> 集群上某 job 的日志（默认 vasp.out，找不到自动回落 logs/*、slurm.out、OSZICAR）。job_id 可用本地 run 记录反查 remote_run_root；也可直接传 remote_run_root。< 2 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "log_name": {"type": "string"}, "lines": {"type": "integer"}, "project_root": {"type": "string"}}, True), self._cluster_job_tail_log)
+        self._register(ToolSpec("cluster_job_partial_outcar", "解析当前 OUTCAR 末段：能量 / 力 / ionic step / SCF 是否收敛。job_id 反查或直接 remote_run_root。< 3 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "project_root": {"type": "string"}}, True), self._cluster_job_partial_outcar)
+        self._register(ToolSpec("cluster_job_progress_estimate", "用 OSZICAR ionic step 轨迹判断能量趋势：是否单调下降 / 震荡 / 给收敛分数。< 5 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "project_root": {"type": "string"}}, True), self._cluster_job_progress_estimate)
         self._register(ToolSpec("cluster_research_status", "只读比较本地 research/ 与集群 ~/research：文件数量、缺失、差异、远端独有文件。", {"remote_research_dir": {"type": "string"}}, True), self._cluster_research_status)
         self._register(ToolSpec("cluster_research_sync", "把本地 research/ 同步到集群 ~/research。默认 dry_run；只有 apply=true 才上传/覆盖，远端冲突会先备份，不删除远端独有文件。", {"remote_research_dir": {"type": "string"}, "apply": {"type": "boolean"}}, False), self._cluster_research_sync)
+        self._register(ToolSpec("research_workspace_diff", "按项目比较本地 research/<project>/ 与集群 ~/research/<project>/ 差异；project 为空则比较整个 research。", {"project": {"type": "string"}, "remote_research_dir": {"type": "string"}}, True), self._research_workspace_diff)
+        self._register(ToolSpec("research_workspace_sync_to_cluster", "把本地 research/<project>/ 推到集群 ~/research/<project>/；默认 dry-run，apply=true 才修改远端。", {"project": {"type": "string"}, "remote_research_dir": {"type": "string"}, "apply": {"type": "boolean"}}, False), self._research_workspace_sync_to_cluster)
+        self._register(ToolSpec("research_workspace_sync_from_cluster", "从集群 ~/research/<project>/ 拉回本地 research/<project>/；默认 dry-run，apply=true 才覆盖本地且先备份。", {"project": {"type": "string"}, "remote_research_dir": {"type": "string"}, "apply": {"type": "boolean"}}, False), self._research_workspace_sync_from_cluster)
+        self._register(ToolSpec("research_workspace_pull_logs", "按本地 run 记录从集群回拉 VASP 输出/日志。", {"project": {"type": "string"}, "run_id": {"type": "string"}}, False), self._research_workspace_pull_logs)
+        self._register(ToolSpec("research_learning_capture", "把重要科研判断、失败经验或参数结论写入 research/<project>/Learning/<title>.md。", {"project": {"type": "string"}, "title": {"type": "string"}, "content": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, False, ("project", "title", "content")), self._research_learning_capture)
         self._register(ToolSpec("cluster_remote_submit", "通过 SSH/SLURM 远程提交已建好的 run。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}}, False), self._cluster_remote_submit)
         self._register(ToolSpec("cluster_remote_monitor", "轮询远程 run 状态并在完成时同步输出。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}, "sync_outputs": {"type": "boolean"}}, False), self._cluster_remote_monitor)
         self._register(ToolSpec("cluster_remote_fetch", "同步远程 run 输出到本地。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}}, False), self._cluster_remote_fetch)
         self._register(ToolSpec("adsorption_workflow_status", "读取 adsorption workflow 状态。", {"run_root": {"type": "string"}}, True), self._adsorption_workflow_status)
         self._register(ToolSpec("recommend_next_tasks", "推荐下一步科研任务。", {"project": {"type": "string"}, "focus": {"type": "string"}}, True), self._recommend_next_tasks)
+        self._register(ToolSpec("result_interpret", "解释 VASP 输出证据：是否收敛、能量/OSZICAR 趋势、下一步要做的结构/键连/记录动作。", {"run_root": {"type": "string"}}, True, ("run_root",)), self._result_interpret)
+        self._register(ToolSpec("next_experiment_propose", "根据项目上下文和最近结果，给 3 个下一步科研动作候选。", {"project": {"type": "string"}, "recent_results": {"type": "array", "items": {"type": "object"}}}, True), self._next_experiment_propose)
+        self._register(ToolSpec("behavior_audit", "自我行为审计：检查当前响应/工具链是否过度固定流程、是否缺证据、是否该写回 research。", {"goal": {"type": "string"}, "proposed_actions": {"type": "array", "items": {"type": "string"}}, "tool_results": {"type": "array", "items": {"type": "object"}}, "proposed_reply": {"type": "string"}}, True), self._behavior_audit)
 
     def list_tools(self) -> list[dict[str, Any]]:
         return [spec.to_dict() for spec, _ in self._tools.values()]
@@ -219,9 +256,9 @@ class ToolRegistry:
         return {
             "status": "ok",
             "mainline": [
-                {"step": 1, "title": "discussion -> plan", "tools": ["research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "architecture_live_doc_update", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
+                {"step": 1, "title": "discussion -> plan", "tools": ["web_search", "literature_search", "chemistry_compute", "image_understand", "discussion_state_snapshot", "research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "architecture_live_doc_update", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
                 {"step": 2, "title": "structure -> model", "tools": ["structure_modeling_tool_status", "structure_modeling_intent_plan", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
-                {"step": 3, "title": "execute -> explain -> write_back", "tools": ["cluster_execution_intent_plan", "research_onboarding_context", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "cluster_research_status", "cluster_research_sync", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "vasp_output_scan", "candidate_outcome_record", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show", "project_progress_append"]},
+                {"step": 3, "title": "execute -> explain -> write_back", "tools": ["cluster_execution_intent_plan", "research_onboarding_context", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "cluster_job_status_brief", "cluster_my_jobs", "cluster_job_tail_log", "cluster_job_partial_outcar", "cluster_job_progress_estimate", "cluster_research_status", "cluster_research_sync", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "vasp_output_scan", "result_interpret", "next_experiment_propose", "research_learning_capture", "candidate_outcome_record", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show", "project_progress_append", "behavior_audit"]},
             ],
             "workflow": [
                 {"phase": "project_context"},
@@ -311,7 +348,7 @@ class ToolRegistry:
                 },
             ]
             quality_gates = [
-                "compose 前必须有 adsorption_candidate_plan.plan_id。",
+                "compose 前建议有 adsorption_candidate_plan.plan_id；没有时看 quality_warnings/audit 决定是否回炉。",
                 "每个 candidate 需要 site_label、orientation、anchor_symbol、reason、POSCAR 路径。",
                 "adsorption_candidates 是 fallback_only，不作为默认主路径。",
             ]
@@ -340,7 +377,7 @@ class ToolRegistry:
                 {"purpose": "生成缺陷结构", "candidate_tools": ["structure_defect"], "call_when": "已说明 atom_index 选择依据；不能默认第一个原子。"},
                 {"purpose": "检查缺陷结构", "candidate_tools": ["structure_sanity_check"], "call_when": "写出 POSCAR 后检查最短距离和物种。"},
             ]
-            quality_gates = ["必须解释 index 选择依据。", "surface_only 与体相缺陷要区分。"]
+            quality_gates = ["建议解释 index 选择依据。", "surface_only 与体相缺陷要区分。"]
         elif task_type == "ts_neb":
             missing.extend([key for key in ("initial_path", "final_path", "output_dir") if not input_present(key)])
             groups = [
@@ -430,7 +467,7 @@ class ToolRegistry:
                     "intent": "缺陷/掺杂",
                     "evidence": ["candidate atom_index", "surface_only or bulk", "vacancy/substitution reason"],
                     "tools": ["defect_site_enumerate", "structure_defect", "structure_sanity_check"],
-                    "not_a_fixed_program": "不要默认删除第一个原子；必须解释 atom_index 选择依据。",
+                    "not_a_fixed_program": "不要默认删除第一个原子；建议解释 atom_index 选择依据。",
                 },
                 {
                     "intent": "TS/NEB 初猜",
@@ -447,9 +484,9 @@ class ToolRegistry:
             ],
             "quality_gates": [
                 "写结构前确认输入/输出路径和科研目标。",
-                "compose manifest 前必须有 adsorption_candidate_plan.plan_id。",
+                "compose manifest 前建议有 adsorption_candidate_plan.plan_id；没有也只触发 warning/audit，不挡路。",
                 "warning/failed/unavailable 不能包装成成功。",
-                "候选结构必须带 reason、sanity/quality 结果和下一步建议。",
+                "候选结构建议带 reason、sanity/quality 结果和下一步建议；缺项由 audit 提醒，不挡路。",
             ],
         }
 
@@ -471,6 +508,38 @@ class ToolRegistry:
             completed=[str(item) for item in payload.get("completed") or []],
             blockers=[str(item) for item in payload.get("blockers") or []],
             next_steps=[str(item) for item in payload.get("next_steps") or []],
+        )
+
+    def _web_search(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return web_search(
+            str(payload.get("query") or ""),
+            max_results=int(payload.get("max_results") or 5),
+            live=payload.get("live"),
+        )
+
+    def _literature_search(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return literature_search(
+            str(payload.get("query") or ""),
+            max_results=int(payload.get("max_results") or 5),
+            source=str(payload.get("source") or "arxiv"),
+            live=payload.get("live"),
+        )
+
+    def _chemistry_compute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        kwargs = {key: value for key, value in payload.items() if key != "operation"}
+        return chemistry_compute(str(payload.get("operation") or ""), **kwargs)
+
+    def _image_understand(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return image_understand(str(payload.get("image_path") or ""), prompt=str(payload.get("prompt") or ""))
+
+    def _discussion_state_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return discussion_state_snapshot(
+            project=str(payload.get("project") or "").strip() or None,
+            goal=str(payload.get("goal") or ""),
+            known_facts=[str(item) for item in payload.get("known_facts") or []],
+            open_questions=[str(item) for item in payload.get("open_questions") or []],
+            next_steps=[str(item) for item in payload.get("next_steps") or []],
+            persist_path=str(payload.get("persist_path") or "").strip() or None,
         )
 
     def _project_state_read(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -796,8 +865,8 @@ class ToolRegistry:
             "plan": plan.to_dict(),
             "guidance": (
                 "把 plan_id 传给 adsorption_candidate_manifest_compose；"
-                "candidates 的 site_label 必须与 plan.target_sites[*].site_id 对齐；"
-                "每个 candidate.reason ≥ 20 字，写明科学依据。"
+                "建议让 candidates 的 site_label 与 plan.target_sites[*].site_id 对齐；"
+                "建议每个 candidate.reason 写明科学依据。"
             ),
         }
 
@@ -810,16 +879,19 @@ class ToolRegistry:
         if not isinstance(candidates, list):
             return {"status": "error", "message": "candidates 必须是数组。"}
         plan_id = str(payload.get("plan_id") or "").strip()
-        if not plan_id:
-            return {
-                "status": "error",
-                "message": "compose 必须传 plan_id；先调 adsorption_candidate_plan 创建结构化推理。",
-            }
         project = str(payload.get("project") or "").strip() or None
-        try:
-            plan = load_candidate_plan(plan_id, project=project)
-        except FileNotFoundError as exc:
-            return {"status": "error", "message": str(exc)}
+        plan_payload: dict[str, Any] | None = None
+        plan_lookup_warning: dict[str, Any] | None = None
+        if plan_id:
+            try:
+                plan = load_candidate_plan(plan_id, project=project)
+                plan_payload = plan.to_dict()
+            except FileNotFoundError as exc:
+                plan_lookup_warning = {
+                    "code": "plan_not_found",
+                    "message": str(exc),
+                    "context": {"plan_id": plan_id, "project": project},
+                }
         result = compose_manifest_from_authored_candidates(
             task_id=str(payload["task_id"]),
             material_name=str(payload["material_name"]),
@@ -829,10 +901,28 @@ class ToolRegistry:
             output_dir=str(payload["output_dir"]),
             candidates=[dict(item) for item in candidates],
             metadata=payload.get("metadata") or {},
-            plan_payload=plan.to_dict(),
+            plan_payload=plan_payload,
             prune_rationale=str(payload.get("prune_rationale") or "").strip() or None,
         )
+        if plan_lookup_warning is not None:
+            warnings = list(result.get("quality_warnings") or [])
+            warnings.insert(0, plan_lookup_warning)
+            result["quality_warnings"] = warnings
+            result["has_warnings"] = True
+        # 自动跟一次 audit，让模型一次拿到行为画像
+        manifest_path = result.get("manifest_json")
+        if manifest_path:
+            try:
+                result["audit"] = audit_manifest(manifest_path)
+            except Exception as exc:
+                result["audit_error"] = str(exc)
         return result
+
+    def _manifest_audit(self, payload: dict[str, Any]) -> dict[str, Any]:
+        manifest_path = str(payload.get("manifest_path") or "").strip()
+        if not manifest_path:
+            return {"status": "error", "message": "manifest_path 不能为空。"}
+        return audit_manifest(manifest_path)
 
     def _candidate_outcome_record(self, payload: dict[str, Any]) -> dict[str, Any]:
         energy = payload.get("adsorption_energy_ev")
@@ -1107,7 +1197,7 @@ class ToolRegistry:
             "step": 3,
             "task_stage": task_stage,
             "recommended_task_type": recommended_task_type,
-            "principle": "Step 3 教模型如何判断和调用工具，不是固定程序；模型必须先说明证据、选择工具、读取结果，再决定下一步。",
+            "principle": "Step 3 教模型如何判断和调用工具，不是固定程序；模型通常先说明证据、选择工具、读取结果，再决定下一步。",
             "project": project,
             "available_inputs": available,
             "missing_inputs": missing,
@@ -1495,6 +1585,40 @@ class ToolRegistry:
         envelope = create_task_plan(payload["prompt"], project=payload.get("project"), material=payload.get("material"), structure_path=payload.get("structure_path"), task_type=payload.get("task_type"))
         return {"status": "ok", "task": envelope.to_dict()}
 
+    def _cluster_job_status_brief(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from dft_app.remote.realtime import job_status_brief
+        return job_status_brief(str(payload.get("job_id") or "").strip())
+
+    def _cluster_my_jobs(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from dft_app.remote.realtime import my_jobs
+        return my_jobs(limit=int(payload.get("limit") or 20))
+
+    def _cluster_job_tail_log(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from dft_app.remote.realtime import job_tail_log
+        return job_tail_log(
+            job_id=str(payload.get("job_id") or "").strip() or None,
+            remote_run_root=str(payload.get("remote_run_root") or "").strip() or None,
+            log_name=str(payload.get("log_name") or "vasp.out"),
+            lines=int(payload.get("lines") or 50),
+            project_root=str(payload.get("project_root") or "").strip() or None,
+        )
+
+    def _cluster_job_partial_outcar(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from dft_app.remote.realtime import job_partial_outcar
+        return job_partial_outcar(
+            job_id=str(payload.get("job_id") or "").strip() or None,
+            remote_run_root=str(payload.get("remote_run_root") or "").strip() or None,
+            project_root=str(payload.get("project_root") or "").strip() or None,
+        )
+
+    def _cluster_job_progress_estimate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from dft_app.remote.realtime import job_progress_estimate
+        return job_progress_estimate(
+            job_id=str(payload.get("job_id") or "").strip() or None,
+            remote_run_root=str(payload.get("remote_run_root") or "").strip() or None,
+            project_root=str(payload.get("project_root") or "").strip() or None,
+        )
+
     def _cluster_probe(self, _: dict[str, Any]) -> dict[str, Any]:
         result = SSHRemoteRunner().probe()
         return {"status": result.status, "message": result.message, "details": result.details}
@@ -1517,6 +1641,40 @@ class ToolRegistry:
             dry_run=not apply,
         )
         return {"status": result.status, "message": result.message, "details": result.details}
+
+    def _research_workspace_diff(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return research_workspace_diff(
+            str(payload.get("project") or "").strip() or None,
+            remote_research_dir=str(payload.get("remote_research_dir") or "").strip() or None,
+        )
+
+    def _research_workspace_sync_to_cluster(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return research_workspace_sync_to_cluster(
+            str(payload.get("project") or "").strip() or None,
+            remote_research_dir=str(payload.get("remote_research_dir") or "").strip() or None,
+            apply=bool(payload.get("apply", False)),
+        )
+
+    def _research_workspace_sync_from_cluster(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return research_workspace_sync_from_cluster(
+            str(payload.get("project") or "").strip() or None,
+            remote_research_dir=str(payload.get("remote_research_dir") or "").strip() or None,
+            apply=bool(payload.get("apply", False)),
+        )
+
+    def _research_workspace_pull_logs(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return research_workspace_pull_logs(
+            str(payload.get("project") or "").strip() or None,
+            run_id=str(payload.get("run_id") or "").strip() or None,
+        )
+
+    def _research_learning_capture(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return research_learning_capture(
+            str(payload.get("project") or "").strip(),
+            str(payload.get("title") or "").strip(),
+            str(payload.get("content") or "").strip(),
+            tags=[str(item) for item in payload.get("tags") or []],
+        )
 
     def _cluster_remote_submit(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.allow_cluster_submit:
@@ -1555,6 +1713,36 @@ class ToolRegistry:
         project = str(payload.get("project") or "").strip() or None
         focus = str(payload.get("focus") or "").strip() or None
         return {"status": "ok", "recommendations": recommend_next_tasks(project, focus=focus)}
+
+    def _result_interpret(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return interpret_result(str(payload.get("run_root") or ""))
+
+    def _next_experiment_propose(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return propose_next_experiments(
+            str(payload.get("project") or "").strip() or None,
+            payload.get("recent_results"),
+        )
+
+    def _behavior_audit(self, payload: dict[str, Any]) -> dict[str, Any]:
+        actions = [str(item) for item in payload.get("proposed_actions") or []]
+        tool_results = [item for item in payload.get("tool_results") or [] if isinstance(item, dict)]
+        reply = str(payload.get("proposed_reply") or "")
+        findings: list[dict[str, Any]] = []
+        if len(actions) > 5 and not any("ask" in item.lower() or "reply" in item.lower() for item in actions):
+            findings.append({"level": "warn", "code": "over_programmed", "message": "动作列表很长且没有自然回复节点；可能把科研讨论写成固定程序。"})
+        if any(str(result.get("status") or "").lower() in {"error", "failed", "blocked", "missing"} for result in tool_results) and not re.search(r"失败|缺少|blocked|missing|error", reply, re.I):
+            findings.append({"level": "warn", "code": "tool_failure_hidden", "message": "工具结果里有失败/缺失，但 proposed_reply 没有明确暴露。"})
+        if re.search(r"已提交|收敛|完成|能量为", reply) and not tool_results:
+            findings.append({"level": "warn", "code": "claim_without_evidence", "message": "回复含事实性完成/结果声明，但没有传入工具证据。"})
+        if "research" not in " ".join(actions).lower() and len(reply) > 80:
+            findings.append({"level": "info", "code": "consider_research_writeback", "message": "若这是可复用经验，考虑 research_learning_capture 或 progress append。"})
+        return {
+            "status": "ok",
+            "goal": str(payload.get("goal") or ""),
+            "score": max(0.0, 1.0 - 0.25 * sum(1 for item in findings if item["level"] == "warn")),
+            "findings": findings,
+            "guidance": "behavior_audit 是软审计，不阻止下一步；模型应按 findings 自主决定是否改写、补证据或回写 research。",
+        }
 
 
 def list_registered_tools() -> list[dict[str, Any]]:

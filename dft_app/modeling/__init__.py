@@ -12,7 +12,11 @@ from .adsorption_models import (
     CandidateScore,
     CandidateSelection,
 )
-from .candidate_manifest import CandidateManifestWriter, compose_manifest_from_authored_candidates
+from .candidate_manifest import (
+    CandidateManifestWriter,
+    audit_manifest,
+    compose_manifest_from_authored_candidates,
+)
 from .candidate_ranker import AdsorptionCandidateRanker, AdsorptionRankingContext
 from .confirmed_candidate_handoff import ConfirmedCandidateHandoff
 from .modeler import ModelingResult, TaskModeler
@@ -44,6 +48,7 @@ __all__ = [
     "CandidateManifest",
     "CandidateManifestWriter",
     "CandidateScore",
+    "audit_manifest",
     "compose_manifest_from_authored_candidates",
     "CandidateSelection",
     "ConfirmationEntry",
