@@ -72,7 +72,10 @@ def build_cluster_runtime_digest(*, project: str | None = None, limit: int = 5) 
         phase = str(rec.get("current_phase") or "").strip()
         if not job_id or status.lower() in {"completed", "failed", "cancelled"}:
             continue
-        rows.append(f"- job `{job_id}` run `{rec.get('run_id')}` status={status or 'unknown'} phase={phase or 'unknown'} root={rec.get('run_root')}")
+        rows.append(
+            f"- job `{job_id}` task `{rec.get('task_id')}` run `{rec.get('run_id')}` "
+            f"status={status or 'unknown'} phase={phase or 'unknown'}"
+        )
         if len(rows) >= limit:
             break
     if not rows:

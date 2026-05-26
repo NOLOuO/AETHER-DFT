@@ -8,7 +8,6 @@ result instead of fabricating search or vision evidence.
 """
 
 import json
-import math
 import os
 import urllib.parse
 import urllib.request
@@ -16,11 +15,6 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-
-
-EV_PER_KJ_MOL = 1.0 / 96.4853321233
-KB_EV = 8.617333262145e-5
-H_EV_S = 4.135667696e-15
 
 
 def web_search(query: str, *, max_results: int = 5, live: bool | None = None) -> dict[str, Any]:
@@ -128,48 +122,92 @@ def literature_search(query: str, *, max_results: int = 5, source: str = "arxiv"
 
 
 def chemistry_compute(operation: str, **kwargs: Any) -> dict[str, Any]:
-    """Small deterministic chemistry calculator for discussion-time checks."""
+    """Small deterministic chemistry calculator for discussion-time checks.
 
-    op = str(operation or "").strip().lower()
+    The public tool remains model-guided rather than a fixed workflow: callers
+    may use the older ``operation=...`` vocabulary or the newer
+    ``mode=convert|boltzmann|gibbs|tst_rate|kBT`` vocabulary.  The richer
+    implementation lives in :mod:`aether_dft.chemistry_compute`; this wrapper
+    preserves old result keys so existing prompts/tests do not break.
+    """
+
+    op = str(operation or kwargs.get("mode") or "").strip()
+    op_norm = op.lower()
+    params = dict(kwargs)
+    params.pop("mode", None)
+
+    def enhanced(mode: str, **extra: Any) -> dict[str, Any]:
+        from .chemistry_compute import compute
+
+        result = compute(mode, **extra)
+        result.setdefault("operation", op_norm)
+        return result
+
     try:
-        if op in {"kjmol_to_ev", "kj_mol_to_ev"}:
-            value = float(kwargs["value"])
-            return {"status": "ok", "operation": op, "input": value, "ev": value * EV_PER_KJ_MOL}
-        if op in {"ev_to_kjmol", "ev_to_kj_mol"}:
-            value = float(kwargs["value"])
-            return {"status": "ok", "operation": op, "input": value, "kj_mol": value / EV_PER_KJ_MOL}
-        if op == "boltzmann_population":
-            energies = [float(item) for item in kwargs.get("energies_ev", [])]
-            temperature = float(kwargs.get("temperature_k") or 298.15)
-            if not energies:
-                return {"status": "error", "message": "energies_ev 不能为空。"}
-            emin = min(energies)
-            weights = [math.exp(-(e - emin) / (KB_EV * temperature)) for e in energies]
-            total = sum(weights)
-            return {
-                "status": "ok",
-                "operation": op,
-                "temperature_k": temperature,
-                "relative_energies_ev": [e - emin for e in energies],
-                "populations": [w / total for w in weights],
-            }
-        if op in {"tst_rate", "eyring_rate"}:
-            barrier_ev = float(kwargs["barrier_ev"])
-            temperature = float(kwargs.get("temperature_k") or 298.15)
-            prefactor = KB_EV * temperature / H_EV_S
-            rate = prefactor * math.exp(-barrier_ev / (KB_EV * temperature))
-            return {"status": "ok", "operation": op, "barrier_ev": barrier_ev, "temperature_k": temperature, "rate_s^-1": rate}
-        if op in {"delta_g", "gibbs"}:
-            delta_h_ev = float(kwargs.get("delta_h_ev", 0.0))
-            delta_s_ev_k = float(kwargs.get("delta_s_ev_k", 0.0))
-            temperature = float(kwargs.get("temperature_k") or 298.15)
-            return {"status": "ok", "operation": op, "delta_g_ev": delta_h_ev - temperature * delta_s_ev_k, "temperature_k": temperature}
+        if op_norm in {"convert"}:
+            return enhanced("convert", **params)
+        if op_norm in {"kjmol_to_ev", "kj_mol_to_ev"}:
+            result = enhanced("convert", value=params["value"], from_unit="kJ/mol", to_unit="eV")
+            if result.get("status") == "ok":
+                result["ev"] = result.get("result")
+            return result
+        if op_norm in {"ev_to_kjmol", "ev_to_kj_mol"}:
+            result = enhanced("convert", value=params["value"], from_unit="eV", to_unit="kJ/mol")
+            if result.get("status") == "ok":
+                result["kj_mol"] = result.get("result")
+            return result
+        if op_norm in {"boltzmann", "boltzmann_population"}:
+            energies = params.get("energies")
+            if energies is None:
+                energies = params.get("energies_ev")
+            result = enhanced(
+                "boltzmann",
+                energies=energies or [],
+                temperature_k=params.get("temperature_k") or 298.15,
+                energy_unit=params.get("energy_unit") or "eV",
+                reference_energy=params.get("reference_energy"),
+            )
+            if result.get("status") == "ok":
+                result["populations"] = result.get("result")
+                if str(params.get("energy_unit") or "eV").lower() == "ev":
+                    result["relative_energies_ev"] = [
+                        float(e) - min(float(item) for item in (energies or [])) for e in (energies or [])
+                    ]
+            return result
+        if op_norm in {"tst_rate", "eyring_rate"}:
+            activation_energy = params.get("activation_energy", params.get("barrier_ev"))
+            result = enhanced(
+                "tst_rate",
+                activation_energy=activation_energy,
+                temperature_k=params.get("temperature_k") or 298.15,
+                energy_unit=params.get("energy_unit") or "eV",
+                prefactor_hz=params.get("prefactor_hz"),
+                transmission_coefficient=params.get("transmission_coefficient") or 1.0,
+            )
+            if result.get("status") == "ok":
+                result["rate_s^-1"] = result.get("result")
+                result["barrier_ev"] = result.get("activation_energy_ev")
+            return result
+        if op_norm in {"delta_g", "gibbs"}:
+            result = enhanced(
+                "gibbs",
+                enthalpy=params.get("enthalpy", params.get("delta_h_ev", 0.0)),
+                entropy=params.get("entropy", params.get("delta_s_ev_k", 0.0)),
+                temperature_k=params.get("temperature_k") or 298.15,
+                enthalpy_unit=params.get("enthalpy_unit") or "eV",
+                entropy_unit=params.get("entropy_unit") or "eV/K",
+            )
+            if result.get("status") == "ok":
+                result["delta_g_ev"] = result.get("result")
+            return result
+        if op_norm in {"kbt", "kbt()"}:
+            return enhanced("kBT", temperature_k=params.get("temperature_k") or 298.15, unit=params.get("unit") or "eV")
     except (KeyError, TypeError, ValueError) as exc:
-        return {"status": "error", "operation": op, "message": str(exc)}
+        return {"status": "error", "operation": op_norm, "message": str(exc)}
     return {
         "status": "error",
-        "operation": op,
-        "message": "未知 operation；支持 kjmol_to_ev、ev_to_kjmol、boltzmann_population、tst_rate、delta_g。",
+        "operation": op_norm,
+        "message": "未知 operation/mode；支持 convert、kjmol_to_ev、ev_to_kjmol、boltzmann_population/boltzmann、tst_rate、delta_g/gibbs、kBT。",
     }
 
 
@@ -200,16 +238,65 @@ def image_understand(image_path: str, *, prompt: str = "") -> dict[str, Any]:
     }
 
 
+def _safe_persist_path(persist_path: str | None, *, project: str | None = None) -> Path | None:
+    """Scope optional model-written snapshots to AETHER runtime/project storage."""
+
+    if not persist_path:
+        return None
+    from .paths import ensure_runtime_dir
+    from .project_state import project_paths
+
+    target = Path(persist_path).expanduser().resolve()
+    allowed_roots = [ensure_runtime_dir("discussion_snapshots").resolve()]
+    if project:
+        allowed_roots.append((project_paths(project).root / "discussion_snapshots").resolve())
+    if not any(target == root or root in target.parents for root in allowed_roots):
+        raise ValueError(
+            "persist_path 超出允许范围；只能写入 runtime/discussion_snapshots 或项目 discussion_snapshots 目录。"
+        )
+    return target
+
+
 def discussion_state_snapshot(
     *,
     project: str | None = None,
     goal: str = "",
+    title: str = "",
+    summary: str = "",
+    consensus: list[str] | None = None,
     known_facts: list[str] | None = None,
     open_questions: list[str] | None = None,
     next_steps: list[str] | None = None,
+    tags: list[str] | None = None,
     persist_path: str | None = None,
+    write_to_project_state: bool = False,
 ) -> dict[str, Any]:
     """Let the model checkpoint a conversation without imposing a fixed workflow."""
+
+    if title or summary or consensus or tags or write_to_project_state:
+        from .discussion_snapshot import capture_discussion_snapshot
+
+        merged_consensus = [*(consensus or []), *(known_facts or [])]
+        result = capture_discussion_snapshot(
+            project=project,
+            title=title or goal or "讨论快照",
+            summary=summary or goal,
+            consensus=merged_consensus,
+            open_questions=open_questions,
+            next_steps=next_steps,
+            tags=tags,
+            write_to_project_state=write_to_project_state,
+        )
+        if persist_path and result.get("status") in {"ok", "warning"}:
+            try:
+                path = _safe_persist_path(persist_path, project=project)
+                assert path is not None
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(result.get("snapshot") or result, ensure_ascii=False, indent=2), encoding="utf-8")
+                result["persisted_path"] = str(path)
+            except Exception as exc:
+                result = {**result, "status": "warning", "message": f"快照已保存，但 persist_path 被拒绝: {exc}"}
+        return result
 
     snapshot = {
         "status": "ok",
@@ -221,8 +308,13 @@ def discussion_state_snapshot(
         "next_steps": next_steps or [],
     }
     if persist_path:
-        path = Path(persist_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
-        snapshot["persisted_path"] = str(path)
+        try:
+            path = _safe_persist_path(persist_path, project=project)
+            assert path is not None
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+            snapshot["persisted_path"] = str(path)
+        except Exception as exc:
+            snapshot["status"] = "warning"
+            snapshot["message"] = f"persist_path 被拒绝: {exc}"
     return snapshot

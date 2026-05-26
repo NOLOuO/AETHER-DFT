@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from dft_app.remote import SSHRemoteRunner
+from dft_app.remote.ssh_remote_runner import SSHRemoteRunner as _RealSSHRemoteRunner
 
 from .research_workspace import RESEARCH_ROOT, list_research_projects, resolve_research_project
 
@@ -34,12 +35,11 @@ def _local_root(project: str | None) -> Path:
 
 
 def _remote_dir(runner: SSHRemoteRunner, project: str | None, explicit: str | None = None) -> str:
-    if explicit:
-        return explicit
     config = runner._load_config()
     base = f"/home/{config.user}/research"
     slug = _safe_project(project)
-    return str(PurePosixPath(base) / slug) if slug else base
+    remote = explicit or (str(PurePosixPath(base) / slug) if slug else base)
+    return _RealSSHRemoteRunner._safe_remote_research_dir(remote, config)
 
 
 def _validate_rel(rel: str) -> PurePosixPath:
@@ -54,7 +54,7 @@ def research_workspace_diff(project: str | None = None, *, remote_research_dir: 
         runner = SSHRemoteRunner()
         local = _local_root(project)
         remote = _remote_dir(runner, project, remote_research_dir)
-    except ResearchScopeError as exc:
+    except (ResearchScopeError, ValueError) as exc:
         return {"status": "error", "message": str(exc), "available_projects": list_research_projects()}
     result = runner.research_status(local, remote_research_dir=remote)
     return {"status": result.status, "message": result.message, "project": _safe_project(project) or "", "local_root": str(local), "details": result.details}
@@ -70,7 +70,7 @@ def research_workspace_sync_to_cluster(
         runner = SSHRemoteRunner()
         local = _local_root(project)
         remote = _remote_dir(runner, project, remote_research_dir)
-    except ResearchScopeError as exc:
+    except (ResearchScopeError, ValueError) as exc:
         return {"status": "error", "message": str(exc), "available_projects": list_research_projects()}
     result = runner.sync_research_to_remote(local, remote_research_dir=remote, dry_run=not apply)
     return {"status": result.status, "message": result.message, "project": _safe_project(project) or "", "local_root": str(local), "details": result.details}
@@ -92,7 +92,7 @@ def research_workspace_sync_from_cluster(
         runner = SSHRemoteRunner()
         local = _local_root(project)
         remote = _remote_dir(runner, project, remote_research_dir)
-    except ResearchScopeError as exc:
+    except (ResearchScopeError, ValueError) as exc:
         return {"status": "error", "message": str(exc), "available_projects": list_research_projects()}
     status = runner.research_status(local, remote_research_dir=remote)
     if status.status != "ok":
@@ -155,13 +155,7 @@ def research_workspace_sync_from_cluster(
                     backup.parent.mkdir(parents=True, exist_ok=True)
                     backup.write_bytes(target.read_bytes())
             with tarfile.open(archive, "r:gz") as tar:
-                safe_members = []
-                for member in tar.getmembers():
-                    _validate_rel(member.name)
-                    if not (member.isfile() or member.isdir()):
-                        raise ValueError(f"research 同步包含不安全成员类型: {member.name}")
-                    safe_members.append(member)
-                tar.extractall(local, members=safe_members)  # noqa: S202 - members validated above.
+                _RealSSHRemoteRunner._safe_extract_tar(tar, local, allowed_members=set(to_pull))
             pulled = to_pull
     except Exception as exc:
         return {"status": "failed", "message": f"本地反向同步失败: {exc}", "details": {"backend": backend, "pulled": pulled}}
@@ -207,7 +201,7 @@ def research_learning_capture(project: str, title: str, content: str, tags: list
     if paths is None:
         return {"status": "error", "message": f"research 项目不存在: {project}", "available_projects": list_research_projects()}
     clean_title = re.sub(r"[^\w\u4e00-\u9fff.-]+", "-", str(title or "").strip()).strip("-") or "untitled"
-    learning_dir = paths.root / "Learning"
+    learning_dir = paths.learning_dir
     learning_dir.mkdir(parents=True, exist_ok=True)
     path = learning_dir / f"{clean_title}.md"
     tag_line = " ".join(f"#{str(tag).strip()}" for tag in (tags or []) if str(tag).strip())

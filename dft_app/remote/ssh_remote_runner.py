@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -15,6 +16,8 @@ from dft_app.models import ExperimentSpec, PhaseStatus, PipelinePhase, RunRecord
 from dft_app.remote.config import RemoteClusterConfig
 from dft_app.runner.slurm_runner import SlurmRunner
 from dft_app.submission_gate import verify_submission_evidence
+
+_SAFE_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 @dataclass
@@ -269,10 +272,25 @@ class SSHRemoteRunner:
         if not run_record.scheduler_job_id:
             message = "当前 run 没有 scheduler_job_id，无法执行远程监控。"
             return RemoteExecutionResult("unavailable", message, {})
+        job_id = str(run_record.scheduler_job_id).strip()
+        if not _SAFE_JOB_ID_RE.fullmatch(job_id):
+            return RemoteExecutionResult(
+                "blocked",
+                "scheduler_job_id 包含不允许的字符，已阻止远程状态查询。",
+                {"backend": backend, "remote_run_root": remote_run_root},
+            )
+        try:
+            remote_run_root = self._safe_remote_run_root(str(remote_run_root), config)
+        except ValueError as exc:
+            return RemoteExecutionResult(
+                "blocked",
+                f"远程 run 路径不安全，已阻止远程状态查询: {exc}",
+                {"backend": backend, "remote_run_root": remote_run_root},
+            )
 
         monitor_command = (
-            f"squeue -j {run_record.scheduler_job_id} -h -o %T || "
-            f"sacct -j {run_record.scheduler_job_id} --format=State --noheader"
+            f"squeue -j {job_id} -h -o %T || "
+            f"sacct -j {job_id} --format=State --noheader"
         )
         process = self._run_remote_command(config, monitor_command, timeout=60, backend=backend)
         stdout = process.stdout.strip()
@@ -380,6 +398,14 @@ class SSHRemoteRunner:
         remote_run_root = remote_info.get("remote_run_root")
         if not remote_run_root:
             return RemoteExecutionResult("unavailable", "缺少远程路径信息，无法拉取输出。", {})
+        try:
+            remote_run_root = self._safe_remote_run_root(str(remote_run_root), config)
+        except ValueError as exc:
+            return RemoteExecutionResult(
+                "blocked",
+                f"远程 run 路径不安全，已阻止拉取: {exc}",
+                {"backend": backend, "remote_run_root": remote_run_root},
+            )
 
         find_expression = " -o ".join(f"-name {self._quote(pattern)}" for pattern in self.FETCH_PATTERNS)
         find_command = (
@@ -426,13 +452,37 @@ class SSHRemoteRunner:
             {"backend": backend, "remote_run_root": remote_run_root, "synced_files": synced_files},
         )
 
+    @staticmethod
+    def _normalize_project_prefix(project: str | None) -> str | None:
+        if project is None:
+            return None
+        cleaned = str(project).strip().strip("/")
+        if not cleaned:
+            return None
+        if cleaned in {".", ".."} or "/" in cleaned or "\\" in cleaned:
+            raise ValueError(f"project 必须是单一目录名，收到: {project!r}")
+        return cleaned
+
+    @staticmethod
+    def _filter_manifest_by_project(
+        manifest: dict[str, dict[str, Any]], project: str | None
+    ) -> dict[str, dict[str, Any]]:
+        if not project:
+            return manifest
+        prefix = f"{project}/"
+        return {k: v for k, v in manifest.items() if k == project or k.startswith(prefix)}
+
     def research_status(
         self,
         local_research_root: Path,
         *,
         remote_research_dir: str | None = None,
+        project: str | None = None,
     ) -> RemoteExecutionResult:
-        """Compare local research/ with the cluster research directory."""
+        """Compare local research/ with the cluster research directory.
+
+        当 ``project`` 给出时，只比较 ``research/<project>/`` 下的文件，便于按项目同步。
+        """
 
         config = self._load_config()
         backend = self._select_backend(config)
@@ -440,9 +490,25 @@ class SSHRemoteRunner:
         if tools_error is not None:
             return RemoteExecutionResult("blocked", tools_error, {"backend": backend})
 
-        local_manifest = self._local_research_manifest(local_research_root)
-        remote_dir = remote_research_dir or self._default_remote_research_dir(config)
+        try:
+            project_prefix = self._normalize_project_prefix(project)
+        except ValueError as exc:
+            return RemoteExecutionResult("blocked", str(exc), {"backend": backend})
+
+        local_manifest = self._filter_manifest_by_project(
+            self._local_research_manifest(local_research_root), project_prefix
+        )
+        try:
+            remote_dir = self._safe_remote_research_dir(
+                remote_research_dir or self._default_remote_research_dir(config), config
+            )
+        except ValueError as exc:
+            return RemoteExecutionResult("blocked", str(exc), {"backend": backend})
         remote_result = self._remote_research_manifest(config, backend, remote_dir)
+        if remote_result["status"] == "ok":
+            remote_result["manifest"] = self._filter_manifest_by_project(
+                remote_result["manifest"], project_prefix
+            )
         if remote_result["status"] != "ok":
             return RemoteExecutionResult(
                 remote_result["status"],
@@ -469,6 +535,7 @@ class SSHRemoteRunner:
             {
                 "backend": backend,
                 "remote_research_dir": remote_dir,
+                "project": project_prefix,
                 "sync_status": status,
                 "local_count": len(local_manifest),
                 "remote_count": len(remote_manifest),
@@ -489,10 +556,16 @@ class SSHRemoteRunner:
         *,
         remote_research_dir: str | None = None,
         dry_run: bool = True,
+        project: str | None = None,
     ) -> RemoteExecutionResult:
-        """Push local research/ to cluster ~/research without deleting remote-only files."""
+        """Push local research/ to cluster ~/research without deleting remote-only files.
 
-        status_result = self.research_status(local_research_root, remote_research_dir=remote_research_dir)
+        ``project`` 给定时只同步 ``research/<project>/`` 子树。
+        """
+
+        status_result = self.research_status(
+            local_research_root, remote_research_dir=remote_research_dir, project=project
+        )
         if status_result.status != "ok":
             return status_result
         details = dict(status_result.details)
@@ -574,6 +647,285 @@ class SSHRemoteRunner:
                 "backup_dir": backup_dir if details["differing"] else None,
             },
         )
+
+    def sync_research_from_remote(
+        self,
+        local_research_root: Path,
+        *,
+        remote_research_dir: str | None = None,
+        dry_run: bool = True,
+        project: str | None = None,
+    ) -> RemoteExecutionResult:
+        """从集群 ~/research 拉回本地 research/，绝不删除本地独有文件。
+
+        策略：以远端为真源——只下载/覆盖远端有但本地缺失或哈希不同的文件；
+        差异覆盖前先把本地原文件备份到 ``research/.aether_local_backups/<ts>/`` 下。
+        ``project`` 给定时只拉取 ``research/<project>/`` 子树。
+        """
+        status_result = self.research_status(
+            local_research_root, remote_research_dir=remote_research_dir, project=project
+        )
+        if status_result.status != "ok":
+            return status_result
+        details = dict(status_result.details)
+        to_download = sorted(set(details["missing_local"]) | set(details["differing"]))
+        if not to_download:
+            return RemoteExecutionResult(
+                "ok",
+                "无需拉取：本地 research 已包含集群 ~/research 的当前版本。",
+                {**details, "dry_run": dry_run, "downloaded": [], "backup_dir": None, "direction": "pull"},
+            )
+        if dry_run:
+            return RemoteExecutionResult(
+                "planned",
+                f"需要从集群拉取/覆盖 {len(to_download)} 个 research 文件；dry_run=True 未修改本地。",
+                {**details, "dry_run": True, "would_download": to_download, "backup_dir": None, "direction": "pull"},
+            )
+
+        config = self._load_config()
+        backend = self._select_backend(config)
+        remote_dir = details["remote_research_dir"]
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        local_backup_dir = local_research_root / ".aether_local_backups" / timestamp
+        # 先把本地将被覆盖的差异文件备份
+        for rel in details["differing"]:
+            src = local_research_root / Path(*PurePosixPath(rel).parts)
+            if src.exists() and src.is_file():
+                dst = local_backup_dir / Path(*PurePosixPath(rel).parts)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+        # 远端打包指定文件清单
+        remote_sync_dir = str(PurePosixPath(remote_dir).parent / ".aether_research_sync")
+        remote_archive = f"{remote_sync_dir}/research-pull-{timestamp}.tar.gz"
+        # 在远端构造 tar 命令；用 \\\\n 写入文件清单避免 argv 太长
+        list_lines = "\n".join(to_download)
+        list_b64 = self._encode_text_for_remote(list_lines)
+        pack_script = " && ".join(
+            [
+                f"mkdir -p {self._quote(remote_sync_dir)}",
+                f"printf '%s' {list_b64} | base64 -d > {self._quote(remote_sync_dir)}/pull-list.txt",
+                f"cd {self._quote(remote_dir)} && tar -czf {self._quote(remote_archive)} -T {self._quote(remote_sync_dir)}/pull-list.txt",
+            ]
+        )
+        pack_result = self._run_remote_command(config, pack_script, timeout=180, backend=backend)
+        if pack_result.returncode != 0:
+            return RemoteExecutionResult(
+                "failed",
+                f"远端打包 pull 归档失败: {pack_result.stderr or pack_result.stdout}",
+                {**details, "dry_run": False, "backup_dir": str(local_backup_dir), "direction": "pull"},
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            local_archive = Path(tmp) / "pull.tar.gz"
+            self._download_from_remote(config, remote_archive, local_archive, timeout=180, backend=backend)
+            with tarfile.open(local_archive, "r:gz") as tar:
+                try:
+                    self._safe_extract_tar(tar, local_research_root, allowed_members=set(to_download))
+                except ValueError as exc:
+                    return RemoteExecutionResult(
+                        "failed",
+                        f"远端 pull 归档包含不安全路径: {exc}",
+                        {**details, "dry_run": False, "backup_dir": str(local_backup_dir), "direction": "pull"},
+                    )
+        cleanup = self._run_remote_command(
+            config, f"rm -f {self._quote(remote_archive)} {self._quote(remote_sync_dir)}/pull-list.txt", timeout=30, backend=backend
+        )
+        cleanup_warning = None
+        if cleanup.returncode != 0:
+            cleanup_warning = cleanup.stderr.strip() or cleanup.stdout.strip()
+
+        return RemoteExecutionResult(
+            "synced",
+            f"已从集群 {remote_dir} 拉回 {len(to_download)} 个 research 文件。",
+            {
+                **details,
+                "dry_run": False,
+                "downloaded": to_download,
+                "backup_dir": str(local_backup_dir) if details["differing"] else None,
+                "direction": "pull",
+                "cleanup_warning": cleanup_warning,
+            },
+        )
+
+    def pull_remote_run_outputs(
+        self,
+        remote_run_root: str,
+        local_target_dir: Path,
+        *,
+        patterns: list[str] | None = None,
+    ) -> RemoteExecutionResult:
+        """轻量拉取某 remote_run_root 下的产出文件到 local_target_dir。
+
+        默认匹配 ``FETCH_PATTERNS``（vasprun.xml / OUTCAR / OSZICAR / CONTCAR / vasp.out / slurm.out）。
+        与重量级 ``fetch_outputs`` 区别：不需要 RunRecord，可以独立按路径用，适合
+        模型用 ``cluster_my_jobs`` 拿到 job_id → ``research_workspace_pull_logs`` / fetch 工具直接抓产出。
+        """
+        if not remote_run_root or not str(remote_run_root).strip():
+            return RemoteExecutionResult("unavailable", "remote_run_root 不能为空。", {})
+        config = self._load_config()
+        backend = self._select_backend(config)
+        tools_error = self._ensure_local_tools(config, backend)
+        if tools_error is not None:
+            return RemoteExecutionResult("blocked", tools_error, {"backend": backend})
+        try:
+            remote_run_root = self._safe_remote_run_root(str(remote_run_root), config)
+        except ValueError as exc:
+            return RemoteExecutionResult(
+                "blocked",
+                f"remote_run_root 不安全，已阻止拉取: {exc}",
+                {"backend": backend, "remote_run_root": remote_run_root},
+            )
+
+        use_patterns = patterns or list(self.FETCH_PATTERNS)
+        find_expression = " -o ".join(f"-name {self._quote(p)}" for p in use_patterns)
+        find_command = (
+            f"find {self._quote(remote_run_root)} -type f \\( {find_expression} \\) | sort -u"
+        )
+        process = self._run_remote_command(config, find_command, timeout=60, backend=backend)
+        if process.returncode != 0:
+            return RemoteExecutionResult(
+                "failed",
+                f"远端查找 run 输出失败: {process.stderr.strip() or process.stdout.strip()}",
+                {"backend": backend, "remote_run_root": remote_run_root},
+            )
+        remote_files = [line.strip() for line in process.stdout.splitlines() if line.strip()]
+        if not remote_files:
+            return RemoteExecutionResult(
+                "missing",
+                f"在 {remote_run_root} 下没找到匹配 {use_patterns} 的输出文件。",
+                {"backend": backend, "remote_run_root": remote_run_root, "patterns": use_patterns},
+            )
+        local_target_dir = Path(local_target_dir)
+        local_target_dir.mkdir(parents=True, exist_ok=True)
+        downloaded: list[str] = []
+        try:
+            for remote_file in remote_files:
+                relative = PurePosixPath(remote_file).relative_to(PurePosixPath(remote_run_root))
+                local_target = local_target_dir / Path(*relative.parts)
+                local_target.parent.mkdir(parents=True, exist_ok=True)
+                self._download_from_remote(config, remote_file, local_target, timeout=120, backend=backend)
+                downloaded.append(str(local_target))
+        except Exception as exc:
+            return RemoteExecutionResult(
+                "failed",
+                f"拉取 run 输出失败: {exc}",
+                {
+                    "backend": backend,
+                    "remote_run_root": remote_run_root,
+                    "patterns": use_patterns,
+                    "downloaded": downloaded,
+                },
+            )
+        return RemoteExecutionResult(
+            "synced",
+            f"已从 {remote_run_root} 拉回 {len(downloaded)} 个 run 输出文件到 {local_target_dir}。",
+            {
+                "backend": backend,
+                "remote_run_root": remote_run_root,
+                "patterns": use_patterns,
+                "downloaded": downloaded,
+                "local_target_dir": str(local_target_dir),
+            },
+        )
+
+    @staticmethod
+    def _encode_text_for_remote(text: str) -> str:
+        """base64 编码后用单引号包裹，避免在远端解析任何元字符。"""
+        import base64
+
+        encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        return f"'{encoded}'"
+
+    @classmethod
+    def _safe_remote_run_root(cls, remote_run_root: str, config: RemoteClusterConfig) -> str:
+        """Validate a remote run path before using SSH credentials to inspect it."""
+
+        return cls._safe_remote_path(
+            remote_run_root,
+            allowed_roots=[config.remote_base_dir, f"/scratch/{config.user}"],
+            home_user=config.user,
+            label="remote_run_root",
+        )
+
+    @classmethod
+    def _safe_remote_research_dir(cls, remote_research_dir: str, config: RemoteClusterConfig) -> str:
+        """Keep research sync scoped to the user's ``~/research`` tree."""
+
+        return cls._safe_remote_path(
+            remote_research_dir,
+            allowed_roots=[cls._default_remote_research_dir(config)],
+            home_user=config.user,
+            label="remote_research_dir",
+        )
+
+    @staticmethod
+    def _safe_remote_path(path: str, *, allowed_roots: list[str], home_user: str, label: str) -> str:
+        value = str(path or "").strip()
+        if not value:
+            raise ValueError(f"{label} 不能为空。")
+        if value == "~":
+            value = f"/home/{home_user}"
+        elif value.startswith("~/"):
+            value = f"/home/{home_user}/{value[2:]}"
+        if any(token in value for token in ("\n", "\r", "\x00", "$", "`", ";", "&", "|")):
+            raise ValueError(f"{label} 包含不允许的 shell 元字符。")
+        posix = PurePosixPath(value)
+        if not posix.is_absolute():
+            raise ValueError(f"{label} 必须是绝对路径或 ~/ 开头路径。")
+        if ".." in posix.parts:
+            raise ValueError(f"{label} 不能包含 '..'。")
+
+        normalized = "/" + "/".join(part for part in posix.parts if part not in {"", "/"})
+        safe_roots = []
+        for root in allowed_roots:
+            expanded = str(root or "").strip()
+            if expanded == "~":
+                expanded = f"/home/{home_user}"
+            elif expanded.startswith("~/"):
+                expanded = f"/home/{home_user}/{expanded[2:]}"
+            if not expanded:
+                continue
+            root_path = PurePosixPath(expanded)
+            if root_path.is_absolute() and ".." not in root_path.parts:
+                safe_roots.append("/" + "/".join(part for part in root_path.parts if part not in {"", "/"}))
+        if not any(normalized == root or normalized.startswith(f"{root}/") for root in safe_roots):
+            raise ValueError(f"{label} 必须位于允许根目录内: {safe_roots}")
+        return normalized
+
+    @staticmethod
+    def _safe_extract_tar(
+        tar: tarfile.TarFile,
+        target_dir: Path,
+        *,
+        allowed_members: set[str] | None = None,
+    ) -> list[str]:
+        """Extract a tar archive only after path, type, and allow-list checks."""
+
+        target = Path(target_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        resolved_target = target.resolve()
+        members = tar.getmembers()
+        extracted: list[str] = []
+        for member in members:
+            member_name = str(member.name or "").strip()
+            rel = PurePosixPath(member_name)
+            if not member_name or rel.is_absolute() or ".." in rel.parts or "\\" in member_name:
+                raise ValueError(f"不安全成员路径: {member.name!r}")
+            if not (member.isfile() or member.isdir()):
+                raise ValueError(f"不安全成员类型: {member.name!r}")
+            if allowed_members is not None:
+                clean_allowed = {str(PurePosixPath(item)) for item in allowed_members}
+                if member.isfile() and member_name not in clean_allowed:
+                    raise ValueError(f"归档包含未请求文件: {member_name}")
+                if member.isdir() and not any(item.startswith(f"{member_name.rstrip('/')}/") for item in clean_allowed):
+                    raise ValueError(f"归档包含未请求目录: {member_name}")
+            destination = (target / Path(*rel.parts)).resolve()
+            if destination != resolved_target and resolved_target not in destination.parents:
+                raise ValueError(f"成员会写出目标目录: {member_name}")
+        for member in members:
+            tar.extract(member, target)
+            extracted.append(member.name)
+        return extracted
 
     def _prepare_remote_directories(
         self, config: RemoteClusterConfig, remote_run_root: str, backend: str

@@ -39,6 +39,7 @@ class ResearchProjectPaths:
     root: Path
     progress: Path
     common_dir: Path
+    learning_dir: Path
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -46,6 +47,7 @@ class ResearchProjectPaths:
             "root": str(self.root),
             "progress": str(self.progress),
             "common_dir": str(self.common_dir),
+            "learning_dir": str(self.learning_dir),
         }
 
 
@@ -81,6 +83,7 @@ def resolve_research_project(project: str | None) -> ResearchProjectPaths | None
         root=root,
         progress=root / "研究进展.md",
         common_dir=root / "common",
+        learning_dir=root / "Learning",
     )
 
 
@@ -211,3 +214,7 @@ def append_research_progress(
         lines.append("- ✅ 已记录一次 AETHER 对话推进。")
     paths.progress.write_text(header + "\n".join(lines).rstrip() + "\n\n" + body, encoding="utf-8")
     return {"status": "ok", "project": paths.slug, "progress_path": str(paths.progress)}
+
+
+# NOTE: research_learning_capture 实现在 aether_dft/research_sync.py，它会复用 ResearchProjectPaths.learning_dir。
+# 此处不再重复实现，避免与 tool_registry 注册的入口出现两条不同的路径。

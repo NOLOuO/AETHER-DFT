@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from dft_app.remote.config import RemoteClusterConfig
@@ -19,7 +19,10 @@ from dft_app.remote.ssh_remote_runner import SSHRemoteRunner
 
 _ACTIVE_STATES = {"PENDING", "CONFIGURING", "RUNNING", "COMPLETING", "SUSPENDED"}
 _SAFE_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
-_SAFE_REL_LOG_RE = re.compile(r"^[A-Za-z0-9_.@/+:-]+$")
+# log_name 只接受 basename，禁止 '/'；上层会自动尝试 logs/<name>、outputs/<name> 等前缀
+_SAFE_LOG_BASENAME_RE = re.compile(r"^[A-Za-z0-9_.@+:-]+$")
+# remote_run_root 必须是合理的远端绝对路径（或 ~）；禁止 shell 元字符与路径穿越
+_SAFE_REMOTE_PATH_RE = re.compile(r"^[A-Za-z0-9_./@~+:\-]+$")
 
 
 def _runner(config: RemoteClusterConfig | None = None) -> SSHRemoteRunner:
@@ -52,10 +55,64 @@ def _safe_job_id(job_id: str | None) -> str:
 
 
 def _safe_log_name(log_name: str | None) -> str:
+    """log_name 只接受基名（无 '/'）；上层负责加 logs/ 或 outputs/ 前缀。"""
     value = str(log_name or "vasp.out").strip() or "vasp.out"
-    if value.startswith("/") or ".." in Path(value).parts or not _SAFE_REL_LOG_RE.fullmatch(value):
-        raise ValueError("log_name 必须是安全的相对日志路径。")
+    if not _SAFE_LOG_BASENAME_RE.fullmatch(value):
+        raise ValueError("log_name 必须是单一文件基名（字母/数字/_./@+:- ），不能含路径分隔符。")
+    if value in {".", ".."}:
+        raise ValueError("log_name 不能是 '.' 或 '..'。")
     return value
+
+
+def _safe_remote_path(path: str | None, config: RemoteClusterConfig) -> str:
+    """校验 remote_run_root：阻止 shell 元字符、路径穿越和越权读取。
+
+    Shell quoting 只能防命令注入，不能防模型拿当前 SSH 凭证去试探
+    ``/etc``、``/home/otheruser`` 或当前用户 home 下的敏感文件。因此这里把
+    路径限制在当前配置的 ``remote_base_dir`` 或 ``/scratch/<user>/`` 下。
+    """
+    value = str(path or "").strip()
+    if not value:
+        raise ValueError("remote_run_root 不能为空。")
+    if not _SAFE_REMOTE_PATH_RE.fullmatch(value):
+        raise ValueError(
+            "remote_run_root 含非法字符（只允许字母/数字/_./@~+:- 和 '/'）；"
+            "禁止 shell 元字符（$ ; & | > < ` ' \" \\ 等）与空格。"
+        )
+    parts = [p for p in value.split("/") if p]
+    if any(p == ".." for p in parts):
+        raise ValueError("remote_run_root 不能包含 '..' 路径段。")
+    if value == "~":
+        value = f"/home/{config.user}"
+    elif value.startswith("~/"):
+        value = f"/home/{config.user}/{value[2:]}"
+    if not value.startswith("/"):
+        raise ValueError("remote_run_root 必须是绝对路径或 ~/ 开头路径。")
+
+    def clean(raw: str) -> str:
+        return str(PurePosixPath(str(raw).rstrip("/") or "/"))
+
+    normalized = clean(value)
+    allowed_roots = {
+        clean(config.remote_base_dir),
+        clean(f"/scratch/{config.user}"),
+    }
+    if not any(normalized == root or normalized.startswith(root + "/") for root in allowed_roots if root != "/"):
+        raise ValueError(
+            "remote_run_root 超出允许范围；只允许配置的 remote_base_dir 或 /scratch/<user>/ 下的路径。"
+        )
+    return normalized
+
+
+def _safe_positive_int(value: Any, *, default: int, lo: int, hi: int, name: str) -> int:
+    """把模型/调用方给的 limit/lines 这类整数安全地归一化；非法值直接抛 ValueError。"""
+    if value is None or value == "":
+        return default
+    try:
+        cast = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} 必须是正整数，收到 {value!r}。") from exc
+    return max(lo, min(cast, hi))
 
 
 def _quote_shell(value: str) -> str:
@@ -160,8 +217,12 @@ def job_status_brief(job_id: str) -> dict[str, Any]:
 
 def my_jobs(*, limit: int = 20) -> dict[str, Any]:
     """squeue --me 简化；< 2s。"""
+    try:
+        safe_limit = _safe_positive_int(limit, default=20, lo=1, hi=200, name="limit")
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
     runner = _runner()
-    cmd = f"squeue --me -h -o '%i|%j|%T|%M|%N|%R' | head -n {int(limit)}"
+    cmd = f"squeue --me -h -o '%i|%j|%T|%M|%N|%R' | head -n {safe_limit}"
     result = _exec(runner, cmd, timeout=20)
     if not result["ok"]:
         return {
@@ -201,22 +262,27 @@ def job_tail_log(
     project_root: str | None = None,
 ) -> dict[str, Any]:
     """tail -n <lines> 某个 job 的指定日志（默认 vasp.out）；< 2s。"""
-    lines = max(1, min(int(lines or 50), 500))
     try:
+        safe_lines = _safe_positive_int(lines, default=50, lo=1, hi=500, name="lines")
         safe_job_id = _safe_job_id(job_id)
         safe_log = _safe_log_name(log_name)
     except ValueError as exc:
         return {"status": "error", "message": str(exc)}
-    resolved_root = remote_run_root or _resolve_remote_run_root(
+    resolved_root_raw = remote_run_root or _resolve_remote_run_root(
         safe_job_id, Path(project_root) if project_root else None
     )
-    if not resolved_root:
+    if not resolved_root_raw:
         return {
             "status": "unavailable",
             "message": "找不到 remote_run_root；请提供 remote_run_root，或确认 job_id 对应的本地 run 记录里有 notes.remote.remote_run_root。",
             "job_id": safe_job_id or job_id,
         }
     runner = _runner()
+    config = runner._load_config()
+    try:
+        resolved_root = _safe_remote_path(resolved_root_raw, config)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc), "remote_run_root": resolved_root_raw}
     quoted_root = _quote_shell(resolved_root)
     candidates = [safe_log, f"logs/{safe_log}", f"outputs/{safe_log}", "slurm.out", "OSZICAR"]
     quoted_candidates = " ".join(_quote_shell(item) for item in dict.fromkeys(candidates))
@@ -224,7 +290,7 @@ def job_tail_log(
         f"for fname in {quoted_candidates}; do "
         f"  if [ -f {quoted_root}/\"$fname\" ]; then "
         f"    echo \"__AETHER_LOG_PATH__=$fname\"; "
-        f"    tail -n {lines} {quoted_root}/\"$fname\"; break; "
+        f"    tail -n {safe_lines} {quoted_root}/\"$fname\"; break; "
         f"  fi; "
         f"done"
     )
@@ -254,7 +320,7 @@ def job_tail_log(
         "status": "ok",
         "remote_run_root": resolved_root,
         "log_path_relative": log_path,
-        "lines_requested": lines,
+        "lines_requested": safe_lines,
         "lines_returned": len(body_lines),
         "tail": "\n".join(body_lines),
     }
@@ -271,20 +337,25 @@ def job_partial_outcar(
         safe_job_id = _safe_job_id(job_id)
     except ValueError as exc:
         return {"status": "error", "message": str(exc)}
-    resolved_root = remote_run_root or _resolve_remote_run_root(
+    resolved_root_raw = remote_run_root or _resolve_remote_run_root(
         safe_job_id, Path(project_root) if project_root else None
     )
-    if not resolved_root:
+    if not resolved_root_raw:
         return {
             "status": "unavailable",
             "message": "找不到 remote_run_root；请提供。",
             "job_id": safe_job_id or job_id,
         }
     runner = _runner()
-    quoted_root = _quote_shell(resolved_root)
+    config = runner._load_config()
+    try:
+        resolved_root = _safe_remote_path(resolved_root_raw, config)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc), "remote_run_root": resolved_root_raw}
+    quoted_outcar = _quote_shell(f"{resolved_root}/OUTCAR")
     # 只取 OUTCAR 尾段以减少传输量
     cmd = (
-        f"if [ -f {quoted_root}/OUTCAR ]; then tail -n 400 {quoted_root}/OUTCAR; "
+        f"if [ -f {quoted_outcar} ]; then tail -n 400 {quoted_outcar}; "
         f"else echo __AETHER_NO_OUTCAR__; fi"
     )
     result = _exec(runner, cmd, timeout=30)
@@ -330,20 +401,25 @@ def job_progress_estimate(
         safe_job_id = _safe_job_id(job_id)
     except ValueError as exc:
         return {"status": "error", "message": str(exc)}
-    resolved_root = remote_run_root or _resolve_remote_run_root(
+    resolved_root_raw = remote_run_root or _resolve_remote_run_root(
         safe_job_id, Path(project_root) if project_root else None
     )
-    if not resolved_root:
+    if not resolved_root_raw:
         return {
             "status": "unavailable",
             "message": "找不到 remote_run_root；请提供。",
             "job_id": safe_job_id or job_id,
         }
     runner = _runner()
-    quoted_root = _quote_shell(resolved_root)
+    config = runner._load_config()
+    try:
+        resolved_root = _safe_remote_path(resolved_root_raw, config)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc), "remote_run_root": resolved_root_raw}
+    quoted_oszicar = _quote_shell(f"{resolved_root}/OSZICAR")
     # OSZICAR 简短，常驻 ionic step trajectory
     cmd = (
-        f"if [ -f {quoted_root}/OSZICAR ]; then tail -n 200 {quoted_root}/OSZICAR; "
+        f"if [ -f {quoted_oszicar} ]; then tail -n 200 {quoted_oszicar}; "
         f"else echo __AETHER_NO_OSZICAR__; fi"
     )
     result = _exec(runner, cmd, timeout=30)

@@ -131,9 +131,9 @@ class ToolRegistry:
         self._register(ToolSpec("research_progress_append", "按研究工作区格式倒序追加 research/<项目>/研究进展.md。", {"project": {"type": "string"}, "completed": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}}, False, ("project",)), self._research_progress_append)
         self._register(ToolSpec("web_search", "通用网页检索入口。若本地未接 live connector，会返回 query_urls 与 connector_required，不会伪造结果。", {"query": {"type": "string"}, "max_results": {"type": "integer"}, "live": {"type": "boolean"}}, True, ("query",)), self._web_search)
         self._register(ToolSpec("literature_search", "文献检索入口：默认给出 arXiv/Semantic Scholar/Scholar 查询 envelope；live=true 时尝试 arXiv Atom fallback。", {"query": {"type": "string"}, "max_results": {"type": "integer"}, "source": {"type": "string"}, "live": {"type": "boolean"}}, True, ("query",)), self._literature_search)
-        self._register(ToolSpec("chemistry_compute", "讨论阶段小计算器：单位换算、Boltzmann population、TST/Eyring 速率、Delta G。", {"operation": {"type": "string"}, "value": {"type": "number"}, "energies_ev": {"type": "array", "items": {"type": "number"}}, "temperature_k": {"type": "number"}, "barrier_ev": {"type": "number"}, "delta_h_ev": {"type": "number"}, "delta_s_ev_k": {"type": "number"}}, True, ("operation",)), self._chemistry_compute)
+        self._register(ToolSpec("chemistry_compute", "讨论阶段小计算器：单位换算、Boltzmann population、TST/Eyring 速率、Delta G/kBT。支持旧 operation 与新 mode 参数，让模型按科研问题自主选择。", {"operation": {"type": "string"}, "mode": {"type": "string"}, "value": {"type": "number"}, "from_unit": {"type": "string"}, "to_unit": {"type": "string"}, "energies": {"type": "array", "items": {"type": "number"}}, "energies_ev": {"type": "array", "items": {"type": "number"}}, "energy_unit": {"type": "string"}, "reference_energy": {"type": "number"}, "temperature_k": {"type": "number"}, "barrier_ev": {"type": "number"}, "activation_energy": {"type": "number"}, "prefactor_hz": {"type": "number"}, "transmission_coefficient": {"type": "number"}, "delta_h_ev": {"type": "number"}, "delta_s_ev_k": {"type": "number"}, "enthalpy": {"type": "number"}, "enthalpy_unit": {"type": "string"}, "entropy": {"type": "number"}, "entropy_unit": {"type": "string"}, "unit": {"type": "string"}}, True), self._chemistry_compute)
         self._register(ToolSpec("image_understand", "图像理解入口。当前本地只做文件存在/格式检查；真正视觉结论需要外层 vision connector。", {"image_path": {"type": "string"}, "prompt": {"type": "string"}}, True, ("image_path",)), self._image_understand)
-        self._register(ToolSpec("discussion_state_snapshot", "把当前讨论目标、已知事实、开放问题、下一步压缩成结构化快照；可选持久化。", {"project": {"type": "string"}, "goal": {"type": "string"}, "known_facts": {"type": "array", "items": {"type": "string"}}, "open_questions": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}, "persist_path": {"type": "string"}}, False), self._discussion_state_snapshot)
+        self._register(ToolSpec("discussion_state_snapshot", "把当前讨论目标、共识、开放问题、下一步压缩成结构化快照；可选写 markdown/json 或项目进展，用作长对话 anchor。", {"project": {"type": "string"}, "goal": {"type": "string"}, "title": {"type": "string"}, "summary": {"type": "string"}, "consensus": {"type": "array", "items": {"type": "string"}}, "known_facts": {"type": "array", "items": {"type": "string"}}, "open_questions": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}, "tags": {"type": "array", "items": {"type": "string"}}, "persist_path": {"type": "string"}, "write_to_project_state": {"type": "boolean"}}, False), self._discussion_state_snapshot)
         self._register(ToolSpec("project_state_read", "读取项目 state 与 progress。", {"project": {"type": "string"}, "max_chars": {"type": "integer"}}, True, ("project",)), self._project_state_read)
         self._register(ToolSpec("project_progress_append", "追加研究进展。", {"project": {"type": "string"}, "completed": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}}, False, ("project",)), self._project_progress_append)
         self._register(ToolSpec("knowledge_note_add", "把重要结论/参数经验写入项目知识库。", {"project": {"type": "string"}, "title": {"type": "string"}, "content": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, False, ("project", "title", "content")), self._knowledge_note_add)
@@ -218,6 +218,12 @@ class ToolRegistry:
 
     def openai_tool_schemas(self) -> list[dict[str, Any]]:
         return [_schema(spec.name, spec.description, spec.parameters, list(spec.required)) for spec, _ in self._tools.values()]
+
+    def is_read_only_tool(self, name: str) -> bool:
+        if name not in self._tools:
+            return True
+        spec, _ = self._tools[name]
+        return spec.read_only
 
     def run_tool(self, name: str, arguments: dict[str, Any] | str | None = None) -> dict[str, Any]:
         if isinstance(arguments, str):
@@ -526,8 +532,8 @@ class ToolRegistry:
         )
 
     def _chemistry_compute(self, payload: dict[str, Any]) -> dict[str, Any]:
-        kwargs = {key: value for key, value in payload.items() if key != "operation"}
-        return chemistry_compute(str(payload.get("operation") or ""), **kwargs)
+        kwargs = {key: value for key, value in payload.items() if key not in {"operation", "mode"}}
+        return chemistry_compute(str(payload.get("operation") or payload.get("mode") or ""), **kwargs)
 
     def _image_understand(self, payload: dict[str, Any]) -> dict[str, Any]:
         return image_understand(str(payload.get("image_path") or ""), prompt=str(payload.get("prompt") or ""))
@@ -536,10 +542,15 @@ class ToolRegistry:
         return discussion_state_snapshot(
             project=str(payload.get("project") or "").strip() or None,
             goal=str(payload.get("goal") or ""),
+            title=str(payload.get("title") or ""),
+            summary=str(payload.get("summary") or ""),
+            consensus=[str(item) for item in payload.get("consensus") or []],
             known_facts=[str(item) for item in payload.get("known_facts") or []],
             open_questions=[str(item) for item in payload.get("open_questions") or []],
             next_steps=[str(item) for item in payload.get("next_steps") or []],
+            tags=[str(item) for item in payload.get("tags") or []],
             persist_path=str(payload.get("persist_path") or "").strip() or None,
+            write_to_project_state=bool(payload.get("write_to_project_state")),
         )
 
     def _project_state_read(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1741,7 +1752,7 @@ class ToolRegistry:
             "goal": str(payload.get("goal") or ""),
             "score": max(0.0, 1.0 - 0.25 * sum(1 for item in findings if item["level"] == "warn")),
             "findings": findings,
-            "guidance": "behavior_audit 是软审计，不阻止下一步；模型应按 findings 自主决定是否改写、补证据或回写 research。",
+            "guidance": "behavior_audit 完成后 harness 会停止继续调用工具并要求模型给出自然语言结论；如仍缺证据，只能把后续动作列为下一步。",
         }
 
 

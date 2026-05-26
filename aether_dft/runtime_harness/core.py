@@ -15,6 +15,8 @@ from .tool_registry import ToolRegistry
 
 DISCUSSION_MAX_STEPS = 4
 EXECUTION_MAX_STEPS = 15
+MAX_TOOL_CALLS_PER_STEP = 8
+MAX_MUTATING_TOOL_CALLS_PER_STEP = 3
 
 
 def _runtime_log_path() -> Path:
@@ -202,12 +204,26 @@ class AgentHarness:
         response = ""
         tools = self.registry.openai_tool_schemas()
         started_at = datetime.now().astimezone()
+        force_final_reply_after_audit = False
         if progress_callback:
             progress_callback({"event": "turn_start", "session_id": session_id, "model_id": getattr(getattr(self.adapter, "runtime", None), "model_id", "")})
         for step_index in range(max_steps):
             if progress_callback:
                 progress_callback({"event": "model_request", "step": step_index + 1, "max_steps": max_steps})
-            reply = self.adapter.chat(messages, tools=tools, tool_choice="auto", max_tokens=max_tokens)
+            tools_for_step = [] if force_final_reply_after_audit else tools
+            tool_choice_for_step = "none" if force_final_reply_after_audit else "auto"
+            if force_final_reply_after_audit:
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            "behavior_audit 已完成。现在必须给用户一个简短、证据化的自然语言结论；"
+                            "不要再调用工具。若仍有后续动作，只把它列为下一步。"
+                        ),
+                    }
+                )
+                messages = _clean_messages(messages)
+            reply = self.adapter.chat(messages, tools=tools_for_step, tool_choice=tool_choice_for_step, max_tokens=max_tokens)
             finish_reason = str(reply.get("finish_reason") or "stop")
             tool_calls = reply.get("tool_calls") or []
             content = str(reply.get("content") or "")
@@ -218,13 +234,37 @@ class AgentHarness:
                     assistant_message["reasoning_content"] = reasoning_content
                 messages.append(assistant_message)
                 messages = _clean_messages(messages)
-                for call in tool_calls:
+                mutating_calls_seen = 0
+                for call_index, call in enumerate(tool_calls):
                     func = call.get("function") or {}
                     name = str(func.get("name") or "")
                     raw_args = func.get("arguments") or "{}"
                     if progress_callback:
                         progress_callback({"event": "tool_start", "step": step_index + 1, "name": name, "arguments": raw_args})
-                    result = self.registry.run_tool(name, raw_args)
+                    read_only_checker = getattr(self.registry, "is_read_only_tool", lambda _name: True)
+                    read_only = bool(read_only_checker(name))
+                    if not read_only:
+                        mutating_calls_seen += 1
+                    if call_index >= MAX_TOOL_CALLS_PER_STEP:
+                        result = {
+                            "name": name,
+                            "arguments": raw_args,
+                            "result": {
+                                "status": "blocked",
+                                "message": f"单轮工具调用超过上限 {MAX_TOOL_CALLS_PER_STEP}，本调用未执行；请模型先总结证据再继续。",
+                            },
+                        }
+                    elif mutating_calls_seen > MAX_MUTATING_TOOL_CALLS_PER_STEP:
+                        result = {
+                            "name": name,
+                            "arguments": raw_args,
+                            "result": {
+                                "status": "blocked",
+                                "message": f"单轮有副作用工具调用超过上限 {MAX_MUTATING_TOOL_CALLS_PER_STEP}，本调用未执行；请分步确认。",
+                            },
+                        }
+                    else:
+                        result = self.registry.run_tool(name, raw_args)
                     if (
                         isinstance(result.get("result"), dict)
                         and result["result"].get("status") == "permission_required"
@@ -300,6 +340,8 @@ class AgentHarness:
                         )
                     messages.append({"role": "tool", "name": name, "tool_call_id": call.get("id"), "content": visible})
                     messages = _clean_messages(messages)
+                    if name == "behavior_audit":
+                        force_final_reply_after_audit = True
                 continue
             response = _clean_text(content)
             messages.append({"role": "assistant", "content": response})

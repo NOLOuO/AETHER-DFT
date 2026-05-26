@@ -9,13 +9,18 @@
 
 from __future__ import annotations
 
+import io
+import tarfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from dft_app.remote import realtime
 from dft_app.remote.config import RemoteClusterConfig
+from dft_app.remote.ssh_remote_runner import SSHRemoteRunner
+from dft_app.models import RunRecord
 
 
 @dataclass
@@ -168,7 +173,7 @@ def test_job_tail_log_without_job_or_root_is_unavailable(monkeypatch):
 def test_job_tail_log_rejects_unsafe_log_name(monkeypatch):
     fake = _FakeRunner()
     _patch_runner(monkeypatch, fake)
-    result = realtime.job_tail_log(remote_run_root="/x/y", log_name="../../etc/passwd")
+    result = realtime.job_tail_log(remote_run_root="/home/tester/runs/x/y", log_name="../../etc/passwd")
     assert result["status"] == "error"
     assert fake.calls == []
 
@@ -185,7 +190,7 @@ def test_job_partial_outcar_parses_energy_and_force(monkeypatch):
 """.strip()
     fake = _FakeRunner({"OUTCAR": _FakeCommandResult(0, outcar, "")})
     _patch_runner(monkeypatch, fake)
-    result = realtime.job_partial_outcar(remote_run_root="/x/y")
+    result = realtime.job_partial_outcar(remote_run_root="/home/tester/runs/x/y")
     assert result["status"] == "ok"
     assert result["last_toten_ev"] == pytest.approx(-123.456789)
     assert result["last_free_energy_ev"] == pytest.approx(-123.456789)
@@ -199,7 +204,7 @@ def test_job_partial_outcar_parses_energy_and_force(monkeypatch):
 def test_job_partial_outcar_missing(monkeypatch):
     fake = _FakeRunner({"OUTCAR": _FakeCommandResult(0, "__AETHER_NO_OUTCAR__", "")})
     _patch_runner(monkeypatch, fake)
-    result = realtime.job_partial_outcar(remote_run_root="/x/y")
+    result = realtime.job_partial_outcar(remote_run_root="/home/tester/runs/x/y")
     assert result["status"] == "missing"
 
 
@@ -211,7 +216,7 @@ def test_job_progress_estimate_detects_monotonic_descent(monkeypatch):
     )
     fake = _FakeRunner({"OSZICAR": _FakeCommandResult(0, oszicar, "")})
     _patch_runner(monkeypatch, fake)
-    result = realtime.job_progress_estimate(remote_run_root="/x/y")
+    result = realtime.job_progress_estimate(remote_run_root="/home/tester/runs/x/y")
     assert result["status"] == "ok"
     assert result["ionic_steps_seen"] == 7
     assert result["monotonic_decreasing_tail"] is True
@@ -231,7 +236,7 @@ def test_job_progress_estimate_detects_oscillation(monkeypatch):
     )
     fake = _FakeRunner({"OSZICAR": _FakeCommandResult(0, oszicar, "")})
     _patch_runner(monkeypatch, fake)
-    result = realtime.job_progress_estimate(remote_run_root="/x/y")
+    result = realtime.job_progress_estimate(remote_run_root="/home/tester/runs/x/y")
     assert result["status"] == "ok"
     assert result["oscillating"] is True
 
@@ -239,8 +244,101 @@ def test_job_progress_estimate_detects_oscillation(monkeypatch):
 def test_job_progress_estimate_partial_when_few_steps(monkeypatch):
     fake = _FakeRunner({"OSZICAR": _FakeCommandResult(0, "   1  F= -10.10", "")})
     _patch_runner(monkeypatch, fake)
-    result = realtime.job_progress_estimate(remote_run_root="/x/y")
+    result = realtime.job_progress_estimate(remote_run_root="/home/tester/runs/x/y")
     assert result["status"] == "partial"
+
+
+def test_job_tail_log_rejects_unsafe_remote_run_root(monkeypatch):
+    fake = _FakeRunner()
+    _patch_runner(monkeypatch, fake)
+    result = realtime.job_tail_log(remote_run_root="/home/tester/runs/x/../../etc")
+    assert result["status"] == "error"
+    assert ".." in result["message"]
+    assert fake.calls == []
+
+
+def test_job_tail_log_rejects_shell_metachars_in_remote_run_root(monkeypatch):
+    fake = _FakeRunner()
+    _patch_runner(monkeypatch, fake)
+    result = realtime.job_tail_log(remote_run_root="/home/tester/runs/x/y; rm -rf /")
+    assert result["status"] == "error"
+    assert fake.calls == []
+
+
+def test_job_tail_log_rejects_out_of_scope_remote_run_root(monkeypatch):
+    fake = _FakeRunner()
+    _patch_runner(monkeypatch, fake)
+    result = realtime.job_tail_log(remote_run_root="/etc")
+    assert result["status"] == "error"
+    assert "允许范围" in result["message"]
+    assert fake.calls == []
+
+
+def test_job_tail_log_allows_tilde_under_current_user(monkeypatch):
+    body = "__AETHER_LOG_PATH__=vasp.out\nok"
+    fake = _FakeRunner({"tail -n 1": _FakeCommandResult(0, body, "")})
+    _patch_runner(monkeypatch, fake)
+    result = realtime.job_tail_log(remote_run_root="~/runs/x/y", lines=1)
+    assert result["status"] == "ok"
+    assert result["remote_run_root"] == "/home/tester/runs/x/y"
+
+
+def test_job_tail_log_rejects_tilde_outside_remote_base(monkeypatch):
+    fake = _FakeRunner()
+    _patch_runner(monkeypatch, fake)
+    result = realtime.job_tail_log(remote_run_root="~/.ssh", log_name="id_ed25519")
+    assert result["status"] == "error"
+    assert fake.calls == []
+
+
+def test_job_partial_outcar_rejects_unsafe_remote_run_root(monkeypatch):
+    fake = _FakeRunner()
+    _patch_runner(monkeypatch, fake)
+    result = realtime.job_partial_outcar(remote_run_root="/home/tester/runs/x/y; touch /tmp/pwn")
+    assert result["status"] == "error"
+    assert fake.calls == []
+
+
+def test_job_progress_estimate_rejects_unsafe_remote_run_root(monkeypatch):
+    fake = _FakeRunner()
+    _patch_runner(monkeypatch, fake)
+    result = realtime.job_progress_estimate(remote_run_root="/home/tester/runs/x/../../etc/passwd")
+    assert result["status"] == "error"
+    assert fake.calls == []
+
+
+def test_my_jobs_invalid_limit_returns_error(monkeypatch):
+    fake = _FakeRunner()
+    _patch_runner(monkeypatch, fake)
+    result = realtime.my_jobs(limit="abc")  # type: ignore[arg-type]
+    assert result["status"] == "error"
+    assert "limit" in result["message"]
+    assert fake.calls == []
+
+
+def test_my_jobs_clamps_limit_to_safe_range(monkeypatch):
+    fake = _FakeRunner({"squeue --me": _FakeCommandResult(0, "", "")})
+    _patch_runner(monkeypatch, fake)
+    realtime.my_jobs(limit=99999)
+    # head -n 应被夹到 200 上限
+    assert any("head -n 200" in call for call in fake.calls)
+
+
+def test_job_tail_log_invalid_lines_returns_error(monkeypatch):
+    fake = _FakeRunner()
+    _patch_runner(monkeypatch, fake)
+    result = realtime.job_tail_log(remote_run_root="/home/tester/runs/x/y", lines="not-int")  # type: ignore[arg-type]
+    assert result["status"] == "error"
+    assert "lines" in result["message"]
+    assert fake.calls == []
+
+
+def test_job_tail_log_rejects_log_name_with_slash(monkeypatch):
+    fake = _FakeRunner()
+    _patch_runner(monkeypatch, fake)
+    result = realtime.job_tail_log(remote_run_root="/home/tester/runs/x/y", log_name="logs/foo")
+    assert result["status"] == "error"
+    assert fake.calls == []
 
 
 def test_tools_registered_in_registry():
@@ -264,3 +362,91 @@ def test_prompt_includes_cluster_realtime_section():
     assert "集群随时可问" in rendered
     assert "cluster_job_status_brief" in rendered
     assert "cluster_job_partial_outcar" in rendered
+
+
+def test_ssh_runner_safe_extract_tar_rejects_path_traversal(tmp_path):
+    archive = tmp_path / "bad.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        payload = b"pwn"
+        info = tarfile.TarInfo("../evil.txt")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+
+    with tarfile.open(archive, "r:gz") as tar:
+        with pytest.raises(ValueError):
+            SSHRemoteRunner._safe_extract_tar(tar, tmp_path / "out")
+
+    assert not (tmp_path / "evil.txt").exists()
+
+
+def test_ssh_runner_safe_extract_tar_enforces_allowlist(tmp_path):
+    archive = tmp_path / "extra.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        for name in ("project/allowed.md", "project/extra.md"):
+            payload = name.encode()
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            tar.addfile(info, io.BytesIO(payload))
+
+    with tarfile.open(archive, "r:gz") as tar:
+        with pytest.raises(ValueError):
+            SSHRemoteRunner._safe_extract_tar(
+                tar,
+                tmp_path / "out",
+                allowed_members={"project/allowed.md"},
+            )
+
+
+class _SSHRunnerNoRemote(SSHRemoteRunner):
+    def __init__(self):
+        super().__init__(
+            RemoteClusterConfig(
+                host="fake.host",
+                user="tester",
+                port=22,
+                remote_base_dir="/home/tester/runs",
+                backend="openssh",
+            )
+        )
+        self.calls: list[str] = []
+
+    def _ensure_local_tools(self, _config, _backend):
+        return None
+
+    def _run_remote_command(self, _config, command: str, *, timeout: int, backend: str):
+        self.calls.append(command)
+        return _FakeCommandResult(0, "", "")
+
+
+def test_research_status_rejects_out_of_scope_remote_dir(tmp_path):
+    runner = _SSHRunnerNoRemote()
+    result = runner.research_status(Path(tmp_path), remote_research_dir="/etc")
+    assert result.status == "blocked"
+    assert "remote_research_dir" in result.message
+    assert runner.calls == []
+
+
+def test_pull_remote_run_outputs_rejects_out_of_scope_remote_root(tmp_path):
+    runner = _SSHRunnerNoRemote()
+    result = runner.pull_remote_run_outputs("/home/otheruser/secret", tmp_path)
+    assert result.status == "blocked"
+    assert "remote_run_root" in result.message
+    assert runner.calls == []
+
+
+def test_monitor_rejects_unsafe_scheduler_job_id(tmp_path):
+    runner = _SSHRunnerNoRemote()
+    record = RunRecord(
+        task_id="task",
+        run_id="run",
+        run_root=str(tmp_path / "run"),
+        checkpoint_path=str(tmp_path / "run" / "checkpoint.json"),
+        scheduler_job_id="123; touch /tmp/pwn",
+        notes={"remote": {"remote_run_root": "/home/tester/runs/task/run"}},
+    )
+
+    result = runner.monitor(record)
+
+    assert result.status == "blocked"
+    assert "scheduler_job_id" in result.message
+    assert runner.calls == []
