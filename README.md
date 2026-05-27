@@ -53,6 +53,7 @@ aether adsorption plan "计算 H2O 在 Pt(111) 上的吸附" --adsorbate H2O --m
 ## 当前开发版交付状态
 
 - M11-M17 主线已完成：模型可按证据自主选择工具，不再依赖固定流程。
+- 已补长期科研续接能力：`project_continuity_digest` 汇总证据状态，`research_cycle_checkpoint` 落盘阶段性判断，`evidence_claim_audit` 防止无证据结论。
 - 最近一次手动真实 API 验证（2026-05-26）：`deepseek:deepseek-v4-pro` 能调用工具完成 H2O/Pt(111) 候选建模计划。
 - 最近一次手动真实 Step 3 冒烟（2026-05-26）：build → preflight → remote submit → cancel → fetch，提交后立即取消。
 - 详细交付说明见 [`docs/DELIVERY.md`](docs/DELIVERY.md)。

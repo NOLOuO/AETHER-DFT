@@ -68,6 +68,11 @@ from aether_dft.research_sync import (
     research_workspace_sync_from_cluster,
     research_workspace_sync_to_cluster,
 )
+from aether_dft.research_continuity import (
+    audit_evidence_claims,
+    build_project_continuity_digest,
+    write_research_cycle_checkpoint,
+)
 from aether_dft.research_vasp_templates import resolve_research_vasp_template
 from aether_dft.research_workspace import append_research_progress, build_research_proposal, read_research_onboarding_context
 from aether_dft.result_insight import interpret_result, propose_next_experiments
@@ -129,6 +134,9 @@ class ToolRegistry:
         self._register(ToolSpec("research_onboarding_context", "读取 research 入职上下文：AGENTS、避坑清单、项目研究进展。", {"project": {"type": "string"}, "max_chars": {"type": "integer"}}, True), self._research_onboarding_context)
         self._register(ToolSpec("research_proposal_plan", "把自然语言课题讨论整理成科学问题、结构需求、证据需求和下一步。", {"prompt": {"type": "string"}, "project": {"type": "string"}}, True, ("prompt",)), self._research_proposal_plan)
         self._register(ToolSpec("research_progress_append", "按研究工作区格式倒序追加 research/<项目>/研究进展.md。", {"project": {"type": "string"}, "completed": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}}, False, ("project",)), self._research_progress_append)
+        self._register(ToolSpec("project_continuity_digest", "读取项目状态、research、知识库、近期 run 和最近结果，生成下一轮可续接摘要；这是证据地图，不是固定流程。", {"project": {"type": "string"}, "focus": {"type": "string"}, "recent_results": {"type": "array", "items": {"type": "object"}}, "max_chars": {"type": "integer"}}, True), self._project_continuity_digest)
+        self._register(ToolSpec("research_cycle_checkpoint", "把当前科研循环的目标、决定、证据、开放问题、blocker、下一步持久化到项目 checkpoint/progress/state。", {"project": {"type": "string"}, "goal": {"type": "string"}, "current_decision": {"type": "string"}, "evidence_refs": {"type": "array", "items": {"type": "string"}}, "open_questions": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}, "run_ids": {"type": "array", "items": {"type": "string"}}, "candidate_ids": {"type": "array", "items": {"type": "string"}}, "update_project_state": {"type": "boolean"}}, False, ("project", "goal", "current_decision")), self._research_cycle_checkpoint)
+        self._register(ToolSpec("evidence_claim_audit", "审计模型准备写出的科研 claim 是否带 evidence_refs；无证据 claim 必须降级为假设/下一步。", {"claims": {"type": "array", "items": {"type": "object"}}, "evidence_items": {"type": "array", "items": {"type": "object"}}}, True), self._evidence_claim_audit)
         self._register(ToolSpec("web_search", "通用网页检索入口。若本地未接 live connector，会返回 query_urls 与 connector_required，不会伪造结果。", {"query": {"type": "string"}, "max_results": {"type": "integer"}, "live": {"type": "boolean"}}, True, ("query",)), self._web_search)
         self._register(ToolSpec("literature_search", "文献检索入口：默认给出 arXiv/Semantic Scholar/Scholar 查询 envelope；live=true 时尝试 arXiv Atom fallback。", {"query": {"type": "string"}, "max_results": {"type": "integer"}, "source": {"type": "string"}, "live": {"type": "boolean"}}, True, ("query",)), self._literature_search)
         self._register(ToolSpec("chemistry_compute", "讨论阶段小计算器：单位换算、Boltzmann population、TST/Eyring 速率、Delta G/kBT。支持旧 operation 与新 mode 参数，让模型按科研问题自主选择。", {"operation": {"type": "string"}, "mode": {"type": "string"}, "value": {"type": "number"}, "from_unit": {"type": "string"}, "to_unit": {"type": "string"}, "energies": {"type": "array", "items": {"type": "number"}}, "energies_ev": {"type": "array", "items": {"type": "number"}}, "energy_unit": {"type": "string"}, "reference_energy": {"type": "number"}, "temperature_k": {"type": "number"}, "barrier_ev": {"type": "number"}, "activation_energy": {"type": "number"}, "prefactor_hz": {"type": "number"}, "transmission_coefficient": {"type": "number"}, "delta_h_ev": {"type": "number"}, "delta_s_ev_k": {"type": "number"}, "enthalpy": {"type": "number"}, "enthalpy_unit": {"type": "string"}, "entropy": {"type": "number"}, "entropy_unit": {"type": "string"}, "unit": {"type": "string"}}, True), self._chemistry_compute)
@@ -262,9 +270,9 @@ class ToolRegistry:
         return {
             "status": "ok",
             "mainline": [
-                {"step": 1, "title": "discussion -> plan", "tools": ["web_search", "literature_search", "chemistry_compute", "image_understand", "discussion_state_snapshot", "research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "architecture_live_doc_update", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
+                {"step": 1, "title": "discussion -> plan", "tools": ["project_continuity_digest", "web_search", "literature_search", "evidence_claim_audit", "chemistry_compute", "image_understand", "discussion_state_snapshot", "research_cycle_checkpoint", "research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "architecture_live_doc_update", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
                 {"step": 2, "title": "structure -> model", "tools": ["structure_modeling_tool_status", "structure_modeling_intent_plan", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
-                {"step": 3, "title": "execute -> explain -> write_back", "tools": ["cluster_execution_intent_plan", "research_onboarding_context", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "cluster_job_status_brief", "cluster_my_jobs", "cluster_job_tail_log", "cluster_job_partial_outcar", "cluster_job_progress_estimate", "cluster_research_status", "cluster_research_sync", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "vasp_output_scan", "result_interpret", "next_experiment_propose", "research_learning_capture", "candidate_outcome_record", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show", "project_progress_append", "behavior_audit"]},
+                {"step": 3, "title": "execute -> explain -> write_back", "tools": ["project_continuity_digest", "cluster_execution_intent_plan", "research_onboarding_context", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "cluster_job_status_brief", "cluster_my_jobs", "cluster_job_tail_log", "cluster_job_partial_outcar", "cluster_job_progress_estimate", "cluster_research_status", "cluster_research_sync", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "vasp_output_scan", "result_interpret", "next_experiment_propose", "research_learning_capture", "candidate_outcome_record", "research_cycle_checkpoint", "evidence_claim_audit", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show", "project_progress_append", "behavior_audit"]},
             ],
             "workflow": [
                 {"phase": "project_context"},
@@ -506,6 +514,34 @@ class ToolRegistry:
         return build_research_proposal(
             str(payload.get("prompt") or ""),
             project=str(payload.get("project") or "").strip() or None,
+        )
+
+    def _project_continuity_digest(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return build_project_continuity_digest(
+            str(payload.get("project") or "").strip() or None,
+            focus=str(payload.get("focus") or "").strip() or None,
+            recent_results=[item for item in payload.get("recent_results") or [] if isinstance(item, dict)],
+            max_chars=int(payload.get("max_chars") or 9000),
+        )
+
+    def _research_cycle_checkpoint(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return write_research_cycle_checkpoint(
+            project=str(payload.get("project") or "").strip(),
+            goal=str(payload.get("goal") or "").strip(),
+            current_decision=str(payload.get("current_decision") or "").strip(),
+            evidence_refs=[str(item) for item in payload.get("evidence_refs") or []],
+            open_questions=[str(item) for item in payload.get("open_questions") or []],
+            blockers=[str(item) for item in payload.get("blockers") or []],
+            next_steps=[str(item) for item in payload.get("next_steps") or []],
+            run_ids=[str(item) for item in payload.get("run_ids") or []],
+            candidate_ids=[str(item) for item in payload.get("candidate_ids") or []],
+            update_project_state=payload.get("update_project_state") is not False,
+        )
+
+    def _evidence_claim_audit(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return audit_evidence_claims(
+            claims=payload.get("claims") or [],
+            evidence_items=payload.get("evidence_items") or [],
         )
 
     def _research_progress_append(self, payload: dict[str, Any]) -> dict[str, Any]:

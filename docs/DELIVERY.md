@@ -8,6 +8,9 @@
    - `web_search` / `literature_search` 在无 live connector 时返回 `connector_required`，不伪造外部事实。
    - `chemistry_compute` 支持 `convert`、`boltzmann`、`gibbs`、`tst_rate`、`kBT`，也兼容旧 `operation=...` 参数。
    - `discussion_state_snapshot` 可写 Markdown/JSON 快照，作为长对话 anchor。
+   - `project_continuity_digest` 在每轮开始时汇总项目状态、research、KB、近期 run 和最近结果；它只给证据地图，不规定流程。
+   - `research_cycle_checkpoint` 把阶段性科研判断、证据引用、blocker、下一步写入项目 checkpoint / progress / state。
+   - `evidence_claim_audit` 检查准备写出的科学 claim 是否带证据引用；无证据 claim 必须降级为假设或下一步。
 
 2. **Step 2 结构建模**
    - 模型通过 `structure_modeling_intent_plan` 获取导航，但不是固定流程。
@@ -35,6 +38,7 @@
    - `research_workspace_sync_from_cluster`
    - `research_workspace_pull_logs`
    - `research_learning_capture`
+   - `research_cycle_checkpoint`
 
 ## 常用入口
 
@@ -75,7 +79,7 @@ conda activate p312env
 python -m pytest -q
 ```
 
-本轮回归结果：`209 passed, 1 skipped`。
+本轮回归结果：`213 passed, 1 skipped`。
 
 ## 真实 Step 3 冒烟验证记录
 
@@ -99,3 +103,4 @@ python -m pytest -q
   - `cluster_probe` 成功；
   - 用户明确允许真实提交。
 - `behavior_audit` 后 harness 会强制进入自然语言回复，避免模型无限连续调工具。
+- 长期项目续接建议每轮优先读 `project_continuity_digest`，阶段性决定用 `research_cycle_checkpoint` 落盘；这两者是“科研状态锚点”，不是固定程序。
