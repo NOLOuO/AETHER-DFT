@@ -890,21 +890,51 @@ class ToolRegistry:
         }
 
     def _adsorption_candidate_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
-        plan = create_candidate_plan(
-            material=str(payload.get("material") or ""),
-            adsorbate=str(payload.get("adsorbate") or ""),
-            rationale=str(payload.get("rationale") or ""),
-            expected_binding_motif=str(payload.get("expected_binding_motif") or ""),
-            anchor_atom=str(payload.get("anchor_atom") or ""),
-            target_sites=payload.get("target_sites") or [],
-            target_orientations=payload.get("target_orientations") or [],
-            excluded_sites_with_reason=payload.get("excluded_sites_with_reason"),
-            symmetry_pruning_applied=bool(payload.get("symmetry_pruning_applied", False)),
-            priors_consulted=payload.get("priors_consulted") or {},
-            project=str(payload.get("project") or "").strip() or None,
-            task_id=str(payload.get("task_id") or "").strip() or None,
-            notes=str(payload.get("notes") or ""),
-        )
+        # guided-not-enforced：与 compose_manifest 的 soft warning 路径保持一致——
+        # plan 内部校验失败不再向模型抛 ValueError，而是返回 needs_revision + 结构化提示。
+        try:
+            plan = create_candidate_plan(
+                material=str(payload.get("material") or ""),
+                adsorbate=str(payload.get("adsorbate") or ""),
+                rationale=str(payload.get("rationale") or ""),
+                expected_binding_motif=str(payload.get("expected_binding_motif") or ""),
+                anchor_atom=str(payload.get("anchor_atom") or ""),
+                target_sites=payload.get("target_sites") or [],
+                target_orientations=payload.get("target_orientations") or [],
+                excluded_sites_with_reason=payload.get("excluded_sites_with_reason"),
+                symmetry_pruning_applied=bool(payload.get("symmetry_pruning_applied", False)),
+                priors_consulted=payload.get("priors_consulted") or {},
+                project=str(payload.get("project") or "").strip() or None,
+                task_id=str(payload.get("task_id") or "").strip() or None,
+                notes=str(payload.get("notes") or ""),
+            )
+        except ValueError as exc:
+            return {
+                "status": "needs_revision",
+                "warning": str(exc),
+                "echo": {
+                    key: payload.get(key)
+                    for key in (
+                        "material",
+                        "adsorbate",
+                        "rationale",
+                        "expected_binding_motif",
+                        "anchor_atom",
+                        "target_sites",
+                        "target_orientations",
+                    )
+                },
+                "guidance": (
+                    "本工具不会替你强制；上面是质量提示。"
+                    "如果你接受这些反馈，调整对应字段再调一次本工具即可。"
+                    "如果你有正当理由保持现状，可以在 notes 字段写明并继续走 compose（compose 也会给软警告，不挡路）。"
+                ),
+                "min_chars_hint": {
+                    "rationale": 30,
+                    "target_site_reason": 10,
+                    "excluded_site_reason": 8,
+                },
+            }
         return {
             "status": "ok",
             "plan_id": plan.plan_id,

@@ -78,6 +78,49 @@ def test_plan_rejects_short_rationale():
         create_candidate_plan(**kwargs)
 
 
+def test_registry_plan_handler_returns_soft_warning_on_short_rationale(tmp_path):
+    """guided-not-enforced：tool 调用面不再向模型抛 raise，而是 status=needs_revision。"""
+    registry = ToolRegistry()
+    raw = registry.run_tool(
+        "adsorption_candidate_plan",
+        {
+            "material": "Pt(111)",
+            "adsorbate": "H2O",
+            "rationale": "太短",
+            "expected_binding_motif": "atop O-down",
+            "anchor_atom": "O",
+            "target_sites": [{"site_id": "ontop-01", "reason": "对称代表"}],
+            "target_orientations": ["upright"],
+        },
+    )
+    result = raw["result"]
+    assert result["status"] == "needs_revision"
+    assert "rationale" in result["warning"]
+    assert result["echo"]["material"] == "Pt(111)"
+    # 不应该把 raise 暴露成 tool registry 的 error status
+    assert "error" not in result["status"]
+
+
+def test_registry_plan_handler_returns_soft_warning_on_short_site_reason():
+    registry = ToolRegistry()
+    raw = registry.run_tool(
+        "adsorption_candidate_plan",
+        {
+            "material": "Pt(111)",
+            "adsorbate": "H2O",
+            "rationale": "Pt(111) 顶层原子全等价，H2O O-down 是经典 motif；选 ontop-01 主测、ontop-02 对照。",
+            "expected_binding_motif": "atop O-down",
+            "anchor_atom": "O",
+            "target_sites": [{"site_id": "ontop-01", "reason": "x"}],
+            "target_orientations": ["upright"],
+        },
+    )
+    result = raw["result"]
+    assert result["status"] == "needs_revision"
+    assert "reason" in result["warning"]
+    assert result["min_chars_hint"]["target_site_reason"] == 10
+
+
 def test_plan_rejects_empty_target_sites():
     kwargs = _good_plan_kwargs()
     kwargs["target_sites"] = []
