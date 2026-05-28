@@ -59,27 +59,40 @@ def _good_plan_kwargs(material="Pt(111)", adsorbate="H2O"):
     }
 
 
+def _warning_codes(plan_or_payload) -> set[str]:
+    if hasattr(plan_or_payload, "quality_warnings"):
+        warnings = plan_or_payload.quality_warnings
+    else:
+        warnings = plan_or_payload.get("quality_warnings") or []
+    return {item["code"] for item in warnings}
+
+
 def test_create_candidate_plan_persists_and_loads():
     init_project("pytest-plan-roundtrip", overwrite=True)
     plan = create_candidate_plan(project="pytest-plan-roundtrip", **_good_plan_kwargs())
     assert plan.plan_id.startswith("plan_")
     assert Path(plan.plan_path).exists()
+    assert plan.quality_warnings == []
     loaded = load_candidate_plan(plan.plan_id, project="pytest-plan-roundtrip")
     assert loaded.plan_id == plan.plan_id
+    assert loaded.quality_warnings == []
     assert loaded.target_site_ids() == ["ontop-01", "ontop-02"]
     plans = list_candidate_plans("pytest-plan-roundtrip")
     assert any(item["plan_id"] == plan.plan_id for item in plans)
+    assert all("quality_warnings" in item for item in plans)
 
 
-def test_plan_rejects_short_rationale():
+def test_plan_warns_on_short_rationale_and_persists():
     kwargs = _good_plan_kwargs()
     kwargs["rationale"] = "太短"
-    with pytest.raises(ValueError, match="rationale"):
-        create_candidate_plan(**kwargs)
+    plan = create_candidate_plan(**kwargs)
+    assert plan.plan_id.startswith("plan_")
+    assert Path(plan.plan_path).exists()
+    assert "rationale_too_short" in _warning_codes(plan)
 
 
-def test_registry_plan_handler_returns_soft_warning_on_short_rationale(tmp_path):
-    """guided-not-enforced：tool 调用面不再向模型抛 raise，而是 status=needs_revision。"""
+def test_registry_plan_handler_returns_ok_with_nested_warning_on_short_rationale(tmp_path):
+    """guided-not-enforced：tool 调用面生成 plan_id，质量问题落入 plan.quality_warnings。"""
     registry = ToolRegistry()
     raw = registry.run_tool(
         "adsorption_candidate_plan",
@@ -94,14 +107,14 @@ def test_registry_plan_handler_returns_soft_warning_on_short_rationale(tmp_path)
         },
     )
     result = raw["result"]
-    assert result["status"] == "needs_revision"
-    assert "rationale" in result["warning"]
-    assert result["echo"]["material"] == "Pt(111)"
-    # 不应该把 raise 暴露成 tool registry 的 error status
-    assert "error" not in result["status"]
+    assert result["status"] == "ok"
+    assert result["plan_id"].startswith("plan_")
+    codes = _warning_codes(result["plan"])
+    assert "rationale_too_short" in codes
+    assert "target_site_reason_too_short" in codes
 
 
-def test_registry_plan_handler_returns_soft_warning_on_short_site_reason():
+def test_registry_plan_handler_returns_ok_with_nested_warning_on_short_site_reason():
     registry = ToolRegistry()
     raw = registry.run_tool(
         "adsorption_candidate_plan",
@@ -116,23 +129,24 @@ def test_registry_plan_handler_returns_soft_warning_on_short_site_reason():
         },
     )
     result = raw["result"]
-    assert result["status"] == "needs_revision"
-    assert "reason" in result["warning"]
-    assert result["min_chars_hint"]["target_site_reason"] == 10
+    assert result["status"] == "ok"
+    assert "target_site_reason_too_short" in _warning_codes(result["plan"])
 
 
-def test_plan_rejects_empty_target_sites():
+def test_plan_warns_on_empty_target_sites():
     kwargs = _good_plan_kwargs()
     kwargs["target_sites"] = []
-    with pytest.raises(ValueError, match="target_sites"):
-        create_candidate_plan(**kwargs)
+    plan = create_candidate_plan(**kwargs)
+    assert plan.target_sites == []
+    assert "target_sites_empty" in _warning_codes(plan)
 
 
-def test_plan_rejects_short_site_reason():
+def test_plan_warns_on_short_site_reason():
     kwargs = _good_plan_kwargs()
     kwargs["target_sites"] = [{"site_id": "ontop-01", "reason": "x"}]
-    with pytest.raises(ValueError, match="reason"):
-        create_candidate_plan(**kwargs)
+    plan = create_candidate_plan(**kwargs)
+    assert plan.target_site_ids() == ["ontop-01"]
+    assert "target_site_reason_too_short" in _warning_codes(plan)
 
 
 def test_plan_rejects_dup_site_ids():
@@ -145,11 +159,22 @@ def test_plan_rejects_dup_site_ids():
         create_candidate_plan(**kwargs)
 
 
-def test_plan_rejects_empty_orientations():
+def test_plan_warns_on_empty_orientations():
     kwargs = _good_plan_kwargs()
     kwargs["target_orientations"] = []
-    with pytest.raises(ValueError, match="target_orientations"):
-        create_candidate_plan(**kwargs)
+    plan = create_candidate_plan(**kwargs)
+    assert plan.target_orientations == []
+    assert "target_orientations_empty" in _warning_codes(plan)
+
+
+def test_plan_warns_on_missing_motif_and_anchor():
+    kwargs = _good_plan_kwargs()
+    kwargs["expected_binding_motif"] = ""
+    kwargs["anchor_atom"] = ""
+    plan = create_candidate_plan(**kwargs)
+    codes = _warning_codes(plan)
+    assert "expected_binding_motif_missing" in codes
+    assert "anchor_atom_missing" in codes
 
 
 def _write_pt111_poscar(path: Path) -> Path:
