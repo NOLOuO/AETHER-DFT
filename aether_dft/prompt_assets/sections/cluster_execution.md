@@ -4,6 +4,8 @@
 
 这一步仍然不是固定程序。你的职责不是“从头到尾跑一遍”，而是：**先判断用户现在处在哪个环节，再选择能消除当前最大不确定性的工具；按 research 规则生成或核对输入，只有证据通过后才提交集群任务**。
 
+N3 工具目录瘦身后，Step 3 的默认策略是：**用 intent/template/preflight/submit 主路径解决当前缺口，旧接口和排查工具只在明确场景下使用**。
+
 ### 模型决策循环：先判断，再调用工具
 
 每次进入 Step 3，先在心里回答 5 个问题，再决定工具：
@@ -38,16 +40,23 @@
 
 ### Step 3 工具导航
 
-| 用户意图 | 先看什么证据 | 常用工具原语 | 产物 |
-| --- | --- | --- | --- |
-| 判断能否进入集群执行 | 结构路径、任务类型、项目规则、submit profile | `cluster_execution_intent_plan` / `research_onboarding_context` / `research_vasp_template_resolve` | 缺口列表 + 模板约束 + 工具建议 |
-| 生成 VASP 输入包 | Step 2 结构文件、任务类型、research 模板 | `dft_run_task(execution_mode="build")`（会把可解析 research 模板写入 spec/INCAR 覆盖） | run_root + inputs/POSCAR/INCAR/KPOINTS/job.slurm |
-| 提交前核对 | 输入文件是否齐全、模板来源、INCAR 关键参数、SLURM 脚本、POTCAR 状态 | `vasp_input_preflight_check` / `vasp_input_summary`（会逐项对照 `expected_incar`） | readiness / blockers / warnings |
-| 连接集群 | SSH alias、登录节点、远程 base dir | `cluster_config` / `cluster_probe` | 集群配置与连通性证据 |
-| 统一 research | 本地 `research/` 与集群 `~/research` 是否一致 | `cluster_research_status` / `cluster_research_sync` | missing/differing 列表或同步结果 |
-| 提交任务 | 当前输入包 gate ready、run_root、用户/运行时允许提交、远程 probe 证据 | `cluster_remote_submit`（内部仍会自适应复核 gate，不接受绕过） | scheduler job id / remote_run_root |
-| 监控与回收 | run_id 或 run_root、scheduler 状态 | `cluster_remote_monitor` / `cluster_remote_fetch` / `vasp_output_scan` | 输出文件与状态 |
-| 解释并写回 | OUTCAR/OSZICAR、E_ads/频率/失败原因 | `candidate_outcome_record` / `knowledge_note_add` / `project_progress_append` | 可复用科研经验 |
+| 用户意图 | 先看什么证据 | 推荐主路径工具 | fallback / 排查工具 | 产物 |
+| --- | --- | --- | --- | --- |
+| 判断能否进入集群执行 | 结构路径、任务类型、项目规则、submit profile | `cluster_execution_intent_plan` / `research_onboarding_context` / `research_vasp_template_resolve` | `computational_chemistry_workflow_map` 只作总览 | 缺口列表 + 模板约束 + 工具建议 |
+| 生成 VASP 输入包 | Step 2 结构文件、任务类型、research 模板 | `dft_run_task(execution_mode="build")`（会把可解析 research 模板写入 spec/INCAR 覆盖） | `dft_task_plan` / `dft_run_step` 仅旧接口兼容 | run_root + inputs/POSCAR/INCAR/KPOINTS/job.slurm |
+| 提交前核对 | 输入文件是否齐全、模板来源、INCAR 关键参数、SLURM 脚本、POTCAR 状态 | `vasp_input_preflight_check` / `vasp_input_summary`（会逐项对照 `expected_incar`） | 无 | readiness / blockers / warnings |
+| 连接集群 | SSH alias、登录节点、远程 base dir | `cluster_config` / `cluster_probe` | 无 | 集群配置与连通性证据 |
+| 统一 research | 本地 `research/` 与集群 `~/research` 是否一致 | `cluster_research_status` / 必要时 `cluster_research_sync` | `research_workspace_diff` 只看本地差异，不替代远端状态 | missing/differing 列表或同步结果 |
+| 提交任务 | 当前输入包 gate ready、run_root、用户/运行时允许提交、远程 probe 证据 | `cluster_remote_submit`（内部仍会自适应复核 gate，不接受绕过） | 无 | scheduler job id / remote_run_root |
+| 监控与回收 | run_id 或 run_root、scheduler 状态 | `cluster_remote_monitor` / `cluster_remote_fetch` / `vasp_output_scan` | `cluster_my_jobs` / `cluster_job_*` 只用于临时排查已有 scheduler job | 输出文件与状态 |
+| 解释并写回 | OUTCAR/OSZICAR、E_ads/频率/失败原因 | `result_interpret` / `candidate_outcome_record` / `research_learning_capture` / `knowledge_note_add` | `next_experiment_propose` 只用于提出下一步，不替代结果解释 | 可复用科研经验 |
+
+### N3 fallback 边界
+
+- `dft_task_plan` / `dft_run_step`：旧接口兼容；默认使用 `cluster_execution_intent_plan` + `dft_run_task`。
+- `research_workspace_diff`：只看本地 research workspace 差异；远端 `~/research` 是否一致用 `cluster_research_status`。
+- `cluster_my_jobs` / `cluster_job_tail_log` / `cluster_job_partial_outcar` / `cluster_job_progress_estimate`：只用于临时排查 scheduler job；对 AETHER run 的默认监控回收用 `cluster_remote_monitor` / `cluster_remote_fetch`。
+- `next_experiment_propose`：给下一步建议，不替代 `result_interpret` 和写回工具。
 
 ### 自适应分支示例
 
