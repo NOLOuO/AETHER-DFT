@@ -36,6 +36,7 @@
 5. **Step 5 结果解释**
    - `result_interpret` 诚实区分 `no_outputs`、partial、not converged、converged。
    - 已用集群 `~/research/MCH-Pt-Br/.../Hstar_2Br-H_freq_Honly_20260601/OUTCAR` 做真实解析回归：频率任务正常结束、3 个实频、0 个虚频，verdict=`frequency_finished_no_imaginary_modes`。
+   - 新增用户入口：`aether-dft outcar find` 可只读列出集群 `~/research` 下最近 OUTCAR；`aether-dft outcar analyze --latest --project <project> --write-learning` 会拉回 OUTCAR/OSZICAR/CONTCAR/POSCAR、解释结果并写入项目 Learning。
    - `next_experiment_propose` 给少量下一步科研动作，而不是扩成固定程序。
 
 6. **Step 6 research/ 回写与同步**
@@ -64,6 +65,8 @@ aether models
 aether model smoke --model deepseek:deepseek-v4-pro
 aether model smoke --model bailian:qwen3.7-max
 aether cluster probe
+aether outcar find --limit 5
+aether outcar analyze --latest --project MCH-Pt-Br --write-learning
 ```
 
 ## 真实 API 测试
@@ -87,7 +90,7 @@ conda activate p312env
 python -m pytest -q
 ```
 
-本轮回归结果：`233 passed, 1 skipped`。
+本轮回归结果：`239 passed, 1 skipped`。
 
 ## 真实模型后端 smoke
 
@@ -101,10 +104,12 @@ python -m pytest -q
 
 最近一次手动执行（2026-06-06）：
 
+- 命令：`aether-dft outcar analyze --latest --project MCH-Pt-Br --write-learning --json`
 - 远端来源：`/home/szhang/research/MCH-Pt-Br/MKM_actual_data_package_20260605/2Br/freq_tasks/Hstar_2Br-H_freq_Honly_20260601/OUTCAR`
-- 本地证据副本：`.aether/remote_outcar_analysis/Hstar_2Br-H_freq_Honly_20260601/`
-- 解释结果：`frequency_finished_no_imaginary_modes`，最后 `TOTEN=-640.56417145 eV`，3 个实频、0 个虚频。
-- 已写回 Learning：`research/MCH-Pt-Br/Learning/Hstar_2Br-H-frequency-OUTCAR-no-imaginary-modes.md`
+- 本地证据副本：`.aether/runtime/remote_outcar_analysis/Hstar_2Br-H_freq_Honly_20260601_b5e0389a91/`
+- 已拉回证据：`OUTCAR`、`OSZICAR`、`CONTCAR`、`POSCAR`
+- 解释结果：`frequency_finished_no_imaginary_modes`，最后 `TOTEN=-640.56417145 eV`，3 个实频、0 个虚频；POSCAR/CONTCAR 位移检查显示吸附几何稳定，最大位移约 `0.015 Å`。
+- 已写回 Learning：`research/MCH-Pt-Br/Learning/OUTCAR-analysis-Hstar_2Br-H_freq_Honly_20260601.md`
 
 ## 真实 Step 3 冒烟验证记录
 

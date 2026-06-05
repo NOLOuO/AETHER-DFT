@@ -828,6 +828,151 @@ class SSHRemoteRunner:
             },
         )
 
+    def find_remote_outcars(
+        self,
+        *,
+        search_root: str | None = None,
+        limit: int = 20,
+        max_depth: int = 8,
+    ) -> RemoteExecutionResult:
+        """Find recent OUTCAR files under the user's research tree or run roots."""
+
+        config = self._load_config()
+        backend = self._select_backend(config)
+        tools_error = self._ensure_local_tools(config, backend)
+        if tools_error is not None:
+            return RemoteExecutionResult("blocked", tools_error, {"backend": backend})
+        try:
+            limit_int = max(1, min(int(limit), 100))
+            depth_int = max(1, min(int(max_depth), 16))
+        except (TypeError, ValueError):
+            return RemoteExecutionResult("failed", "limit/max_depth 必须是整数。", {"backend": backend})
+        root_raw = search_root or self._default_remote_research_dir(config)
+        try:
+            root = self._safe_remote_path(
+                str(root_raw),
+                allowed_roots=[self._default_remote_research_dir(config), config.remote_base_dir, f"/scratch/{config.user}"],
+                home_user=config.user,
+                label="search_root",
+            )
+        except ValueError as exc:
+            return RemoteExecutionResult("blocked", f"search_root 不安全: {exc}", {"backend": backend, "search_root": root_raw})
+
+        command = (
+            f"find {self._quote(root)} -maxdepth {depth_int} -type f -name OUTCAR "
+            f"-printf '%TY-%Tm-%Td %TH:%TM|%s|%p\\n' 2>/dev/null | sort -r | head -n {limit_int}"
+        )
+        process = self._run_remote_command(config, command, timeout=60, backend=backend)
+        if process.returncode != 0:
+            return RemoteExecutionResult(
+                "failed",
+                f"远端查找 OUTCAR 失败: {process.stderr.strip() or process.stdout.strip()}",
+                {"backend": backend, "search_root": root},
+            )
+        outcars: list[dict[str, Any]] = []
+        for line in process.stdout.splitlines():
+            parts = line.split("|", 2)
+            if len(parts) != 3:
+                continue
+            timestamp, size_raw, path = (part.strip() for part in parts)
+            try:
+                size = int(size_raw)
+            except ValueError:
+                size = None
+            outcars.append(
+                {
+                    "modified": timestamp,
+                    "size": size,
+                    "path": path,
+                    "run_root": str(PurePosixPath(path).parent),
+                }
+            )
+        status = "ok" if outcars else "missing"
+        message = f"找到 {len(outcars)} 个 OUTCAR。" if outcars else f"在 {root} 下未找到 OUTCAR。"
+        return RemoteExecutionResult(status, message, {"backend": backend, "search_root": root, "outcars": outcars})
+
+    def pull_remote_outcar_context(
+        self,
+        remote_outcar_path: str,
+        local_target_dir: Path,
+    ) -> RemoteExecutionResult:
+        """Pull OUTCAR plus neighboring VASP evidence files for local interpretation."""
+
+        config = self._load_config()
+        backend = self._select_backend(config)
+        tools_error = self._ensure_local_tools(config, backend)
+        if tools_error is not None:
+            return RemoteExecutionResult("blocked", tools_error, {"backend": backend})
+        try:
+            safe_outcar = self._safe_remote_path(
+                str(remote_outcar_path),
+                allowed_roots=[self._default_remote_research_dir(config), config.remote_base_dir, f"/scratch/{config.user}"],
+                home_user=config.user,
+                label="remote_outcar_path",
+            )
+        except ValueError as exc:
+            return RemoteExecutionResult(
+                "blocked",
+                f"remote_outcar_path 不安全，已阻止拉取: {exc}",
+                {"backend": backend, "remote_outcar_path": remote_outcar_path},
+            )
+        if PurePosixPath(safe_outcar).name != "OUTCAR":
+            return RemoteExecutionResult(
+                "blocked",
+                "remote_outcar_path 必须指向名为 OUTCAR 的文件。",
+                {"backend": backend, "remote_outcar_path": safe_outcar},
+            )
+        remote_run_root = str(PurePosixPath(safe_outcar).parent)
+        check_command = (
+            f"for fname in OUTCAR OSZICAR CONTCAR POSCAR; do "
+            f"if [ -f {self._quote(remote_run_root)}/\"$fname\" ]; then echo \"$fname\"; fi; "
+            f"done"
+        )
+        process = self._run_remote_command(config, check_command, timeout=30, backend=backend)
+        if process.returncode != 0:
+            return RemoteExecutionResult(
+                "failed",
+                f"远端检查 OUTCAR 邻近文件失败: {process.stderr.strip() or process.stdout.strip()}",
+                {"backend": backend, "remote_outcar_path": safe_outcar, "remote_run_root": remote_run_root},
+            )
+        filenames = [line.strip() for line in process.stdout.splitlines() if line.strip()]
+        if "OUTCAR" not in filenames:
+            return RemoteExecutionResult(
+                "missing",
+                f"远端 OUTCAR 不存在: {safe_outcar}",
+                {"backend": backend, "remote_outcar_path": safe_outcar, "remote_run_root": remote_run_root},
+            )
+        local_target_dir = Path(local_target_dir)
+        local_target_dir.mkdir(parents=True, exist_ok=True)
+        downloaded: list[str] = []
+        try:
+            for filename in filenames:
+                local_file = local_target_dir / filename
+                self._download_from_remote(config, f"{remote_run_root}/{filename}", local_file, timeout=120, backend=backend)
+                downloaded.append(str(local_file))
+        except Exception as exc:
+            return RemoteExecutionResult(
+                "failed",
+                f"拉取 OUTCAR 证据失败: {exc}",
+                {
+                    "backend": backend,
+                    "remote_outcar_path": safe_outcar,
+                    "remote_run_root": remote_run_root,
+                    "downloaded": downloaded,
+                },
+            )
+        return RemoteExecutionResult(
+            "synced",
+            f"已拉回 {len(downloaded)} 个 OUTCAR 相关文件到 {local_target_dir}。",
+            {
+                "backend": backend,
+                "remote_outcar_path": safe_outcar,
+                "remote_run_root": remote_run_root,
+                "downloaded": downloaded,
+                "local_target_dir": str(local_target_dir),
+            },
+        )
+
     @staticmethod
     def _encode_text_for_remote(text: str) -> str:
         """base64 编码后用单引号包裹，避免在远端解析任何元字符。"""

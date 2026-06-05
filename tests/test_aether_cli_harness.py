@@ -72,6 +72,79 @@ def test_cli_model_smoke_summarizes_required_tool(monkeypatch, capsys):
     assert "project=demo" in captured["prompt"]
 
 
+def test_cli_outcar_find_lists_remote_outcars(monkeypatch, capsys):
+    from dft_app.remote import RemoteExecutionResult
+
+    class FakeRunner:
+        def find_remote_outcars(self, *, search_root=None, limit=20, max_depth=8):
+            assert search_root == "~/research"
+            assert limit == 2
+            return RemoteExecutionResult(
+                "ok",
+                "找到 1 个 OUTCAR。",
+                {
+                    "outcars": [
+                        {
+                            "modified": "2026-06-06 10:00",
+                            "size": 123,
+                            "path": "/home/szhang/research/demo/run/OUTCAR",
+                            "run_root": "/home/szhang/research/demo/run",
+                        }
+                    ]
+                },
+            )
+
+    monkeypatch.setattr("dft_app.remote.SSHRemoteRunner", FakeRunner)
+
+    assert cli.main(["outcar", "find", "--limit", "2"]) == 0
+    out = capsys.readouterr().out
+    assert "最近 OUTCAR" in out
+    assert "/home/szhang/research/demo/run/OUTCAR" in out
+
+
+def test_cli_outcar_analyze_pulls_and_interprets_latest(monkeypatch, tmp_path, capsys):
+    from dft_app.remote import RemoteExecutionResult
+
+    class FakeRunner:
+        def find_remote_outcars(self, *, search_root=None, limit=20, max_depth=8):
+            return RemoteExecutionResult(
+                "ok",
+                "找到 1 个 OUTCAR。",
+                {"outcars": [{"path": "/home/szhang/research/demo/freq/OUTCAR"}]},
+            )
+
+        def pull_remote_outcar_context(self, remote_outcar_path, local_target_dir):
+            local = Path(local_target_dir)
+            local.mkdir(parents=True, exist_ok=True)
+            (local / "OUTCAR").write_text(
+                "\n".join(
+                    [
+                        " free  energy   TOTEN  =      -640.0 eV",
+                        " Eigenvectors and eigenvalues of the dynamical matrix",
+                        " 1 f  =   17.0 THz",
+                        " General timing and accounting informations for this job",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            return RemoteExecutionResult(
+                "synced",
+                "ok",
+                {
+                    "remote_outcar_path": remote_outcar_path,
+                    "local_target_dir": str(local),
+                    "downloaded": [str(local / "OUTCAR")],
+                },
+            )
+
+    monkeypatch.setattr("dft_app.remote.SSHRemoteRunner", FakeRunner)
+
+    assert cli.main(["outcar", "analyze", "--output-dir", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "frequency_finished_no_imaginary_modes" in out
+    assert "last TOTEN: -640.0 eV" in out
+
+
 def test_cli_structure_tools_smoke(capsys):
     assert cli.main(["structure", "tools"]) == 0
     out = capsys.readouterr().out

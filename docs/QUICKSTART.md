@@ -111,6 +111,17 @@ aether-dft cluster probe
 aether-dft 看看怎么样了
 ```
 
+查找并解释已有 OUTCAR（只读访问集群，只把证据复制到本地）：
+
+```powershell
+aether-dft outcar find --limit 5
+aether-dft outcar analyze --latest --project MCH-Pt-Br --write-learning
+```
+
+`outcar analyze` 会把 `OUTCAR` 以及同目录下存在的 `OSZICAR` / `CONTCAR` / `POSCAR` 拉到
+`.aether/runtime/remote_outcar_analysis/<run>_<hash>/`，再做本地解析；`--write-learning` 会把结论写回
+`research/<project>/Learning/`。它不会提交、取消或修改集群任务。
+
 真实提交必须显式启用对应 submit 命令/权限。测试提交时请使用短 `sleep` job，并只取消本轮返回的 job id；不要对 `squeue --me` 里的其他作业批量操作。
 
 ## 7. 常用命令
@@ -120,6 +131,8 @@ aether-dft doctor
 aether-dft models
 aether-dft model smoke --model deepseek:deepseek-v4-pro
 aether-dft model smoke --model bailian:qwen3.7-max
+aether-dft outcar find --limit 5
+aether-dft outcar analyze --latest --project MCH-Pt-Br --write-learning
 aether-dft model set deepseek:deepseek-v4-pro
 aether-dft model set bailian:qwen3.7-max
 aether-dft project list

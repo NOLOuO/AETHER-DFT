@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -46,6 +47,7 @@ TOP_LEVEL_COMMANDS = {
     "model",
     "models",
     "monitor",
+    "outcar",
     "project",
     "recommend",
     "run",
@@ -122,6 +124,8 @@ def print_quick_start() -> None:
     print("  aether model current")
     print("  aether project list")
     print("  aether recommend --project <slug>")
+    print("  aether outcar find --limit 5")
+    print("  aether outcar analyze --latest --project <slug> --write-learning")
     print("  aether doctor")
     print("  aether ssh")
     print()
@@ -517,9 +521,7 @@ def handle_models(args: argparse.Namespace) -> int:
         print_json({"current_model_id": current, "models": [item.to_dict() for item in catalog.values()]})
     else:
         print(format_model_table(catalog, current))
-        print("\nAETHER-DFT currently exposes only project-fit built-ins:")
-        print("  deepseek:deepseek-v4-pro")
-        print("  bailian:qwen3.7-max")
+        print("\nBuilt-ins are project-fit defaults; add more OpenAI-compatible models via config/model_providers.json.")
     return 0
 
 
@@ -1162,6 +1164,165 @@ def handle_cluster_probe(args: argparse.Namespace) -> int:
     return 0 if result.status in {"ok", "partial"} else 1
 
 
+def _print_outcar_table(outcars: list[dict[str, Any]]) -> None:
+    if not outcars:
+        print("没有找到 OUTCAR。")
+        return
+    print("最近 OUTCAR：")
+    print()
+    print(f"{'NO':<4} {'MODIFIED':<17} {'SIZE':>10}  PATH")
+    for index, item in enumerate(outcars, start=1):
+        size = item.get("size")
+        size_text = str(size) if size is not None else "?"
+        print(f"{index:<4} {str(item.get('modified') or ''):<17} {size_text:>10}  {item.get('path')}")
+    print()
+    print("分析最新一个：aether-dft outcar analyze --latest")
+    print("分析指定路径：aether-dft outcar analyze /home/.../OUTCAR")
+
+
+def handle_outcar_find(args: argparse.Namespace) -> int:
+    from dft_app.remote import SSHRemoteRunner
+
+    result = SSHRemoteRunner().find_remote_outcars(
+        search_root=args.root,
+        limit=args.limit,
+        max_depth=args.max_depth,
+    )
+    payload = {"status": result.status, "message": result.message, "details": result.details}
+    if args.json:
+        print_json(payload)
+    else:
+        if result.status == "ok":
+            _print_outcar_table(result.details.get("outcars") or [])
+        else:
+            print(f"{result.status}: {result.message}")
+    return 0 if result.status == "ok" else 1
+
+
+def _outcar_cache_dir(remote_outcar_path: str) -> Path:
+    from .paths import ensure_runtime_dir
+
+    parent_name = Path(str(remote_outcar_path).replace("\\", "/")).parent.name or "outcar"
+    digest = hashlib.sha1(str(remote_outcar_path).encode("utf-8")).hexdigest()[:10]
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", parent_name).strip("_") or "outcar"
+    return ensure_runtime_dir("remote_outcar_analysis", f"{slug}_{digest}")
+
+
+def _write_outcar_learning(*, project: str, remote_outcar_path: str, local_target_dir: str, interpretation: dict[str, Any]) -> dict[str, Any]:
+    from aether_dft.runtime_harness.tool_registry import ToolRegistry
+
+    frequency = interpretation.get("frequency") or {}
+    energy = interpretation.get("energy") or {}
+    content = "\n".join(
+        [
+            f"# OUTCAR analysis: {Path(str(remote_outcar_path)).parent.name or 'remote run'}",
+            "",
+            f"Remote OUTCAR: `{remote_outcar_path}`",
+            f"Local evidence copy: `{local_target_dir}`",
+            "",
+            "## Evidence",
+            "",
+            f"- Verdict: `{interpretation.get('verdict')}`",
+            f"- Headline: {interpretation.get('headline')}",
+            f"- Last TOTEN: `{energy.get('last_toten_ev')}` eV",
+            f"- Frequency detected: `{frequency.get('detected', False)}`",
+            f"- Real/imaginary modes: `{frequency.get('real_mode_count')}` / `{frequency.get('imaginary_mode_count')}`",
+            "",
+            "## Warnings",
+            "",
+            *[f"- {item}" for item in (interpretation.get("warnings") or ["none"])],
+            "",
+            "## Suggested next checks",
+            "",
+            *[f"- {item}" for item in (interpretation.get("suggestions") or ["none"])],
+        ]
+    )
+    return ToolRegistry().run_tool(
+        "research_learning_capture",
+        {
+            "project": project,
+            "title": f"OUTCAR analysis {Path(str(remote_outcar_path)).parent.name or 'remote run'}",
+            "content": content,
+            "tags": ["OUTCAR", "analysis", "remote"],
+        },
+    )
+
+
+def handle_outcar_analyze(args: argparse.Namespace) -> int:
+    from aether_dft.result_insight import interpret_result
+    from dft_app.remote import SSHRemoteRunner
+
+    runner = SSHRemoteRunner()
+    remote_outcar_path = str(args.remote_outcar or "").strip()
+    if not remote_outcar_path:
+        found = runner.find_remote_outcars(search_root=args.root, limit=1, max_depth=args.max_depth)
+        if found.status != "ok" or not found.details.get("outcars"):
+            print_json({"status": found.status, "message": found.message, "details": found.details})
+            return 1
+        remote_outcar_path = str(found.details["outcars"][0]["path"])
+
+    local_target = Path(args.output_dir) if args.output_dir else _outcar_cache_dir(remote_outcar_path)
+    pulled = runner.pull_remote_outcar_context(remote_outcar_path, local_target)
+    if pulled.status != "synced":
+        print_json({"status": pulled.status, "message": pulled.message, "details": pulled.details})
+        return 1
+    interpretation = interpret_result(local_target)
+    learning = None
+    if args.write_learning:
+        if not args.project:
+            print_json(
+                {
+                    "status": "failed",
+                    "message": "--write-learning 需要同时提供 --project。",
+                    "remote_outcar_path": remote_outcar_path,
+                    "local_target_dir": str(local_target),
+                    "interpretation": interpretation,
+                }
+            )
+            return 1
+        learning = _write_outcar_learning(
+            project=args.project,
+            remote_outcar_path=remote_outcar_path,
+            local_target_dir=str(local_target),
+            interpretation=interpretation,
+        )
+
+    payload = {
+        "status": "ok",
+        "remote_outcar_path": remote_outcar_path,
+        "local_target_dir": str(local_target),
+        "pulled": {"status": pulled.status, "message": pulled.message, "details": pulled.details},
+        "interpretation": interpretation,
+        "learning": learning,
+    }
+    if args.json:
+        print_json(payload)
+    else:
+        print(f"OUTCAR: {remote_outcar_path}")
+        print(f"local : {local_target}")
+        print(f"verdict: {interpretation.get('verdict')}")
+        print(f"headline: {interpretation.get('headline')}")
+        energy = interpretation.get("energy") or {}
+        print(f"last TOTEN: {energy.get('last_toten_ev')} eV")
+        frequency = interpretation.get("frequency") or {}
+        if frequency.get("detected"):
+            print(
+                "frequency: "
+                f"real={frequency.get('real_mode_count')} "
+                f"imaginary={frequency.get('imaginary_mode_count')} "
+                f"min_real_THz={frequency.get('min_real_thz')}"
+            )
+        warnings = interpretation.get("warnings") or []
+        if warnings:
+            print("warnings:")
+            for warning in warnings:
+                print(f"  - {warning}")
+        if learning:
+            result = learning.get("result", {}) if isinstance(learning, dict) else {}
+            print(f"learning: {result.get('learning_path')}")
+    return 0
+
+
 def handle_agent_run(args: argparse.Namespace) -> int:
     from .agent import run_agent_once
 
@@ -1557,6 +1718,25 @@ def build_parser() -> argparse.ArgumentParser:
     cluster_config.set_defaults(func=handle_cluster_config)
     cluster_probe = cluster_sub.add_parser("probe", help="真实 SSH 探测集群连通性和 sbatch/squeue/vasp_std。")
     cluster_probe.set_defaults(func=handle_cluster_probe)
+
+    outcar_parser = sub.add_parser("outcar", help="查找/拉回/解释集群 OUTCAR。")
+    outcar_sub = outcar_parser.add_subparsers(dest="outcar_command")
+    outcar_find = outcar_sub.add_parser("find", help="只读查找集群最近 OUTCAR。")
+    outcar_find.add_argument("--root", default="~/research", help="远端搜索根目录，默认 ~/research。")
+    outcar_find.add_argument("--limit", type=int, default=20)
+    outcar_find.add_argument("--max-depth", type=int, default=8)
+    outcar_find.add_argument("--json", action="store_true")
+    outcar_find.set_defaults(func=handle_outcar_find)
+    outcar_analyze = outcar_sub.add_parser("analyze", help="拉回并解释 OUTCAR；不传路径时默认分析最新 OUTCAR。")
+    outcar_analyze.add_argument("remote_outcar", nargs="?", help="远端 OUTCAR 绝对路径；省略则使用最新一个。")
+    outcar_analyze.add_argument("--latest", action="store_true", help="显式使用最新 OUTCAR（默认行为）。")
+    outcar_analyze.add_argument("--root", default="~/research", help="未指定路径时的远端搜索根目录。")
+    outcar_analyze.add_argument("--max-depth", type=int, default=8)
+    outcar_analyze.add_argument("--output-dir", help="本地证据保存目录；默认 .aether/runtime/remote_outcar_analysis/<slug>。")
+    outcar_analyze.add_argument("--project", help="配合 --write-learning，把解释写回 research/<project>/Learning。")
+    outcar_analyze.add_argument("--write-learning", action="store_true", help="把解释写回项目 Learning。")
+    outcar_analyze.add_argument("--json", action="store_true")
+    outcar_analyze.set_defaults(func=handle_outcar_analyze)
 
     ssh_parser = sub.add_parser("ssh", help="简写：真实 SSH 探测集群。")
     ssh_parser.set_defaults(func=handle_cluster_probe)

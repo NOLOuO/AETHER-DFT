@@ -434,6 +434,59 @@ def test_pull_remote_run_outputs_rejects_out_of_scope_remote_root(tmp_path):
     assert runner.calls == []
 
 
+def test_find_remote_outcars_parses_safe_research_tree():
+    class Finder(_SSHRunnerNoRemote):
+        def _run_remote_command(self, _config, command: str, *, timeout: int, backend: str):
+            self.calls.append(command)
+            return _FakeCommandResult(
+                0,
+                "2026-06-06 09:10|12345|/home/tester/research/proj/run/OUTCAR\n",
+                "",
+            )
+
+    runner = Finder()
+    result = runner.find_remote_outcars(search_root="~/research", limit=3, max_depth=5)
+    assert result.status == "ok"
+    assert result.details["outcars"][0]["path"] == "/home/tester/research/proj/run/OUTCAR"
+    assert result.details["outcars"][0]["run_root"] == "/home/tester/research/proj/run"
+    assert "find '/home/tester/research'" in runner.calls[0]
+    assert "-maxdepth 5" in runner.calls[0]
+    assert "head -n 3" in runner.calls[0]
+
+
+def test_find_remote_outcars_rejects_out_of_scope_root():
+    runner = _SSHRunnerNoRemote()
+    result = runner.find_remote_outcars(search_root="/etc", limit=1)
+    assert result.status == "blocked"
+    assert "search_root" in result.message
+    assert runner.calls == []
+
+
+def test_pull_remote_outcar_context_rejects_non_outcar_name(tmp_path):
+    runner = _SSHRunnerNoRemote()
+    result = runner.pull_remote_outcar_context("/home/tester/research/proj/run/CONTCAR", tmp_path)
+    assert result.status == "blocked"
+    assert "OUTCAR" in result.message
+    assert runner.calls == []
+
+
+def test_pull_remote_outcar_context_downloads_neighboring_evidence(tmp_path):
+    class Puller(_SSHRunnerNoRemote):
+        def _run_remote_command(self, _config, command: str, *, timeout: int, backend: str):
+            self.calls.append(command)
+            return _FakeCommandResult(0, "OUTCAR\nOSZICAR\nPOSCAR\n", "")
+
+        def _download_from_remote(self, _config, remote_path: str, local_path: Path, *, timeout: int, backend: str):
+            local_path.write_text(f"copied {remote_path}", encoding="utf-8")
+
+    runner = Puller()
+    result = runner.pull_remote_outcar_context("/home/tester/research/proj/run/OUTCAR", tmp_path)
+    assert result.status == "synced"
+    assert (tmp_path / "OUTCAR").read_text(encoding="utf-8").endswith("/home/tester/research/proj/run/OUTCAR")
+    assert (tmp_path / "OSZICAR").exists()
+    assert len(result.details["downloaded"]) == 3
+
+
 def test_monitor_rejects_unsafe_scheduler_job_id(tmp_path):
     runner = _SSHRunnerNoRemote()
     record = RunRecord(
