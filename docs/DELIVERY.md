@@ -69,7 +69,7 @@ $env:AETHER_RUN_LLM_TESTS='1'
 python -m pytest tests/test_llm_authored_adsorption_e2e.py -q -s
 ```
 
-最近一次手动验证（2026-05-26）：`1 passed`，模型 `deepseek:deepseek-v4-pro` 能真实调用工具生成 adsorption candidate plan。该测试默认跳过，只有显式设置 `AETHER_RUN_LLM_TESTS=1` 才会访问真实 API。
+最近一次手动验证（2026-06-06）：`1 passed`，模型 `deepseek:deepseek-v4-pro` 能真实调用工具生成 adsorption candidate plan。该测试默认跳过，只有显式设置 `AETHER_RUN_LLM_TESTS=1` 才会访问真实 API。
 
 ## 全量回归
 
@@ -79,19 +79,19 @@ conda activate p312env
 python -m pytest -q
 ```
 
-本轮回归结果：`218 passed, 1 skipped`。
+本轮回归结果：`219 passed, 1 skipped`。
 
 ## 真实 Step 3 冒烟验证记录
 
-最近一次手动执行（2026-05-26）：
+最近一次手动执行（2026-06-06）：
 
 - build 输入包：`dft_run_task(execution_mode="build")`
 - preflight：`vasp_input_preflight_check(require_potcar=False)` → `ready`
-- 远程提交：`cluster_remote_submit` → Slurm job `submitted`
+- 远程提交：`cluster_remote_submit` → Slurm job `99160` submitted
 - 立即取消：`scancel <job_id>`，随后 `squeue -j <job_id>` 为空
-- 回拉：`cluster_remote_fetch` → `synced`
+- 本轮未执行回拉；取消后通过 `squeue -j 99160` 确认队列为空。
 
-为避免消耗集群资源，冒烟测试把生成的 `job.slurm` 运行命令替换为短 `sleep`；它验证的是上传、sbatch、取消、fetch 链路，不代表生产 VASP 计算完成。
+为避免消耗集群资源，冒烟测试把生成的 `job.slurm` 运行命令替换为短 `sleep`；它验证的是上传、sbatch 与取消链路，不代表生产 VASP 计算完成。
 
 ## 交付前注意
 

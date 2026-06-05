@@ -139,6 +139,42 @@ def test_registry_plan_handler_returns_soft_warning_on_short_site_reason():
     assert result["min_chars_hint"]["target_site_reason"] == 10
 
 
+def test_registry_plan_handler_accepts_model_nested_plan_payload():
+    registry = ToolRegistry()
+    raw = registry.run_tool(
+        "adsorption_candidate_plan",
+        {
+            "project": "pytest-nested-plan",
+            "material": "Pt(111)",
+            "adsorbate": "H2O",
+            "plan": {
+                "rationale": (
+                    "H2O 在 Pt(111) 上通常通过 O lone pair 与表面 Pt 配位；"
+                    "主测 atop O-down，并用 bridge 作为位点偏好对照。"
+                ),
+                "expected_binding_motif": "atop O-down",
+                "anchor_atom": "O",
+                "target_sites": [
+                    {"site_family": "ontop", "reason": "文献和化学先验都支持 atop 作为主测位点。"},
+                    {"site_family": "bridge", "reason": "作为次优位点对照，帮助判断 site preference。"},
+                ],
+                "target_orientations": ["upright", "flat-lying"],
+                "excluded_sites_with_reason": [
+                    {"site_family": "fcc_hollow", "reason": "三重 hollow 不符合水分子 O lone pair 单点配位偏好。"},
+                ],
+            },
+        },
+    )
+
+    result = raw["result"]
+    assert result["status"] == "ok"
+    plan = result["plan"]
+    assert len(plan["rationale"]) >= 30
+    assert plan["anchor_atom"] == "O"
+    assert [item["site_id"] for item in plan["target_sites"]] == ["ontop", "bridge"]
+    assert plan["excluded_sites_with_reason"][0]["site_id"] == "fcc_hollow"
+
+
 def test_plan_rejects_empty_target_sites():
     kwargs = _good_plan_kwargs()
     kwargs["target_sites"] = []

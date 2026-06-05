@@ -382,6 +382,19 @@ def test_discussion_mode_exposes_lean_tool_schema_surface():
     assert "project_continuity_digest" in discussion_names
     assert "literature_search" in discussion_names
     assert "research_workspace_diff" in discussion_names
+    for read_only_tool in {
+        "cluster_my_jobs",
+        "cluster_job_status_brief",
+        "cluster_job_tail_log",
+        "cluster_job_partial_outcar",
+        "cluster_job_progress_estimate",
+        "slab_surface_inspect",
+        "adsorbate_chemistry_hint",
+        "structure_enumerate_sites",
+        "manifest_audit",
+        "candidate_quality_score",
+    }:
+        assert read_only_tool in discussion_names
     assert "cluster_remote_submit" not in discussion_names
     assert "structure_add_adsorbate" not in discussion_names
 

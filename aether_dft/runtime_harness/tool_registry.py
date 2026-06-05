@@ -171,7 +171,7 @@ class ToolRegistry:
         self._register(ToolSpec("adsorption_plan", "吸附任务规划。", {"prompt": {"type": "string"}, "project": {"type": "string"}, "adsorbate": {"type": "string"}, "material": {"type": "string"}, "slab_path": {"type": "string"}, "preferred_site": {"type": "string"}, "preferred_orientation": {"type": "string"}, "persist": {"type": "boolean"}}, True, ("prompt",)), self._adsorption_plan)
         self._register(ToolSpec("adsorption_build_slab", "构建 slab（structure_build_slab 的兼容别名）。", {"material": {"type": "string"}, "output_dir": {"type": "string"}, "miller_index": {"type": "array", "items": {"type": "integer"}, "minItems": 3, "maxItems": 3}, "supercell": {"type": "array", "items": {"type": "integer"}, "minItems": 3, "maxItems": 3}, "structure_path": {"type": "string"}, "mp_id": {"type": "string"}, "source": {"type": "string"}, "min_slab_size": {"type": "number"}, "min_vacuum_size": {"type": "number"}, "fixed_bottom_layers": {"type": "integer"}}, False, ("material", "output_dir")), self._adsorption_build_slab)
         self._register(ToolSpec("adsorption_candidates", "批量自动枚举所有 site×orientation 的兜底生成器，不做领域判断；优先用 structure_enumerate_sites + structure_add_adsorbate + adsorption_candidate_manifest_compose 走模型自主路径，仅在 slab/吸附物特别陌生或想要快速 baseline 时回退到本工具。", {"slab_path": {"type": "string"}, "adsorbate": {"type": "string"}, "material": {"type": "string"}, "prompt": {"type": "string"}, "project": {"type": "string"}, "output_dir": {"type": "string"}, "task_id": {"type": "string"}, "candidate_height": {"type": "number"}, "max_sites_per_family": {"type": "integer"}, "preferred_site": {"type": "string"}, "preferred_orientation": {"type": "string"}, "vacancy_species": {"type": "string"}}, False, ("slab_path", "adsorbate", "material")), self._adsorption_candidates)
-        self._register(ToolSpec("adsorption_candidate_plan", "创建结构化推理 plan：rationale / expected_binding_motif / anchor_atom / target_sites(含 reason) / target_orientations / 排除位点。compose_manifest 之前建议先调它；跳过也只会进入 soft audit。", {"material": {"type": "string"}, "adsorbate": {"type": "string"}, "rationale": {"type": "string"}, "expected_binding_motif": {"type": "string"}, "anchor_atom": {"type": "string"}, "target_sites": {"type": "array", "items": {"type": "object"}}, "target_orientations": {"type": "array", "items": {"type": "string"}}, "excluded_sites_with_reason": {"type": "array", "items": {"type": "object"}}, "symmetry_pruning_applied": {"type": "boolean"}, "priors_consulted": {"type": "object"}, "project": {"type": "string"}, "task_id": {"type": "string"}, "notes": {"type": "string"}}, False, ("material", "adsorbate", "rationale", "expected_binding_motif", "anchor_atom", "target_sites", "target_orientations")), self._adsorption_candidate_plan)
+        self._register(ToolSpec("adsorption_candidate_plan", "创建结构化推理 plan：rationale / expected_binding_motif / anchor_atom / target_sites(含 reason) / target_orientations / 排除位点。可直接填顶层字段，也可把这些字段放入 plan 对象；compose_manifest 之前建议先调它；跳过也只会进入 soft audit。", {"material": {"type": "string"}, "adsorbate": {"type": "string"}, "rationale": {"type": "string"}, "expected_binding_motif": {"type": "string"}, "anchor_atom": {"type": "string"}, "target_sites": {"type": "array", "items": {"type": "object"}}, "target_orientations": {"type": "array", "items": {"type": "string"}}, "excluded_sites_with_reason": {"type": "array", "items": {"type": "object"}}, "symmetry_pruning_applied": {"type": "boolean"}, "priors_consulted": {"type": "object"}, "project": {"type": "string"}, "task_id": {"type": "string"}, "notes": {"type": "string"}, "plan": {"type": "object"}}, False), self._adsorption_candidate_plan)
         self._register(ToolSpec("adsorption_candidate_plan_list", "列出某项目（或 runtime）下已创建的 adsorption candidate plans。", {"project": {"type": "string"}}, True), self._adsorption_candidate_plan_list)
         self._register(ToolSpec("adsorption_candidate_manifest_compose", "把模型生成的 POSCAR 收编成 manifest.json。本工具不会拦截：plan_id / reason 长度 / site_label 对齐 / 候选数阈值 等质量问题会通过返回值的 quality_warnings 反馈给你，由你决定是否回炉。", {"task_id": {"type": "string"}, "material_name": {"type": "string"}, "source_prompt": {"type": "string"}, "slab_source": {"type": "string"}, "adsorbate_source": {"type": "string"}, "output_dir": {"type": "string"}, "candidates": {"type": "array", "items": {"type": "object"}}, "metadata": {"type": "object"}, "plan_id": {"type": "string"}, "project": {"type": "string"}, "prune_rationale": {"type": "string"}}, False, ("task_id", "material_name", "source_prompt", "slab_source", "adsorbate_source", "output_dir", "candidates")), self._adsorption_candidate_manifest_compose)
         self._register(ToolSpec("manifest_audit", "读已存盘 candidate_manifest.json 给行为画像：plan 链接 / reason 质量 / site 对齐 / prior 引用 / 候选规模 五维评分 + suggestions。不挡路，纯反馈。", {"manifest_path": {"type": "string"}}, True, ("manifest_path",)), self._manifest_audit)
@@ -258,6 +258,16 @@ class ToolRegistry:
             "cluster_execution_intent_plan",
             "research_vasp_template_resolve",
             "research_workspace_diff",
+            "cluster_my_jobs",
+            "cluster_job_status_brief",
+            "cluster_job_tail_log",
+            "cluster_job_partial_outcar",
+            "cluster_job_progress_estimate",
+            "slab_surface_inspect",
+            "adsorbate_chemistry_hint",
+            "structure_enumerate_sites",
+            "candidate_quality_score",
+            "manifest_audit",
             "dft_run_report",
             "dft_run_list",
             "vasp_input_summary",
@@ -934,6 +944,7 @@ class ToolRegistry:
     def _adsorption_candidate_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
         # guided-not-enforced：与 compose_manifest 的 soft warning 路径保持一致——
         # strict=False 会生成带 quality_warnings 的 plan，而不是让 handler catch 硬异常。
+        payload = self._normalize_adsorption_candidate_plan_payload(payload)
         plan = create_candidate_plan(
             material=str(payload.get("material") or ""),
             adsorbate=str(payload.get("adsorbate") or ""),
@@ -992,6 +1003,63 @@ class ToolRegistry:
                 "建议每个 candidate.reason 写明科学依据。"
             ),
         }
+
+    @staticmethod
+    def _normalize_adsorption_candidate_plan_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        """Accept both schema-shaped and model-authored nested ``plan`` payloads.
+
+        Live model calls often draft a coherent plan under ``plan={...}`` and keep
+        only project/material/adsorbate at top level.  Treat that as a valid
+        model-authored shape rather than forcing a brittle retry.
+        """
+
+        source = dict(payload or {})
+        nested = source.get("plan")
+        if isinstance(nested, dict):
+            merged = dict(nested)
+            for key, value in source.items():
+                if key == "plan":
+                    continue
+                if value is not None and str(value).strip() != "":
+                    merged[key] = value
+            source = merged
+
+        source["target_sites"] = ToolRegistry._normalize_plan_site_entries(
+            source.get("target_sites"),
+            default_prefix="site",
+        )
+        source["excluded_sites_with_reason"] = ToolRegistry._normalize_plan_site_entries(
+            source.get("excluded_sites_with_reason"),
+            default_prefix="excluded",
+        )
+        return source
+
+    @staticmethod
+    def _normalize_plan_site_entries(value: Any, *, default_prefix: str) -> Any:
+        if not isinstance(value, list):
+            return value
+        normalized: list[Any] = []
+        used: set[str] = set()
+        for index, raw in enumerate(value, start=1):
+            if not isinstance(raw, dict):
+                normalized.append(raw)
+                continue
+            entry = dict(raw)
+            site_id = str(
+                entry.get("site_id")
+                or entry.get("site_label")
+                or entry.get("label")
+                or entry.get("site_family")
+                or ""
+            ).strip()
+            if site_id:
+                safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", site_id).strip("-_.") or default_prefix
+                if safe in used:
+                    safe = f"{safe}-{index:02d}"
+                entry.setdefault("site_id", safe)
+                used.add(safe)
+            normalized.append(entry)
+        return normalized
 
     def _adsorption_candidate_plan_list(self, payload: dict[str, Any]) -> dict[str, Any]:
         project = str(payload.get("project") or "").strip() or None
