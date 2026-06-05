@@ -259,16 +259,6 @@ def call_openai_compatible_result(
 
     resolved_key = _resolve_api_key(config, api_key)
 
-    if tools and str(config.get("provider_id") or "").lower() == "bailian" and str(config.get("model") or "").startswith("qwen3"):
-        return call_openai_compatible_responses_result(
-            provider_id,
-            model_id,
-            resolved_key,
-            messages,
-            max_tokens=max_tokens,
-            tools=tools,
-        )
-
     client = _build_openai_client(
         resolved_key,
         base_url,
@@ -353,9 +343,9 @@ def _call_chat_completions_streaming(
 ) -> dict[str, Any]:
     """Stream Chat Completions deltas while reconstructing the normal result.
 
-    This intentionally covers the Chat Completions protocol only.  The Qwen
-    Responses-style tool path still uses the non-streaming parser until its
-    function-call delta protocol is implemented separately.
+    This intentionally covers the Chat Completions protocol. Provider-specific
+    Responses compatibility remains available as an explicit lower-level helper,
+    but model switching should not create provider branches in the main path.
     """
 
     try:

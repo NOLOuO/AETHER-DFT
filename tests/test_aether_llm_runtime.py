@@ -147,6 +147,69 @@ def test_chat_completions_streaming_reconstructs_content(monkeypatch):
     assert [event["delta"] for event in events] == ["Hello ", "world"]
 
 
+def test_qwen_tools_use_same_chat_completions_backend(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeCompletion:
+        def model_dump(self):
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_qwen",
+                                    "type": "function",
+                                    "function": {"name": "project_state_read", "arguments": "{\"project\":\"demo\"}"},
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured["kwargs"] = kwargs
+            return FakeCompletion()
+
+    class FakeResponses:
+        def create(self, **kwargs):  # pragma: no cover - should never be called
+            raise AssertionError("Qwen tools must use the unified Chat Completions backend")
+
+    class FakeClient:
+        chat = type("Chat", (), {"completions": FakeCompletions()})()
+        responses = FakeResponses()
+
+    monkeypatch.setattr("dft_app.llm.llm_client._build_openai_client", lambda *args, **kwargs: FakeClient())
+
+    result = call_openai_compatible_result(
+        "bailian",
+        "qwen3.7-max",
+        "fake-key",
+        [{"role": "user", "content": "read state"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "project_state_read",
+                    "description": "read",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    )
+
+    assert captured["kwargs"]["model"] == "qwen3.7-max"
+    assert captured["kwargs"]["messages"] == [{"role": "user", "content": "read state"}]
+    assert captured["kwargs"]["tools"][0]["function"]["name"] == "project_state_read"
+    assert captured["kwargs"]["tool_choice"] == "auto"
+    assert "input" not in captured["kwargs"]
+    assert result["tool_calls"][0]["id"] == "call_qwen"
+
+
 def test_chat_completions_streaming_reconstructs_tool_call(monkeypatch):
     class FakeCompletions:
         def create(self, **kwargs):

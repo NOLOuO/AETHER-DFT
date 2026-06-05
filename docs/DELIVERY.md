@@ -4,6 +4,10 @@
 
 ## 已跑通的主线
 
+0. **统一模型后端**
+   - DeepSeek 与 Qwen 都通过同一个 OpenAI-compatible Chat Completions 工具调用路径接入，切换模型只改变 provider/model 配置，不改变 harness 业务流程。
+   - Responses-compatible 解析保留为低层兼容 helper，但不再作为 Qwen3 tools 默认路径。
+
 1. **讨论与研究判断**
    - `web_search` / `literature_search` 在无 live connector 时返回 `connector_required`，不伪造外部事实。
    - `chemistry_compute` 支持 `convert`、`boltzmann`、`gibbs`、`tst_rate`、`kBT`，也兼容旧 `operation=...` 参数。
@@ -79,7 +83,7 @@ conda activate p312env
 python -m pytest -q
 ```
 
-本轮回归结果：`228 passed, 1 skipped`。
+本轮回归结果：`229 passed, 1 skipped`。
 
 ## 真实 Step 3 冒烟验证记录
 
