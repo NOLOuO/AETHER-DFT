@@ -18,12 +18,16 @@ python -m pip install -e .
 ```powershell
 aether-dft doctor
 aether-dft models
+aether-dft model smoke --model deepseek:deepseek-v4-pro
+aether-dft model smoke --model bailian:qwen3.7-max
 ```
 
 API key 可放在 `api_keys.local.json`，或使用环境变量：
 
 - DeepSeek: `DEEPSEEK_API_KEY`
 - 阿里百炼 / Qwen: `DASHSCOPE_API_KEY`
+
+新增 OpenAI-compatible 模型时，优先复制 `config/model_providers.example.json` 为 `config/model_providers.json` 后改 provider/model/base_url/key env；不需要改 agent harness。
 
 ## 2. 创建一个项目
 
@@ -114,6 +118,8 @@ aether-dft 看看怎么样了
 ```powershell
 aether-dft doctor
 aether-dft models
+aether-dft model smoke --model deepseek:deepseek-v4-pro
+aether-dft model smoke --model bailian:qwen3.7-max
 aether-dft model set deepseek:deepseek-v4-pro
 aether-dft model set bailian:qwen3.7-max
 aether-dft project list

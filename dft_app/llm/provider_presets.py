@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 import os
+from pathlib import Path
 from typing import Any
 
 
@@ -52,14 +54,57 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
 }
 
 
+def _external_provider_paths() -> list[Path]:
+    paths: list[Path] = []
+    explicit = os.getenv("AETHER_MODEL_PROVIDERS_PATH", "").strip()
+    if explicit:
+        paths.append(Path(explicit))
+    paths.append(Path.cwd() / "config" / "model_providers.json")
+    return paths
+
+
+def _load_external_provider_presets() -> dict[str, dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for path in _external_provider_paths():
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"模型 provider 配置读取失败: {path}: {exc}") from exc
+        providers = data.get("providers", data) if isinstance(data, dict) else {}
+        if not isinstance(providers, dict):
+            raise RuntimeError(f"模型 provider 配置格式错误: {path}")
+        for provider_id, provider in providers.items():
+            if not isinstance(provider, dict):
+                continue
+            merged[str(provider_id)] = deepcopy(provider)
+    return merged
+
+
+def _provider_presets() -> dict[str, dict[str, Any]]:
+    presets = deepcopy(PROVIDER_PRESETS)
+    for provider_id, external in _load_external_provider_presets().items():
+        if provider_id in presets:
+            merged = deepcopy(presets[provider_id])
+            merged.update({k: v for k, v in external.items() if k != "models"})
+            if "models" in external:
+                merged["models"] = external["models"]
+            presets[provider_id] = merged
+        else:
+            presets[provider_id] = deepcopy(external)
+    return presets
+
+
 def list_provider_ids() -> list[str]:
-    return list(PROVIDER_PRESETS.keys())
+    return list(_provider_presets().keys())
 
 
 def get_provider(provider_id: str) -> dict[str, Any]:
-    if provider_id not in PROVIDER_PRESETS:
+    presets = _provider_presets()
+    if provider_id not in presets:
         raise KeyError(f"未知 provider: {provider_id}")
-    return deepcopy(PROVIDER_PRESETS[provider_id])
+    return deepcopy(presets[provider_id])
 
 
 def list_models(provider_id: str) -> list[dict[str, Any]]:

@@ -48,6 +48,30 @@ def test_cli_model_current_smoke(capsys):
     assert payload["model_id"] in {"deepseek:deepseek-v4-pro", "bailian:qwen3.7-max"}
 
 
+def test_cli_model_smoke_summarizes_required_tool(monkeypatch, capsys):
+    captured = {}
+
+    def fake_run_agent_once(prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["kwargs"] = kwargs
+        return {
+            "finish_reason": "stop",
+            "response": "ok",
+            "record_path": "trace.jsonl",
+            "tool_executions": [{"name": "project_state_read", "result": {"status": "ok"}}],
+        }
+
+    monkeypatch.setattr("aether_dft.agent.run_agent_once", fake_run_agent_once)
+
+    assert cli.main(["model", "smoke", "--model", "bailian:qwen3.7-max", "--project", "demo"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    assert payload["model_id"] == "bailian:qwen3.7-max"
+    assert payload["tool_names"] == ["project_state_read"]
+    assert captured["kwargs"]["model_id"] == "bailian:qwen3.7-max"
+    assert "project=demo" in captured["prompt"]
+
+
 def test_cli_structure_tools_smoke(capsys):
     assert cli.main(["structure", "tools"]) == 0
     out = capsys.readouterr().out

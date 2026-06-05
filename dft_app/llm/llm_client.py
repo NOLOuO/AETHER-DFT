@@ -396,7 +396,13 @@ def _call_chat_completions_streaming(
     content = maybe_strip_markdown_fence("".join(content_chunks).strip())
     reasoning_content = "".join(reasoning_chunks).strip()
     if not content and not tool_calls:
-        raise RuntimeError("模型接口未返回可展示内容")
+        if reasoning_content:
+            content = (
+                "模型流式接口只返回了 reasoning_content，未返回最终可展示正文；"
+                "这通常表示 thinking 模式消耗了输出预算。请提高 max_tokens 或关闭/降低 thinking 后重试。"
+            )
+        else:
+            raise RuntimeError("模型接口未返回可展示内容")
     return {
         "content": content,
         "reasoning_content": reasoning_content,

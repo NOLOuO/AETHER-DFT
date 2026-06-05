@@ -7,6 +7,7 @@
 0. **统一模型后端**
    - DeepSeek 与 Qwen 都通过同一个 OpenAI-compatible Chat Completions 工具调用路径接入，切换模型只改变 provider/model 配置，不改变 harness 业务流程。
    - Responses-compatible 解析保留为低层兼容 helper，但不再作为 Qwen3 tools 默认路径。
+   - 真实 CLI smoke（2026-06-06）已验证 `deepseek:deepseek-v4-pro` 与 `bailian:qwen3.7-max` 都能调用同一个 `project_state_read` 工具路径：`aether-dft model smoke --model ...`。
 
 1. **讨论与研究判断**
    - `web_search` / `literature_search` 在无 live connector 时返回 `connector_required`，不伪造外部事实。
@@ -34,6 +35,7 @@
 
 5. **Step 5 结果解释**
    - `result_interpret` 诚实区分 `no_outputs`、partial、not converged、converged。
+   - 已用集群 `~/research/MCH-Pt-Br/.../Hstar_2Br-H_freq_Honly_20260601/OUTCAR` 做真实解析回归：频率任务正常结束、3 个实频、0 个虚频，verdict=`frequency_finished_no_imaginary_modes`。
    - `next_experiment_propose` 给少量下一步科研动作，而不是扩成固定程序。
 
 6. **Step 6 research/ 回写与同步**
@@ -59,6 +61,8 @@ aether agent "继续当前 DFT 课题，先看项目状态再决定下一步" --
 # 工具/模型自检
 aether doctor
 aether models
+aether model smoke --model deepseek:deepseek-v4-pro
+aether model smoke --model bailian:qwen3.7-max
 aether cluster probe
 ```
 
@@ -83,7 +87,24 @@ conda activate p312env
 python -m pytest -q
 ```
 
-本轮回归结果：`229 passed, 1 skipped`。
+本轮回归结果：`233 passed, 1 skipped`。
+
+## 真实模型后端 smoke
+
+最近一次手动执行（2026-06-06）：
+
+- `aether-dft model smoke --model deepseek:deepseek-v4-pro --project model-smoke-demo` → `status=ok`，工具链：`project_state_read`
+- `aether-dft model smoke --model bailian:qwen3.7-max --project model-smoke-demo` → `status=ok`，工具链：`project_state_read`
+- DeepSeek streaming smoke 使用本地 key 成功访问真实 API；该模型在 thinking 模式下返回了 `reasoning_content` 流但未在 1200 token 内返回最终 `content`，程序现在诚实降级为“只收到 reasoning_content，需提高 max_tokens 或调低 thinking”，不再抛异常。
+
+## 真实 OUTCAR 解析记录
+
+最近一次手动执行（2026-06-06）：
+
+- 远端来源：`/home/szhang/research/MCH-Pt-Br/MKM_actual_data_package_20260605/2Br/freq_tasks/Hstar_2Br-H_freq_Honly_20260601/OUTCAR`
+- 本地证据副本：`.aether/remote_outcar_analysis/Hstar_2Br-H_freq_Honly_20260601/`
+- 解释结果：`frequency_finished_no_imaginary_modes`，最后 `TOTEN=-640.56417145 eV`，3 个实频、0 个虚频。
+- 已写回 Learning：`research/MCH-Pt-Br/Learning/Hstar_2Br-H-frequency-OUTCAR-no-imaginary-modes.md`
 
 ## 真实 Step 3 冒烟验证记录
 

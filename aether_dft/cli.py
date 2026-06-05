@@ -544,6 +544,38 @@ def handle_model_set(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_model_smoke(args: argparse.Namespace) -> int:
+    from .agent import run_agent_once
+
+    model_id = args.model or resolve_effective_model_id()
+    project = args.project or "model-smoke-demo"
+    prompt = (
+        f"这是后端切换 smoke：必须先调用 project_state_read 读取 project={project}，"
+        "然后用一句话总结。不要调用其他工具。"
+    )
+    record = run_agent_once(
+        prompt,
+        project=project,
+        model_id=model_id,
+        max_steps=args.max_steps,
+        max_tokens=args.max_tokens,
+        permission_mode="dev",
+    )
+    tool_names = [str(item.get("name") or "") for item in record.get("tool_executions", [])]
+    payload = {
+        "status": "ok" if "project_state_read" in tool_names else "failed",
+        "model_id": model_id,
+        "project": project,
+        "required_tool": "project_state_read",
+        "tool_names": tool_names,
+        "finish_reason": record.get("finish_reason"),
+        "response": record.get("response"),
+        "record_path": record.get("record_path"),
+    }
+    print_json(payload)
+    return 0 if payload["status"] == "ok" else 1
+
+
 def handle_mainline(args: argparse.Namespace) -> int:
     prompt = " ".join(getattr(args, "prompt", []) or []).strip()
     print(f"{Colors.BOLD}{Colors.CYAN}AETHER-DFT mainline{Colors.RESET}")
@@ -1226,6 +1258,12 @@ def build_parser() -> argparse.ArgumentParser:
     model_set = model_sub.add_parser("set", help="设置默认模型，格式 provider:model。")
     model_set.add_argument("model_id")
     model_set.set_defaults(func=handle_model_set)
+    model_smoke = model_sub.add_parser("smoke", help="真实调用当前/指定模型，验证工具调用后端。")
+    model_smoke.add_argument("--model", help="临时使用 provider:model；默认当前模型。")
+    model_smoke.add_argument("--project", default="model-smoke-demo")
+    model_smoke.add_argument("--max-steps", type=int, default=4)
+    model_smoke.add_argument("--max-tokens", type=int, default=1200)
+    model_smoke.set_defaults(func=handle_model_smoke)
 
     project_parser = sub.add_parser("project", help="项目级科研状态容器。")
     project_sub = project_parser.add_subparsers(dest="project_command")

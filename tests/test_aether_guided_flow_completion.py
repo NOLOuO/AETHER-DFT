@@ -158,6 +158,31 @@ def test_result_interpret_and_next_experiment_tools(tmp_path: Path):
     assert len(proposed["proposals"]) == 3
 
 
+def test_result_interpret_recognizes_finished_frequency_without_imaginary_modes(tmp_path: Path):
+    (tmp_path / "OUTCAR").write_text(
+        "\n".join(
+            [
+                " free  energy   TOTEN  =      -640.56417145 eV",
+                " Eigenvectors and eigenvalues of the dynamical matrix",
+                " 1 f  =   17.692543 THz   111.166000 2PiTHz  590.166 cm-1",
+                " 2 f  =   22.123456 THz   138.000000 2PiTHz  738.000 cm-1",
+                " General timing and accounting informations for this job",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "OSZICAR").write_text("DAV: 1 -640.0\n", encoding="utf-8")
+
+    result = ToolRegistry().run_tool("result_interpret", {"run_root": str(tmp_path)})["result"]
+
+    assert result["status"] == "ok"
+    assert result["verdict"] == "frequency_finished_no_imaginary_modes"
+    assert result["frequency"]["detected"] is True
+    assert result["frequency"]["real_mode_count"] == 2
+    assert result["frequency"]["imaginary_mode_count"] == 0
+    assert not any("reached required accuracy" in warning for warning in result["warnings"])
+
+
 def test_result_interpret_flags_possible_adsorbate_dissociation(tmp_path: Path):
     initial = Atoms(
         "PtOH",

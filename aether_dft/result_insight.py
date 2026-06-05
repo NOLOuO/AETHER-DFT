@@ -29,6 +29,23 @@ def _parse_float_tail(pattern: str, text: str) -> list[float]:
     return values
 
 
+def _frequency_summary(outcar_text: str) -> dict[str, Any]:
+    real = _parse_float_tail(r"\bf\s*=\s*(-?\d+(?:\.\d+)?)\s+THz", outcar_text)
+    imaginary = _parse_float_tail(r"\bf/i=\s*(-?\d+(?:\.\d+)?)\s+THz", outcar_text)
+    has_frequency_section = bool(real or imaginary or "Eigenvectors and eigenvalues of the dynamical matrix" in outcar_text)
+    if not has_frequency_section:
+        return {"detected": False}
+    return {
+        "detected": True,
+        "real_mode_count": len(real),
+        "imaginary_mode_count": len(imaginary),
+        "min_real_thz": min(real) if real else None,
+        "max_real_thz": max(real) if real else None,
+        "max_imaginary_thz": max(imaginary) if imaginary else None,
+        "imaginary_modes_thz": imaginary[:12],
+    }
+
+
 def _first_existing(root: Path, *names: str) -> Path:
     for name in names:
         candidate = root / name
@@ -124,9 +141,13 @@ def interpret_result(run_root: str | Path) -> dict[str, Any]:
     osz_energies = _parse_float_tail(r"F=\s*(-?\d+(?:\.\d+)?(?:E[+-]?\d+)?)", oszicar_text)
     reached = "reached required accuracy" in outcar_text.lower()
     stopped = "Voluntary context switches" in outcar_text or "General timing and accounting informations" in outcar_text
+    frequency = _frequency_summary(outcar_text)
     warnings: list[str] = []
     suggestions: list[str] = []
-    if not reached:
+    if frequency.get("detected") and frequency.get("imaginary_mode_count", 0):
+        warnings.append("频率输出包含虚频；若目标是稳定中间体，需要检查构型是否为极小点。")
+        suggestions.append("对虚频模式做位移可视化；稳定中间体需重新优化，TS 则需确认是否只有目标反应坐标一个虚频。")
+    if not reached and not frequency.get("detected"):
         warnings.append("OUTCAR 未出现 reached required accuracy；不能把结构优化当作已收敛。")
         suggestions.append("若 job 已结束，检查 NSW/EDIFFG/SCF 收敛；若仍在跑，用 progress_estimate 继续观察。")
     if len(osz_energies) >= 3:
@@ -148,7 +169,14 @@ def interpret_result(run_root: str | Path) -> dict[str, Any]:
             warnings.append("吸附物整体漂移较大，可能脱附或迁移；不能直接当作原目标构型的吸附能。")
         elif verdict_hint == "bonding_changed_review_geometry":
             suggestions.append("存在成键/断键变化，建议先做 bond/位移 review 再记录 outcome。")
-    if reached and toten:
+    if frequency.get("detected") and stopped and toten:
+        if frequency.get("imaginary_mode_count", 0):
+            verdict = "frequency_finished_with_imaginary_modes"
+            headline = "频率任务已正常结束并产生频率，但包含虚频；需要结合任务目标判断是 TS 还是未稳定构型。"
+        else:
+            verdict = "frequency_finished_no_imaginary_modes"
+            headline = "频率任务已正常结束，未检出虚频；可进入 ZPE/热校正/自由能记录，但仍需核对任务模板和参考态。"
+    elif reached and toten:
         verdict = "finished_converged"
         headline = "计算输出显示电子/离子收敛，可进入结构对比、能量归一化和项目规则复核。"
     elif stopped and toten:
@@ -168,6 +196,7 @@ def interpret_result(run_root: str | Path) -> dict[str, Any]:
             "ionic_steps_seen": len(osz_energies),
             "oscillating": oscillating,
         },
+        "frequency": frequency,
         "files": {"OUTCAR": bool(outcar_text), "OSZICAR": bool(oszicar_text), "CONTCAR": contcar.exists(), "POSCAR": poscar.exists()},
         "structure_change": structure_change,
         "adsorption_interpretation": structure_change.get("adsorption_verdict") if structure_change.get("status") == "ok" else "unavailable",

@@ -1,0 +1,24 @@
+{
+  "providers": {
+    "custom-openai": {
+      "label": "Custom OpenAI-compatible",
+      "base_url": "https://example.com/v1",
+      "api_key_env": "CUSTOM_OPENAI_API_KEY",
+      "timeout_seconds": 180,
+      "max_tokens": 1600,
+      "supports_temperature": true,
+      "default_temperature": 0.2,
+      "supports_top_p": true,
+      "default_top_p": 0.95,
+      "models": [
+        {
+          "id": "my-model",
+          "label": "My Model",
+          "api_model": "my-model",
+          "note": "Add OpenAI-compatible models here without changing the harness.",
+          "context_window": 128000
+        }
+      ]
+    }
+  }
+}

@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import pytest
 
@@ -41,6 +42,44 @@ def test_qwen37_uses_dashscope_beijing_openai_compatible_endpoint():
 def test_model_catalog_only_lists_project_fit_models():
     catalog = load_model_catalog(Path.cwd())
     assert set(catalog) == {"deepseek:deepseek-v4-pro", "bailian:qwen3.7-max"}
+
+
+def test_external_model_provider_config_extends_catalog(monkeypatch, tmp_path):
+    config_path = tmp_path / "model_providers.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "localai": {
+                        "label": "Local AI",
+                        "base_url": "http://localhost:8000/v1",
+                        "api_key_env": "LOCALAI_API_KEY",
+                        "timeout_seconds": 30,
+                        "max_tokens": 512,
+                        "models": [
+                            {
+                                "id": "research-model",
+                                "label": "Research Model",
+                                "api_model": "research-model",
+                                "context_window": 64000,
+                            }
+                        ],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AETHER_MODEL_PROVIDERS_PATH", str(config_path))
+    monkeypatch.setenv("LOCALAI_API_KEY", "present")
+
+    config = build_provider_model_config("localai", "research-model")
+    catalog = load_model_catalog(tmp_path)
+
+    assert config["base_url"] == "http://localhost:8000/v1"
+    assert config["model"] == "research-model"
+    assert catalog["localai:research-model"].available is True
+    assert catalog["localai:research-model"].context_window == 64000
 
 
 def test_domestic_runtime_reads_aether_model_preferences(monkeypatch, tmp_path):
@@ -145,6 +184,36 @@ def test_chat_completions_streaming_reconstructs_content(monkeypatch):
     assert result["content"] == "Hello world"
     assert result["finish_reason"] == "stop"
     assert [event["delta"] for event in events] == ["Hello ", "world"]
+
+
+def test_chat_completions_streaming_degrades_when_only_reasoning_arrives(monkeypatch):
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return iter(
+                [
+                    {"choices": [{"delta": {"reasoning_content": "先思考"}}]},
+                    {"choices": [{"delta": {"reasoning_content": "但未输出正文"}, "finish_reason": "length"}]},
+                ]
+            )
+
+    class FakeClient:
+        chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr("dft_app.llm.llm_client._build_openai_client", lambda *args, **kwargs: FakeClient())
+    events: list[dict[str, object]] = []
+
+    result = call_openai_compatible_result(
+        "deepseek",
+        "deepseek-v4-pro",
+        "fake-key",
+        [{"role": "user", "content": "hello"}],
+        stream_callback=events.append,
+    )
+
+    assert result["finish_reason"] == "length"
+    assert "只返回了 reasoning_content" in result["content"]
+    assert result["reasoning_content"] == "先思考但未输出正文"
+    assert [event["type"] for event in events] == ["reasoning_delta", "reasoning_delta"]
 
 
 def test_qwen_tools_use_same_chat_completions_backend(monkeypatch):
