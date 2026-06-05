@@ -26,6 +26,36 @@ from .project_state import append_progress, init_project, list_projects, load_pr
 
 PROGRAM_NAME = "AETHER-DFT"
 PROGRAM_COMMAND = "aether"
+TOP_LEVEL_COMMANDS = {
+    "adsorption",
+    "agent",
+    "analyze",
+    "ask",
+    "chat",
+    "cluster",
+    "context",
+    "demo",
+    "dft",
+    "doctor",
+    "explain",
+    "fetch",
+    "harness",
+    "kb",
+    "mainline",
+    "model",
+    "models",
+    "monitor",
+    "project",
+    "recommend",
+    "run",
+    "session",
+    "ssh",
+    "status",
+    "structure",
+    "submit",
+    "task",
+    "tools",
+}
 
 
 class Colors:
@@ -84,6 +114,8 @@ def print_quick_start() -> None:
     print_banner()
     print()
     print("Usage:")
+    print("  aether 看看怎么样了          # fast-path 秒级队列状态")
+    print("  aether job 12345 怎么样      # fast-path 单作业状态")
     print("  aether mainline [\"继续当前科研任务\"]")
     print("  aether chat \"继续当前科研任务\"")
     print("  aether model current")
@@ -1511,6 +1543,40 @@ def main(argv: list[str] | None = None) -> int:
         return handle_run(argparse.Namespace(dft_args=raw_args[1:]))
     if raw_args and raw_args[0] == "dft":
         return handle_dft(argparse.Namespace(dft_args=raw_args[1:]))
+    if raw_args and raw_args[0] not in TOP_LEVEL_COMMANDS and not raw_args[0].startswith("-"):
+        query = " ".join(raw_args).strip()
+        from .fast_path import dispatch_fast_path
+
+        fast = dispatch_fast_path(query)
+        if fast.handled:
+            if fast.text:
+                print(fast.text)
+            return int(fast.exit_code)
+        return handle_chat(
+            argparse.Namespace(
+                prompt=raw_args,
+                project=None,
+                model=None,
+                max_tokens=None,
+                max_steps=6,
+                resume=True,
+                session_id=None,
+                task_plan=False,
+                task_run=False,
+                material=None,
+                structure_path=None,
+                slab_path=None,
+                adsorbate=None,
+                preferred_site=None,
+                preferred_orientation=None,
+                task_type=None,
+                submit_profile=None,
+                model_spec_path=None,
+                step2_manifest_path=None,
+                candidate_id=None,
+                planner="rule",
+            )
+        )
     parser = build_parser()
     args = parser.parse_args(raw_args)
     handler = getattr(args, "func", None)
