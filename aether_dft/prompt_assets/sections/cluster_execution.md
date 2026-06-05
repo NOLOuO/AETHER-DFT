@@ -44,7 +44,7 @@
 | 生成 VASP 输入包 | Step 2 结构文件、任务类型、research 模板 | `dft_run_task(execution_mode="build")`（会把可解析 research 模板写入 spec/INCAR 覆盖） | run_root + inputs/POSCAR/INCAR/KPOINTS/job.slurm |
 | 提交前核对 | 输入文件是否齐全、模板来源、INCAR 关键参数、SLURM 脚本、POTCAR 状态 | `vasp_input_preflight_check` / `vasp_input_summary`（会逐项对照 `expected_incar`） | readiness / blockers / warnings |
 | 连接集群 | SSH alias、登录节点、远程 base dir | `cluster_config` / `cluster_probe` | 集群配置与连通性证据 |
-| 统一 research | 本地 `research/` 与集群 `~/research` 是否一致 | `cluster_research_status` / `cluster_research_sync` | missing/differing 列表或同步结果 |
+| 统一 research | 本地 `research/` 与集群 `~/research` 是否一致 | `research_workspace_diff` / `research_workspace_sync_to_cluster` | missing/differing 列表或同步结果 |
 | 提交任务 | 当前输入包 gate ready、run_root、用户/运行时允许提交、远程 probe 证据 | `cluster_remote_submit`（内部仍会自适应复核 gate，不接受绕过） | scheduler job id / remote_run_root |
 | 监控与回收 | run_id 或 run_root、scheduler 状态 | `cluster_remote_monitor` / `cluster_remote_fetch` / `vasp_output_scan` | 输出文件与状态 |
 | 解释并写回 | OUTCAR/OSZICAR、E_ads/频率/失败原因 | `candidate_outcome_record` / `knowledge_note_add` / `project_progress_append` | 可复用科研经验 |
@@ -53,7 +53,7 @@
 
 - **已有 run_root，只想提交**：不要重新 `dft_run_task(build)`；围绕现有 run 补齐 preflight / probe 证据，再在允许时提交。
 - **只有 Step 2 的 POSCAR，想上集群**：缺 research 就读 research，缺输入包就 build，缺核对证据就 preflight；顺序由缺口决定，不是固定脚本。
-- **本地 research 与集群 `~/research` 可能不一致**：先 `cluster_research_status`；用户明确要求统一时再 `cluster_research_sync(apply=true)`。同步不删除远端独有文件，覆盖前会备份。
+- **本地 research 与集群 `~/research` 可能不一致**：先 `research_workspace_diff`；用户明确要求统一时再 `research_workspace_sync_to_cluster(apply=true)`。同步不删除远端独有文件，覆盖前会备份。
 - **用户问 INCAR 参数是否合理**：只读 research 和模板解析，给出核对结论；不要写文件。
 - **preflight blocked**：解释 blocker 并修正输入/要求补文件；不要 probe/submit。
 - **任务已经在队列或跑完**：monitor/fetch/scan/write-back；不要重新 build。

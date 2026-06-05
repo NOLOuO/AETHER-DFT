@@ -78,6 +78,23 @@ def test_plan_rejects_short_rationale():
         create_candidate_plan(**kwargs)
 
 
+def test_create_candidate_plan_non_strict_records_quality_warnings():
+    kwargs = _good_plan_kwargs()
+    kwargs["rationale"] = "太短"
+    kwargs["target_sites"] = [{"site_id": "ontop-01", "reason": "x"}]
+    kwargs["target_orientations"] = []
+
+    plan = create_candidate_plan(**kwargs, strict=False)
+
+    assert plan.plan_id.startswith("plan_")
+    assert Path(plan.plan_path).exists()
+    assert plan.quality_warnings
+    assert any("rationale" in item for item in plan.quality_warnings)
+    assert any("target_sites" in item for item in plan.quality_warnings)
+    assert any("target_orientations" in item for item in plan.quality_warnings)
+    assert plan.target_orientations == ["unspecified"]
+
+
 def test_registry_plan_handler_returns_soft_warning_on_short_rationale(tmp_path):
     """guided-not-enforced：tool 调用面不再向模型抛 raise，而是 status=needs_revision。"""
     registry = ToolRegistry()
@@ -96,6 +113,7 @@ def test_registry_plan_handler_returns_soft_warning_on_short_rationale(tmp_path)
     result = raw["result"]
     assert result["status"] == "needs_revision"
     assert "rationale" in result["warning"]
+    assert result["plan"]["quality_warnings"]
     assert result["echo"]["material"] == "Pt(111)"
     # 不应该把 raise 暴露成 tool registry 的 error status
     assert "error" not in result["status"]

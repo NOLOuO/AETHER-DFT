@@ -130,6 +130,10 @@ def require_permission(action: str, *, destructive: bool = False) -> dict[str, A
 
 def infer_turn_mode(prompt: str) -> str:
     text = str(prompt or "").lower()
+    if any(tag in text for tag in ("[execution-mode]", "[execution]", "<execution-mode>")):
+        return "execution"
+    if any(tag in text for tag in ("[discussion-mode]", "[discussion]", "<discussion-mode>")):
+        return "discussion"
     execution_markers = [
         "提交",
         "集群",
@@ -153,6 +157,23 @@ def infer_turn_mode(prompt: str) -> str:
         "fetch",
         "monitor",
         "vasp",
+        "outcar",
+        "oszicar",
+        "contcar",
+        "squeue",
+        "sacct",
+        "job_id",
+        "job id",
+        "jobid",
+        "队列",
+        "作业",
+        "日志",
+        "收敛",
+        "能量",
+        "看看怎么样",
+        "怎么样了",
+        "现在情况",
+        "跑得怎么样",
     ]
     return "execution" if any(marker in text for marker in execution_markers) else "discussion"
 
@@ -202,7 +223,10 @@ class AgentHarness:
         tool_executions: list[dict[str, Any]] = []
         finish_reason = "stop"
         response = ""
-        tools = self.registry.openai_tool_schemas()
+        try:
+            tools = self.registry.openai_tool_schemas(interaction_mode=interaction_mode)
+        except TypeError:
+            tools = self.registry.openai_tool_schemas()
         started_at = datetime.now().astimezone()
         force_final_reply_after_audit = False
         if progress_callback:
@@ -251,7 +275,11 @@ class AgentHarness:
                             "arguments": raw_args,
                             "result": {
                                 "status": "blocked",
-                                "message": f"单轮工具调用超过上限 {MAX_TOOL_CALLS_PER_STEP}，本调用未执行；请模型先总结证据再继续。",
+                                "message": (
+                                    f"单轮已执行 {MAX_TOOL_CALLS_PER_STEP} 个工具调用（你刚才一次请求了 {len(tool_calls)} 个）；"
+                                    "余下调用本轮不会执行。这不是工具失败，而是 harness 为防止一次性过量调用而暂停。"
+                                    "请先用自然语言总结已拿到的证据，或把剩余调用拆到下一轮。"
+                                ),
                             },
                         }
                     elif mutating_calls_seen > MAX_MUTATING_TOOL_CALLS_PER_STEP:
@@ -260,7 +288,11 @@ class AgentHarness:
                             "arguments": raw_args,
                             "result": {
                                 "status": "blocked",
-                                "message": f"单轮有副作用工具调用超过上限 {MAX_MUTATING_TOOL_CALLS_PER_STEP}，本调用未执行；请分步确认。",
+                                "message": (
+                                    f"单轮有副作用工具调用已超过上限 {MAX_MUTATING_TOOL_CALLS_PER_STEP}；本调用未执行。"
+                                    "这不是工具失败，而是 harness 为避免连续写入/提交等副作用而暂停。"
+                                    "请先总结已完成写入和证据，再把剩余副作用动作拆到下一轮并明确为什么需要。"
+                                ),
                             },
                         }
                     else:

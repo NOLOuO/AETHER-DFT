@@ -39,6 +39,7 @@ class AdsorptionCandidatePlan:
     notes: str = ""
     created_at: str = ""
     plan_path: str | None = None
+    quality_warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -59,29 +60,51 @@ def _plans_dir(project: str | None) -> Path:
     return ensure_runtime_dir("adsorption_plans")
 
 
-def _validate_target_sites(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list) or not value:
-        raise ValueError("target_sites 必须是非空数组；每项需至少含 site_id 和 reason。")
-    seen_ids: set[str] = set()
-    for index, raw in enumerate(value, start=1):
-        if not isinstance(raw, dict):
-            raise ValueError(f"target_sites[{index}] 不是对象。")
-        site_id = str(raw.get("site_id", "")).strip()
-        if not site_id:
-            raise ValueError(f"target_sites[{index}] 缺少非空 site_id。")
-        if site_id in seen_ids:
-            raise ValueError(f"target_sites[{index}] site_id 重复: {site_id}")
-        seen_ids.add(site_id)
+def _strict_or_warn(message: str, warnings: list[str], *, strict: bool) -> None:
+    if strict:
+        raise ValueError(message)
+    warnings.append(message)
 
+
+def _validate_target_sites(value: Any, *, strict: bool = True, warnings: list[str] | None = None) -> list[dict[str, Any]]:
+    warnings = warnings if warnings is not None else []
+    if not isinstance(value, list) or not value:
+        _strict_or_warn("target_sites 必须是非空数组；每项需至少含 site_id 和 reason。", warnings, strict=strict)
+        return [{"site_id": "unspecified-site", "reason": "未提供 target_sites；模型需要补充候选位点与化学/对称依据。"}]
+    if strict:
+        strict_seen_ids: set[str] = set()
+        for index, raw in enumerate(value, start=1):
+            if not isinstance(raw, dict):
+                raise ValueError(f"target_sites[{index}] 不是对象。")
+            site_id = str(raw.get("site_id", "")).strip()
+            if not site_id:
+                raise ValueError(f"target_sites[{index}] 缺少非空 site_id。")
+            if site_id in strict_seen_ids:
+                raise ValueError(f"target_sites[{index}] site_id 重复: {site_id}")
+            strict_seen_ids.add(site_id)
+    seen_ids: set[str] = set()
     normalized: list[dict[str, Any]] = []
     for index, raw in enumerate(value, start=1):
+        if not isinstance(raw, dict):
+            _strict_or_warn(f"target_sites[{index}] 不是对象。", warnings, strict=strict)
+            raw = {"site_id": f"site-{index:02d}-unspecified", "reason": "原始条目不是对象；模型需要重写该候选位点依据。"}
         site_id = str(raw.get("site_id", "")).strip()
+        if not site_id:
+            _strict_or_warn(f"target_sites[{index}] 缺少非空 site_id。", warnings, strict=strict)
+            site_id = f"site-{index:02d}-unspecified"
+        if site_id in seen_ids:
+            _strict_or_warn(f"target_sites[{index}] site_id 重复: {site_id}", warnings, strict=strict)
+            site_id = f"{site_id}-{index:02d}"
+        seen_ids.add(site_id)
         reason = str(raw.get("reason", "")).strip()
         if len(reason) < SITE_REASON_MIN_CHARS:
-            raise ValueError(
+            _strict_or_warn(
                 f"target_sites[{index}].reason 太短（{len(reason)} < {SITE_REASON_MIN_CHARS}），"
-                "写明为什么选这个位点（化学依据 / 对称依据）。"
+                "写明为什么选这个位点（化学依据 / 对称依据）。",
+                warnings,
+                strict=strict,
             )
+            reason = (reason + "；需要补充化学依据和对称依据。").lstrip("；")
         entry = {"site_id": site_id, "reason": reason}
         for key, value in raw.items():
             if key not in {"site_id", "reason"}:
@@ -90,37 +113,48 @@ def _validate_target_sites(value: Any) -> list[dict[str, Any]]:
     return normalized
 
 
-def _validate_excluded(value: Any) -> list[dict[str, Any]]:
+def _validate_excluded(value: Any, *, strict: bool = True, warnings: list[str] | None = None) -> list[dict[str, Any]]:
+    warnings = warnings if warnings is not None else []
     if value is None:
         return []
     if not isinstance(value, list):
-        raise ValueError("excluded_sites_with_reason 必须是数组或省略。")
+        _strict_or_warn("excluded_sites_with_reason 必须是数组或省略。", warnings, strict=strict)
+        return []
     normalized: list[dict[str, Any]] = []
     for index, raw in enumerate(value, start=1):
         if not isinstance(raw, dict):
-            raise ValueError(f"excluded_sites_with_reason[{index}] 不是对象。")
+            _strict_or_warn(f"excluded_sites_with_reason[{index}] 不是对象。", warnings, strict=strict)
+            continue
         site_id = str(raw.get("site_id", "")).strip()
         reason = str(raw.get("reason", "")).strip()
         if not site_id:
-            raise ValueError(f"excluded_sites_with_reason[{index}] 缺少 site_id。")
+            _strict_or_warn(f"excluded_sites_with_reason[{index}] 缺少 site_id。", warnings, strict=strict)
+            site_id = f"excluded-{index:02d}-unspecified"
         if len(reason) < EXCLUSION_REASON_MIN_CHARS:
-            raise ValueError(
-                f"excluded_sites_with_reason[{index}].reason 太短（{len(reason)} < {EXCLUSION_REASON_MIN_CHARS}）。"
+            _strict_or_warn(
+                f"excluded_sites_with_reason[{index}].reason 太短（{len(reason)} < {EXCLUSION_REASON_MIN_CHARS}）。",
+                warnings,
+                strict=strict,
             )
+            reason = (reason + "；需要补充为什么排除该位点。").lstrip("；")
         normalized.append({"site_id": site_id, "reason": reason})
     return normalized
 
 
-def _validate_orientations(value: Any) -> list[str]:
+def _validate_orientations(value: Any, *, strict: bool = True, warnings: list[str] | None = None) -> list[str]:
+    warnings = warnings if warnings is not None else []
     if value is None or value == []:
-        raise ValueError("target_orientations 必须至少给一个 orientation（例如 upright / flat / tilted）。")
+        _strict_or_warn("target_orientations 必须至少给一个 orientation（例如 upright / flat / tilted）。", warnings, strict=strict)
+        return ["unspecified"]
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, list):
-        raise ValueError("target_orientations 必须是字符串数组。")
+        _strict_or_warn("target_orientations 必须是字符串数组。", warnings, strict=strict)
+        value = [str(value)]
     cleaned = [str(item).strip() for item in value if str(item).strip()]
     if not cleaned:
-        raise ValueError("target_orientations 至少需要一个非空字符串。")
+        _strict_or_warn("target_orientations 至少需要一个非空字符串。", warnings, strict=strict)
+        return ["unspecified"]
     return cleaned
 
 
@@ -139,31 +173,40 @@ def create_candidate_plan(
     project: str | None = None,
     task_id: str | None = None,
     notes: str = "",
+    strict: bool = True,
 ) -> AdsorptionCandidatePlan:
     """创建并持久化结构化推理 plan。"""
 
+    quality_warnings: list[str] = []
     material_clean = (material or "").strip()
     if not material_clean:
-        raise ValueError("material 不能为空。")
+        _strict_or_warn("material 不能为空。", quality_warnings, strict=strict)
+        material_clean = "unspecified-material"
     adsorbate_clean = (adsorbate or "").strip()
     if not adsorbate_clean:
-        raise ValueError("adsorbate 不能为空。")
+        _strict_or_warn("adsorbate 不能为空。", quality_warnings, strict=strict)
+        adsorbate_clean = "unspecified-adsorbate"
     rationale_clean = (rationale or "").strip()
     if len(rationale_clean) < RATIONALE_MIN_CHARS:
-        raise ValueError(
+        _strict_or_warn(
             f"rationale 太短（{len(rationale_clean)} < {RATIONALE_MIN_CHARS}）；"
-            "写清你为什么这样选位点 / 取向 / anchor，至少 30 字。"
+            "写清你为什么这样选位点 / 取向 / anchor，至少 30 字。",
+            quality_warnings,
+            strict=strict,
         )
+        rationale_clean = (rationale_clean + "；需要补充位点、取向和 anchor 的科研依据。").lstrip("；")
     motif_clean = (expected_binding_motif or "").strip()
     if not motif_clean:
-        raise ValueError("expected_binding_motif 不能为空，例如 'atop O-down'。")
+        _strict_or_warn("expected_binding_motif 不能为空，例如 'atop O-down'。", quality_warnings, strict=strict)
+        motif_clean = "unspecified-binding-motif"
     anchor_clean = (anchor_atom or "").strip()
     if not anchor_clean:
-        raise ValueError("anchor_atom 不能为空，例如 'O' / 'C' / 'N'。")
+        _strict_or_warn("anchor_atom 不能为空，例如 'O' / 'C' / 'N'。", quality_warnings, strict=strict)
+        anchor_clean = "X"
 
-    sites = _validate_target_sites(target_sites)
-    orientations = _validate_orientations(target_orientations)
-    excluded = _validate_excluded(excluded_sites_with_reason)
+    sites = _validate_target_sites(target_sites, strict=strict, warnings=quality_warnings)
+    orientations = _validate_orientations(target_orientations, strict=strict, warnings=quality_warnings)
+    excluded = _validate_excluded(excluded_sites_with_reason, strict=strict, warnings=quality_warnings)
 
     plan_id = f"plan_{uuid4().hex[:8]}"
     plan = AdsorptionCandidatePlan(
@@ -182,6 +225,7 @@ def create_candidate_plan(
         priors_consulted=dict(priors_consulted or {}),
         notes=(notes or "").strip(),
         created_at=_now(),
+        quality_warnings=quality_warnings,
     )
     path = _plans_dir(project) / f"{plan_id}.json"
     payload = plan.to_dict()

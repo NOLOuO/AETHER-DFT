@@ -205,8 +205,6 @@ class ToolRegistry:
         self._register(ToolSpec("cluster_job_tail_log", "tail -n <lines> 集群上某 job 的日志（默认 vasp.out，找不到自动回落 logs/*、slurm.out、OSZICAR）。job_id 可用本地 run 记录反查 remote_run_root；也可直接传 remote_run_root。< 2 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "log_name": {"type": "string"}, "lines": {"type": "integer"}, "project_root": {"type": "string"}}, True), self._cluster_job_tail_log)
         self._register(ToolSpec("cluster_job_partial_outcar", "解析当前 OUTCAR 末段：能量 / 力 / ionic step / SCF 是否收敛。job_id 反查或直接 remote_run_root。< 3 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "project_root": {"type": "string"}}, True), self._cluster_job_partial_outcar)
         self._register(ToolSpec("cluster_job_progress_estimate", "用 OSZICAR ionic step 轨迹判断能量趋势：是否单调下降 / 震荡 / 给收敛分数。< 5 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "project_root": {"type": "string"}}, True), self._cluster_job_progress_estimate)
-        self._register(ToolSpec("cluster_research_status", "只读比较本地 research/ 与集群 ~/research：文件数量、缺失、差异、远端独有文件。", {"remote_research_dir": {"type": "string"}}, True), self._cluster_research_status)
-        self._register(ToolSpec("cluster_research_sync", "把本地 research/ 同步到集群 ~/research。默认 dry_run；只有 apply=true 才上传/覆盖，远端冲突会先备份，不删除远端独有文件。", {"remote_research_dir": {"type": "string"}, "apply": {"type": "boolean"}}, False), self._cluster_research_sync)
         self._register(ToolSpec("research_workspace_diff", "按项目比较本地 research/<project>/ 与集群 ~/research/<project>/ 差异；project 为空则比较整个 research。", {"project": {"type": "string"}, "remote_research_dir": {"type": "string"}}, True), self._research_workspace_diff)
         self._register(ToolSpec("research_workspace_sync_to_cluster", "把本地 research/<project>/ 推到集群 ~/research/<project>/；默认 dry-run，apply=true 才修改远端。", {"project": {"type": "string"}, "remote_research_dir": {"type": "string"}, "apply": {"type": "boolean"}}, False), self._research_workspace_sync_to_cluster)
         self._register(ToolSpec("research_workspace_sync_from_cluster", "从集群 ~/research/<project>/ 拉回本地 research/<project>/；默认 dry-run，apply=true 才覆盖本地且先备份。", {"project": {"type": "string"}, "remote_research_dir": {"type": "string"}, "apply": {"type": "boolean"}}, False), self._research_workspace_sync_from_cluster)
@@ -224,8 +222,52 @@ class ToolRegistry:
     def list_tools(self) -> list[dict[str, Any]]:
         return [spec.to_dict() for spec, _ in self._tools.values()]
 
-    def openai_tool_schemas(self) -> list[dict[str, Any]]:
-        return [_schema(spec.name, spec.description, spec.parameters, list(spec.required)) for spec, _ in self._tools.values()]
+    def openai_tool_schemas(self, interaction_mode: str | None = None) -> list[dict[str, Any]]:
+        tools = list(self._tools.values())
+        if interaction_mode == "discussion":
+            names = self._discussion_tool_names()
+            tools = [(spec, handler) for spec, handler in tools if spec.name in names]
+        return [_schema(spec.name, spec.description, spec.parameters, list(spec.required)) for spec, _ in tools]
+
+    def _discussion_tool_names(self) -> set[str]:
+        """Expose a lean evidence/discussion surface; execution mode still receives the full registry."""
+        return {
+            "computational_chemistry_workflow_map",
+            "project_continuity_digest",
+            "research_cycle_checkpoint",
+            "evidence_claim_audit",
+            "web_search",
+            "literature_search",
+            "chemistry_compute",
+            "image_understand",
+            "discussion_state_snapshot",
+            "project_state_read",
+            "project_progress_append",
+            "research_onboarding_context",
+            "research_proposal_plan",
+            "research_progress_append",
+            "recommend_next_tasks",
+            "knowledge_note_add",
+            "knowledge_note_list",
+            "knowledge_note_search",
+            "knowledge_note_show",
+            "knowledge_search_for_system",
+            "architecture_live_doc_snapshot",
+            "structure_modeling_tool_status",
+            "structure_modeling_intent_plan",
+            "cluster_execution_intent_plan",
+            "research_vasp_template_resolve",
+            "research_workspace_diff",
+            "dft_run_report",
+            "dft_run_list",
+            "vasp_input_summary",
+            "vasp_output_scan",
+            "result_interpret",
+            "next_experiment_propose",
+            "behavior_audit",
+            "adsorption_eval_case_list",
+            "adsorption_eval_score_plan",
+        }
 
     def is_read_only_tool(self, name: str) -> bool:
         if name not in self._tools:
@@ -272,7 +314,7 @@ class ToolRegistry:
             "mainline": [
                 {"step": 1, "title": "discussion -> plan", "tools": ["project_continuity_digest", "web_search", "literature_search", "evidence_claim_audit", "chemistry_compute", "image_understand", "discussion_state_snapshot", "research_cycle_checkpoint", "research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "architecture_live_doc_update", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
                 {"step": 2, "title": "structure -> model", "tools": ["structure_modeling_tool_status", "structure_modeling_intent_plan", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
-                {"step": 3, "title": "execute -> explain -> write_back", "tools": ["project_continuity_digest", "cluster_execution_intent_plan", "research_onboarding_context", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "cluster_job_status_brief", "cluster_my_jobs", "cluster_job_tail_log", "cluster_job_partial_outcar", "cluster_job_progress_estimate", "cluster_research_status", "cluster_research_sync", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "vasp_output_scan", "result_interpret", "next_experiment_propose", "research_learning_capture", "candidate_outcome_record", "research_cycle_checkpoint", "evidence_claim_audit", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show", "project_progress_append", "behavior_audit"]},
+                {"step": 3, "title": "execute -> explain -> write_back", "tools": ["project_continuity_digest", "cluster_execution_intent_plan", "research_onboarding_context", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "cluster_job_status_brief", "cluster_my_jobs", "cluster_job_tail_log", "cluster_job_partial_outcar", "cluster_job_progress_estimate", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "vasp_output_scan", "result_interpret", "next_experiment_propose", "research_learning_capture", "candidate_outcome_record", "research_cycle_checkpoint", "evidence_claim_audit", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show", "project_progress_append", "behavior_audit"]},
             ],
             "workflow": [
                 {"phase": "project_context"},
@@ -891,27 +933,31 @@ class ToolRegistry:
 
     def _adsorption_candidate_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
         # guided-not-enforced：与 compose_manifest 的 soft warning 路径保持一致——
-        # plan 内部校验失败不再向模型抛 ValueError，而是返回 needs_revision + 结构化提示。
-        try:
-            plan = create_candidate_plan(
-                material=str(payload.get("material") or ""),
-                adsorbate=str(payload.get("adsorbate") or ""),
-                rationale=str(payload.get("rationale") or ""),
-                expected_binding_motif=str(payload.get("expected_binding_motif") or ""),
-                anchor_atom=str(payload.get("anchor_atom") or ""),
-                target_sites=payload.get("target_sites") or [],
-                target_orientations=payload.get("target_orientations") or [],
-                excluded_sites_with_reason=payload.get("excluded_sites_with_reason"),
-                symmetry_pruning_applied=bool(payload.get("symmetry_pruning_applied", False)),
-                priors_consulted=payload.get("priors_consulted") or {},
-                project=str(payload.get("project") or "").strip() or None,
-                task_id=str(payload.get("task_id") or "").strip() or None,
-                notes=str(payload.get("notes") or ""),
-            )
-        except ValueError as exc:
+        # strict=False 会生成带 quality_warnings 的 plan，而不是让 handler catch 硬异常。
+        plan = create_candidate_plan(
+            material=str(payload.get("material") or ""),
+            adsorbate=str(payload.get("adsorbate") or ""),
+            rationale=str(payload.get("rationale") or ""),
+            expected_binding_motif=str(payload.get("expected_binding_motif") or ""),
+            anchor_atom=str(payload.get("anchor_atom") or ""),
+            target_sites=payload.get("target_sites") or [],
+            target_orientations=payload.get("target_orientations") or [],
+            excluded_sites_with_reason=payload.get("excluded_sites_with_reason"),
+            symmetry_pruning_applied=bool(payload.get("symmetry_pruning_applied", False)),
+            priors_consulted=payload.get("priors_consulted") or {},
+            project=str(payload.get("project") or "").strip() or None,
+            task_id=str(payload.get("task_id") or "").strip() or None,
+            notes=str(payload.get("notes") or ""),
+            strict=False,
+        )
+        if plan.quality_warnings:
             return {
                 "status": "needs_revision",
-                "warning": str(exc),
+                "warning": plan.quality_warnings[0],
+                "quality_warnings": plan.quality_warnings,
+                "plan_id": plan.plan_id,
+                "plan_path": plan.plan_path,
+                "plan": plan.to_dict(),
                 "echo": {
                     key: payload.get(key)
                     for key in (
@@ -1191,17 +1237,17 @@ class ToolRegistry:
             },
             {
                 "purpose": "连接并探测集群",
-                "candidate_tools": ["cluster_config", "cluster_probe", "cluster_research_status"],
+                "candidate_tools": ["cluster_config", "cluster_probe", "research_workspace_diff"],
                 "call_when": "preflight ready 且用户目标包含提交/监控/回收时调用；只做连通性证据。",
                 "skip_when": "用户只要生成输入包，或 preflight blocked。",
                 "model_decision": "probe 成功只是允许进入提交候选，不等于已经提交；若任务依赖 research 规则，先确认集群 ~/research 与本地 research 一致或解释差异。",
             },
             {
                 "purpose": "统一本地 research 与集群 ~/research",
-                "candidate_tools": ["cluster_research_status", "cluster_research_sync"],
+                "candidate_tools": ["research_workspace_diff", "research_workspace_sync_to_cluster"],
                 "call_when": "用户要求同步 research，或 preflight/template 依赖本地 research 规则而集群端可能缺失/过期时调用。",
                 "skip_when": "只读讨论且不涉及集群端执行，或本轮 status 已证明 in_sync。",
-                "model_decision": "先 status；只有明确需要统一时 cluster_research_sync(apply=true)。同步不删除远端独有文件，覆盖前备份冲突文件。",
+                "model_decision": "先 status；只有明确需要统一时 research_workspace_sync_to_cluster(apply=true)。同步不删除远端独有文件，覆盖前备份冲突文件。",
             },
             {
                 "purpose": "提交、监控和回收",
@@ -1265,7 +1311,7 @@ class ToolRegistry:
             "没有 research 规则证据时，不临时编造一套 INCAR。",
             "vasp_input_preflight_check.status 不是 ready 时，不 submit。",
             "cluster_probe 失败或当前 ToolRegistry 未启用 allow_cluster_submit 时，不 submit。",
-            "集群端需要读取 research 规则时，先用 cluster_research_status 判断 ~/research 是否与本地一致；不同步时必须说明风险。",
+            "集群端需要读取 research 规则时，先用 research_workspace_diff 判断 ~/research 是否与本地一致；不同步时必须说明风险。",
         ]
         if not allow_submit:
             stop_conditions.append("allow_submit=False：只允许 build/preflight/probe，不提交。")
@@ -1304,7 +1350,7 @@ class ToolRegistry:
             "adaptive_branches": [
                 {"situation": "已有 run_root，只想提交", "do": ["vasp_input_preflight_check", "cluster_probe", "cluster_remote_submit if allowed"], "skip": ["dft_run_task build"]},
                 {"situation": "只有 Step 2 POSCAR，想准备上集群", "do": ["research_onboarding_context", "research_vasp_template_resolve", "dft_run_task build", "vasp_input_preflight_check"], "skip": ["cluster_remote_submit until ready"]},
-                {"situation": "本地 research 与集群 ~/research 可能不一致", "do": ["cluster_research_status", "cluster_research_sync apply=true if user asked to unify"], "skip": ["remote submit until mismatch risk is resolved or explained"]},
+                {"situation": "本地 research 与集群 ~/research 可能不一致", "do": ["research_workspace_diff", "research_workspace_sync_to_cluster apply=true if user asked to unify"], "skip": ["remote submit until mismatch risk is resolved or explained"]},
                 {"situation": "用户问参数是否合适", "do": ["research_onboarding_context", "research_vasp_template_resolve"], "skip": ["dft_run_task", "cluster_probe", "cluster_remote_submit"]},
                 {"situation": "preflight blocked", "do": ["解释 blocker", "按 blocker 修 build 参数或要求补文件"], "skip": ["cluster_probe", "cluster_remote_submit"]},
                 {"situation": "任务已经在跑", "do": ["cluster_remote_monitor", "cluster_remote_fetch when complete", "vasp_output_scan"], "skip": ["重新 build"]},
@@ -1702,22 +1748,6 @@ class ToolRegistry:
 
     def _cluster_config(self, _: dict[str, Any]) -> dict[str, Any]:
         return {"status": "ok", "config": SSHRemoteRunner().describe_config()}
-
-    def _cluster_research_status(self, payload: dict[str, Any]) -> dict[str, Any]:
-        result = SSHRemoteRunner().research_status(
-            PROJECT_ROOT / "research",
-            remote_research_dir=str(payload.get("remote_research_dir") or "").strip() or None,
-        )
-        return {"status": result.status, "message": result.message, "details": result.details}
-
-    def _cluster_research_sync(self, payload: dict[str, Any]) -> dict[str, Any]:
-        apply = bool(payload.get("apply", False))
-        result = SSHRemoteRunner().sync_research_to_remote(
-            PROJECT_ROOT / "research",
-            remote_research_dir=str(payload.get("remote_research_dir") or "").strip() or None,
-            dry_run=not apply,
-        )
-        return {"status": result.status, "message": result.message, "details": result.details}
 
     def _research_workspace_diff(self, payload: dict[str, Any]) -> dict[str, Any]:
         return research_workspace_diff(

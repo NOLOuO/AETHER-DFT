@@ -397,4 +397,5 @@ def test_harness_caps_tool_calls_per_model_response(tmp_path: Path):
     blocked = [item for item in record["tool_executions"] if item["result"].get("status") == "blocked"]
     assert len(record["tool_executions"]) == 10
     assert len(blocked) == 2
-    assert "单轮工具调用超过上限" in blocked[0]["result"]["message"]
+    assert "单轮已执行" in blocked[0]["result"]["message"]
+    assert "自然语言总结已拿到的证据" in blocked[0]["result"]["message"]

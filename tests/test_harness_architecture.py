@@ -11,7 +11,7 @@ from pymatgen.io.ase import AseAtomsAdaptor
 
 from aether_dft import paths, project_state
 from aether_dft.prompt_engine import load_base_system_prompt
-from aether_dft.runtime_harness.core import AgentHarness
+from aether_dft.runtime_harness.core import AgentHarness, infer_turn_mode
 from aether_dft.runtime_harness.session import HarnessSessionStore
 from aether_dft.runtime_harness.tool_registry import ToolRegistry
 
@@ -62,8 +62,11 @@ def test_root_tool_registry_discovers_domain_tools():
     assert "cluster_execution_intent_plan" in names
     assert "research_vasp_template_resolve" in names
     assert "vasp_input_preflight_check" in names
-    assert "cluster_research_status" in names
-    assert "cluster_research_sync" in names
+    assert "cluster_research_status" not in names
+    assert "cluster_research_sync" not in names
+    assert "research_workspace_diff" in names
+    assert "research_workspace_sync_to_cluster" in names
+    assert "research_workspace_sync_from_cluster" in names
     assert "research_onboarding_context" in names
     assert "research_proposal_plan" in names
     assert "research_progress_append" in names
@@ -318,8 +321,12 @@ def test_cluster_remote_tools_route_to_runner_and_store(tmp_path: Path, monkeypa
     assert fetch["result"]["status"] == "synced"
 
 
-def test_cluster_research_tools_status_and_sync_dry_run(monkeypatch):
+def test_research_workspace_tools_status_and_sync_dry_run(monkeypatch):
     captured: dict[str, Any] = {}
+
+    class FakeConfig:
+        user = "szhang"
+        remote_base_dir = "/home/szhang/aether-dft-runs"
 
     class FakeResult:
         def __init__(self, status, message, details):
@@ -328,6 +335,9 @@ def test_cluster_research_tools_status_and_sync_dry_run(monkeypatch):
             self.details = details
 
     class FakeRunner:
+        def _load_config(self):
+            return FakeConfig()
+
         def research_status(self, local_research_root, *, remote_research_dir=None):
             captured["status_root"] = local_research_root
             captured["status_remote"] = remote_research_dir
@@ -339,20 +349,41 @@ def test_cluster_research_tools_status_and_sync_dry_run(monkeypatch):
             captured["dry_run"] = dry_run
             return FakeResult("planned" if dry_run else "synced", "sync", {"dry_run": dry_run})
 
-    monkeypatch.setattr("aether_dft.runtime_harness.tool_registry.SSHRemoteRunner", FakeRunner)
+    monkeypatch.setattr("aether_dft.research_sync.SSHRemoteRunner", FakeRunner)
     registry = ToolRegistry()
 
-    status = registry.run_tool("cluster_research_status", {"remote_research_dir": "/home/szhang/research"})
+    status = registry.run_tool("research_workspace_diff", {"remote_research_dir": "/home/szhang/research"})
     assert status["result"]["status"] == "ok"
     assert status["result"]["details"]["missing_remote"] == ["AGENTS.md"]
 
-    dry = registry.run_tool("cluster_research_sync", {})
+    dry = registry.run_tool("research_workspace_sync_to_cluster", {})
     assert dry["result"]["status"] == "planned"
     assert captured["dry_run"] is True
 
-    applied = registry.run_tool("cluster_research_sync", {"apply": True})
+    applied = registry.run_tool("research_workspace_sync_to_cluster", {"apply": True})
     assert applied["result"]["status"] == "synced"
     assert captured["dry_run"] is False
+
+
+def test_turn_mode_infers_cluster_status_prompts_as_execution():
+    assert infer_turn_mode("看看怎么样了") == "execution"
+    assert infer_turn_mode("这个 OUTCAR 收敛了吗？") == "execution"
+    assert infer_turn_mode("squeue 里 job_id 12345 状态") == "execution"
+    assert infer_turn_mode("[execution-mode] 只做一次状态检查") == "execution"
+    assert infer_turn_mode("[discussion-mode] 先讨论机理，不跑工具") == "discussion"
+
+
+def test_discussion_mode_exposes_lean_tool_schema_surface():
+    registry = ToolRegistry()
+    all_tools = registry.openai_tool_schemas()
+    discussion_tools = registry.openai_tool_schemas(interaction_mode="discussion")
+    discussion_names = {item["function"]["name"] for item in discussion_tools}
+    assert len(discussion_tools) <= int(len(all_tools) * 0.6)
+    assert "project_continuity_digest" in discussion_names
+    assert "literature_search" in discussion_names
+    assert "research_workspace_diff" in discussion_names
+    assert "cluster_remote_submit" not in discussion_names
+    assert "structure_add_adsorbate" not in discussion_names
 
 
 class HugeToolResultAdapter:
