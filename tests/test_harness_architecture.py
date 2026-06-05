@@ -44,6 +44,13 @@ class FakeToolCallingAdapter:
         return {"content": "已读取项目状态，可以继续推进。", "finish_reason": "stop", "tool_calls": []}
 
 
+class InterruptingAdapter:
+    runtime = type("Runtime", (), {"model_id": "fake:interrupt"})()
+
+    def chat(self, messages, *, tools=None, tool_choice="auto", max_tokens=None):
+        raise KeyboardInterrupt()
+
+
 def test_root_prompt_file_is_primary_system_prompt():
     prompt_path = paths.PROJECT_ROOT / "aether_dft" / "prompt_assets" / "system_chemistry.md"
     assert prompt_path.exists()
@@ -94,7 +101,7 @@ def test_root_tool_registry_discovers_domain_tools():
     assert "adsorption_candidates" in names
     assert "adsorption_full_workflow" in names
     assert "transition_state_plan" in names
-    assert "transition_state_dry_run" in names
+    assert "transition_state_dry_run" not in names
     assert "ts_workflow_config" in names
     assert "neb_input_check" in names
     assert "dimer_input_check" in names
@@ -105,7 +112,7 @@ def test_root_tool_registry_discovers_domain_tools():
     assert "dft_run_list" in names
     assert "vasp_output_scan" in names
     assert "vasp_input_summary" in names
-    assert "dft_task_plan" in names
+    assert "dft_task_plan" not in names
     assert "cluster_probe" in names
     assert "cluster_remote_submit" in names
     assert "cluster_remote_monitor" in names
@@ -123,7 +130,6 @@ def test_root_tool_registry_discovers_domain_tools():
         "adsorption_build_slab",
         "adsorption_candidates",
         "adsorption_full_workflow",
-        "dft_task_plan",
         "research_progress_append",
         "knowledge_note_add",
         "knowledge_note_search",
@@ -161,6 +167,19 @@ def test_agent_harness_executes_tool_loop_and_persists_session(tmp_path: Path, m
     resumed = sessions.store.resume_payload(session_id=record["session_id"])
     assert resumed["status"] == "ok"
     assert resumed["state"]["turn_count"] == 1
+
+
+def test_agent_harness_saves_partial_trace_on_keyboard_interrupt(tmp_path: Path):
+    sessions = HarnessSessionStore(tmp_path / "sessions")
+    events: list[dict[str, Any]] = []
+    harness = AgentHarness(adapter=InterruptingAdapter(), registry=ToolRegistry(), sessions=sessions)
+
+    record = harness.run_turn("用户中途按 Ctrl+C", max_steps=3, progress_callback=events.append)
+
+    assert record["finish_reason"] == "user_interrupted"
+    assert "partial trace" in record["response"]
+    assert Path(record["record_path"]).exists()
+    assert any(event.get("event") == "turn_interrupted" for event in events)
 
 
 def test_knowledge_note_tools_round_trip(tmp_path: Path, monkeypatch):
@@ -917,6 +936,8 @@ def test_transition_state_tools_are_available():
     assert ts_plan["result"]["status"] == "ok"
     assert ts_plan["result"]["task"]["plan"]["experiment_type"] == "transition_state_search"
     assert "transition_state_search" in ts_plan["result"]["task"]["dft_command"]
+    assert ts_plan["result"]["dry_run"] is True
+    assert ts_plan["result"]["deprecated_alias_removed"] == "transition_state_dry_run"
 
 
 def test_dft_run_tools_return_safe_structured_outputs():

@@ -79,7 +79,7 @@ conda activate p312env
 python -m pytest -q
 ```
 
-本轮回归结果：`224 passed, 1 skipped`。
+本轮回归结果：`225 passed, 1 skipped`。
 
 ## 真实 Step 3 冒烟验证记录
 

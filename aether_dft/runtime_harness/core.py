@@ -231,156 +231,163 @@ class AgentHarness:
         force_final_reply_after_audit = False
         if progress_callback:
             progress_callback({"event": "turn_start", "session_id": session_id, "model_id": getattr(getattr(self.adapter, "runtime", None), "model_id", "")})
-        for step_index in range(max_steps):
-            if progress_callback:
-                progress_callback({"event": "model_request", "step": step_index + 1, "max_steps": max_steps})
-            tools_for_step = [] if force_final_reply_after_audit else tools
-            tool_choice_for_step = "none" if force_final_reply_after_audit else "auto"
-            if force_final_reply_after_audit:
-                messages.append(
-                    {
-                        "role": "system",
-                        "content": (
-                            "behavior_audit 已完成。现在必须给用户一个简短、证据化的自然语言结论；"
-                            "不要再调用工具。若仍有后续动作，只把它列为下一步。"
-                        ),
-                    }
-                )
-                messages = _clean_messages(messages)
-            reply = self.adapter.chat(messages, tools=tools_for_step, tool_choice=tool_choice_for_step, max_tokens=max_tokens)
-            finish_reason = str(reply.get("finish_reason") or "stop")
-            tool_calls = reply.get("tool_calls") or []
-            content = str(reply.get("content") or "")
-            if tool_calls:
-                assistant_message: dict[str, Any] = {"role": "assistant", "content": content, "tool_calls": tool_calls}
-                reasoning_content = str(reply.get("reasoning_content") or "").strip()
-                if reasoning_content:
-                    assistant_message["reasoning_content"] = reasoning_content
-                messages.append(assistant_message)
-                messages = _clean_messages(messages)
-                mutating_calls_seen = 0
-                for call_index, call in enumerate(tool_calls):
-                    func = call.get("function") or {}
-                    name = str(func.get("name") or "")
-                    raw_args = func.get("arguments") or "{}"
-                    if progress_callback:
-                        progress_callback({"event": "tool_start", "step": step_index + 1, "name": name, "arguments": raw_args})
-                    read_only_checker = getattr(self.registry, "is_read_only_tool", lambda _name: True)
-                    read_only = bool(read_only_checker(name))
-                    if not read_only:
-                        mutating_calls_seen += 1
-                    if call_index >= MAX_TOOL_CALLS_PER_STEP:
-                        result = {
-                            "name": name,
-                            "arguments": raw_args,
-                            "result": {
-                                "status": "blocked",
-                                "message": (
-                                    f"单轮已执行 {MAX_TOOL_CALLS_PER_STEP} 个工具调用（你刚才一次请求了 {len(tool_calls)} 个）；"
-                                    "余下调用本轮不会执行。这不是工具失败，而是 harness 为防止一次性过量调用而暂停。"
-                                    "请先用自然语言总结已拿到的证据，或把剩余调用拆到下一轮。"
-                                ),
-                            },
+        try:
+            for step_index in range(max_steps):
+                if progress_callback:
+                    progress_callback({"event": "model_request", "step": step_index + 1, "max_steps": max_steps})
+                tools_for_step = [] if force_final_reply_after_audit else tools
+                tool_choice_for_step = "none" if force_final_reply_after_audit else "auto"
+                if force_final_reply_after_audit:
+                    messages.append(
+                        {
+                            "role": "system",
+                            "content": (
+                                "behavior_audit 已完成。现在必须给用户一个简短、证据化的自然语言结论；"
+                                "不要再调用工具。若仍有后续动作，只把它列为下一步。"
+                            ),
                         }
-                    elif mutating_calls_seen > MAX_MUTATING_TOOL_CALLS_PER_STEP:
-                        result = {
-                            "name": name,
-                            "arguments": raw_args,
-                            "result": {
-                                "status": "blocked",
-                                "message": (
-                                    f"单轮有副作用工具调用已超过上限 {MAX_MUTATING_TOOL_CALLS_PER_STEP}；本调用未执行。"
-                                    "这不是工具失败，而是 harness 为避免连续写入/提交等副作用而暂停。"
-                                    "请先总结已完成写入和证据，再把剩余副作用动作拆到下一轮并明确为什么需要。"
-                                ),
-                            },
-                        }
-                    else:
-                        result = self.registry.run_tool(name, raw_args)
-                    if (
-                        isinstance(result.get("result"), dict)
-                        and result["result"].get("status") == "permission_required"
-                        and permission_prompt_callback is not None
-                    ):
-                        permission_payload = dict(result["result"])
+                    )
+                    messages = _clean_messages(messages)
+                reply = self.adapter.chat(messages, tools=tools_for_step, tool_choice=tool_choice_for_step, max_tokens=max_tokens)
+                finish_reason = str(reply.get("finish_reason") or "stop")
+                tool_calls = reply.get("tool_calls") or []
+                content = str(reply.get("content") or "")
+                if tool_calls:
+                    assistant_message: dict[str, Any] = {"role": "assistant", "content": content, "tool_calls": tool_calls}
+                    reasoning_content = str(reply.get("reasoning_content") or "").strip()
+                    if reasoning_content:
+                        assistant_message["reasoning_content"] = reasoning_content
+                    messages.append(assistant_message)
+                    messages = _clean_messages(messages)
+                    mutating_calls_seen = 0
+                    for call_index, call in enumerate(tool_calls):
+                        func = call.get("function") or {}
+                        name = str(func.get("name") or "")
+                        raw_args = func.get("arguments") or "{}"
                         if progress_callback:
-                            progress_callback(
-                                {
-                                    "event": "tool_permission_required",
-                                    "step": step_index + 1,
-                                    "name": name,
-                                    "permission_mode": permission_payload.get("permission_mode"),
-                                    "permission_label": permission_payload.get("permission_label"),
-                                    "message": permission_payload.get("message"),
-                                }
-                            )
-                        approved = bool(
-                            permission_prompt_callback(
-                                {
-                                    "tool_name": name,
-                                    "arguments": raw_args,
-                                    "permission_mode": permission_payload.get("permission_mode"),
-                                    "permission_label": permission_payload.get("permission_label"),
-                                    "message": permission_payload.get("message"),
-                                    "reason": permission_payload.get("reason"),
-                                }
-                            )
-                        )
-                        if approved:
-                            rerun_arguments = dict(result.get("arguments") or {})
-                            rerun_arguments["_permission_granted"] = True
-                            result = self.registry.run_tool(name, rerun_arguments)
+                            progress_callback({"event": "tool_start", "step": step_index + 1, "name": name, "arguments": raw_args})
+                        read_only_checker = getattr(self.registry, "is_read_only_tool", lambda _name: True)
+                        read_only = bool(read_only_checker(name))
+                        if not read_only:
+                            mutating_calls_seen += 1
+                        if call_index >= MAX_TOOL_CALLS_PER_STEP:
+                            result = {
+                                "name": name,
+                                "arguments": raw_args,
+                                "result": {
+                                    "status": "blocked",
+                                    "message": (
+                                        f"单轮已执行 {MAX_TOOL_CALLS_PER_STEP} 个工具调用（你刚才一次请求了 {len(tool_calls)} 个）；"
+                                        "余下调用本轮不会执行。这不是工具失败，而是 harness 为防止一次性过量调用而暂停。"
+                                        "请先用自然语言总结已拿到的证据，或把剩余调用拆到下一轮。"
+                                    ),
+                                },
+                            }
+                        elif mutating_calls_seen > MAX_MUTATING_TOOL_CALLS_PER_STEP:
+                            result = {
+                                "name": name,
+                                "arguments": raw_args,
+                                "result": {
+                                    "status": "blocked",
+                                    "message": (
+                                        f"单轮有副作用工具调用已超过上限 {MAX_MUTATING_TOOL_CALLS_PER_STEP}；本调用未执行。"
+                                        "这不是工具失败，而是 harness 为避免连续写入/提交等副作用而暂停。"
+                                        "请先总结已完成写入和证据，再把剩余副作用动作拆到下一轮并明确为什么需要。"
+                                    ),
+                                },
+                            }
+                        else:
+                            result = self.registry.run_tool(name, raw_args)
+                        if (
+                            isinstance(result.get("result"), dict)
+                            and result["result"].get("status") == "permission_required"
+                            and permission_prompt_callback is not None
+                        ):
+                            permission_payload = dict(result["result"])
                             if progress_callback:
                                 progress_callback(
                                     {
-                                        "event": "tool_permission_granted",
+                                        "event": "tool_permission_required",
+                                        "step": step_index + 1,
+                                        "name": name,
+                                        "permission_mode": permission_payload.get("permission_mode"),
+                                        "permission_label": permission_payload.get("permission_label"),
+                                        "message": permission_payload.get("message"),
+                                    }
+                                )
+                            approved = bool(
+                                permission_prompt_callback(
+                                    {
+                                        "tool_name": name,
+                                        "arguments": raw_args,
+                                        "permission_mode": permission_payload.get("permission_mode"),
+                                        "permission_label": permission_payload.get("permission_label"),
+                                        "message": permission_payload.get("message"),
+                                        "reason": permission_payload.get("reason"),
+                                    }
+                                )
+                            )
+                            if approved:
+                                rerun_arguments = dict(result.get("arguments") or {})
+                                rerun_arguments["_permission_granted"] = True
+                                result = self.registry.run_tool(name, rerun_arguments)
+                                if progress_callback:
+                                    progress_callback(
+                                        {
+                                            "event": "tool_permission_granted",
+                                            "step": step_index + 1,
+                                            "name": name,
+                                            "permission_mode": permission_payload.get("permission_mode"),
+                                            "permission_label": permission_payload.get("permission_label"),
+                                        }
+                                    )
+                            elif progress_callback:
+                                progress_callback(
+                                    {
+                                        "event": "tool_permission_denied",
                                         "step": step_index + 1,
                                         "name": name,
                                         "permission_mode": permission_payload.get("permission_mode"),
                                         "permission_label": permission_payload.get("permission_label"),
                                     }
                                 )
-                        elif progress_callback:
+                        persisted_output_path = None
+                        visible, persisted_output_path = _render_tool_visible_result(
+                            tool_name=name,
+                            tool_call_id=str(call.get("id") or ""),
+                            payload=result["result"],
+                        )
+                        result_record = dict(result)
+                        if persisted_output_path is not None:
+                            result_record["persisted_output_path"] = str(persisted_output_path)
+                        tool_executions.append(result_record)
+                        if progress_callback:
                             progress_callback(
                                 {
-                                    "event": "tool_permission_denied",
+                                    "event": "tool_finish",
                                     "step": step_index + 1,
                                     "name": name,
-                                    "permission_mode": permission_payload.get("permission_mode"),
-                                    "permission_label": permission_payload.get("permission_label"),
+                                    "status": result.get("result", {}).get("status") if isinstance(result.get("result"), dict) else None,
+                                    "persisted_output_path": str(persisted_output_path) if persisted_output_path is not None else "",
                                 }
                             )
-                    persisted_output_path = None
-                    visible, persisted_output_path = _render_tool_visible_result(
-                        tool_name=name,
-                        tool_call_id=str(call.get("id") or ""),
-                        payload=result["result"],
-                    )
-                    result_record = dict(result)
-                    if persisted_output_path is not None:
-                        result_record["persisted_output_path"] = str(persisted_output_path)
-                    tool_executions.append(result_record)
-                    if progress_callback:
-                        progress_callback(
-                            {
-                                "event": "tool_finish",
-                                "step": step_index + 1,
-                                "name": name,
-                                "status": result.get("result", {}).get("status") if isinstance(result.get("result"), dict) else None,
-                                "persisted_output_path": str(persisted_output_path) if persisted_output_path is not None else "",
-                            }
-                        )
-                    messages.append({"role": "tool", "name": name, "tool_call_id": call.get("id"), "content": visible})
-                    messages = _clean_messages(messages)
-                    if name == "behavior_audit":
-                        force_final_reply_after_audit = True
-                continue
-            response = _clean_text(content)
-            messages.append({"role": "assistant", "content": response})
-            messages = _clean_messages(messages)
-            break
-        else:
-            finish_reason = "tool_loop_limit"
+                        messages.append({"role": "tool", "name": name, "tool_call_id": call.get("id"), "content": visible})
+                        messages = _clean_messages(messages)
+                        if name == "behavior_audit":
+                            force_final_reply_after_audit = True
+                    continue
+                response = _clean_text(content)
+                messages.append({"role": "assistant", "content": response})
+                messages = _clean_messages(messages)
+                break
+            else:
+                finish_reason = "tool_loop_limit"
+
+        except KeyboardInterrupt:
+            finish_reason = "user_interrupted"
+            response = _clean_text(response or "用户中断，本轮 partial trace 已保存。")
+            if progress_callback:
+                progress_callback({"event": "turn_interrupted", "session_id": session_id, "tool_count": len(tool_executions)})
 
         record = {
             "project": project,

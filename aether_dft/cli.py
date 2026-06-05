@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -239,20 +240,39 @@ def print_chat_context_status(*, session_store: Any, session_id: str) -> None:
 
 
 def make_chat_progress_printer() -> Any:
+    turn_started = {"t": 0.0}
+    model_step_started: dict[int, float] = {}
+    tool_started: dict[tuple[int, str], float] = {}
+
+    def elapsed_since(start: float | None) -> str:
+        if not start:
+            return ""
+        return f" ({time.perf_counter() - start:.1f}s)"
+
     def _printer(event: dict[str, Any]) -> None:
         kind = str(event.get("event") or "")
         if kind == "turn_start":
+            turn_started["t"] = time.perf_counter()
             print(f"{Colors.DIM}thinking with {event.get('model_id') or program_model_id()}...{Colors.RESET}")
         elif kind == "model_request":
+            step = int(event.get("step") or 0)
+            model_step_started[step] = time.perf_counter()
             print(f"{Colors.DIM}↻ model step {event.get('step')}/{event.get('max_steps')}{Colors.RESET}")
         elif kind == "tool_start":
+            step = int(event.get("step") or 0)
+            name = str(event.get("name") or "")
+            tool_started[(step, name)] = time.perf_counter()
+            step_elapsed = elapsed_since(model_step_started.get(step))
             args = _shorten_inline(event.get("arguments"), limit=180)
-            print(f"{Colors.BLUE}↳ tool{Colors.RESET} {event.get('name')} {Colors.DIM}{args}{Colors.RESET}")
+            print(f"{Colors.BLUE}↳ tool{Colors.RESET} {event.get('name')}{Colors.DIM}{step_elapsed} {args}{Colors.RESET}")
         elif kind == "tool_finish":
             status = event.get("status") or "done"
+            step = int(event.get("step") or 0)
+            name = str(event.get("name") or "")
+            tool_elapsed = elapsed_since(tool_started.get((step, name)))
             persisted = event.get("persisted_output_path")
             suffix = f" {Colors.DIM}{persisted}{Colors.RESET}" if persisted else ""
-            print(f"{Colors.GREEN}✓ tool{Colors.RESET} {event.get('name')} status={status}{suffix}")
+            print(f"{Colors.GREEN}✓ tool{Colors.RESET} {event.get('name')} status={status}{Colors.DIM}{tool_elapsed}{Colors.RESET}{suffix}")
         elif kind == "tool_permission_required":
             label = event.get("permission_label") or "需要用户同意"
             print(
@@ -263,6 +283,11 @@ def make_chat_progress_printer() -> Any:
             print(f"{Colors.GREEN}✓ permission{Colors.RESET} {event.get('name')} approved")
         elif kind == "tool_permission_denied":
             print(f"{Colors.RED}× permission{Colors.RESET} {event.get('name')} denied")
+        elif kind == "turn_interrupted":
+            print(
+                f"{Colors.YELLOW}interrupted{Colors.RESET}: partial trace will be saved"
+                f"{Colors.DIM}{elapsed_since(turn_started.get('t'))}{Colors.RESET}"
+            )
 
     return _printer
 

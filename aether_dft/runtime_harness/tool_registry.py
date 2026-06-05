@@ -168,7 +168,7 @@ class ToolRegistry:
         self._register(ToolSpec("structure_sanity_check", "检查结构最短距离、真空估算、物种和原子数。", {"structure_path": {"type": "string"}, "min_distance": {"type": "number"}, "min_vacuum": {"type": "number"}, "vacuum_axis": {"type": "string"}}, True, ("structure_path",)), self._structure_sanity_check)
         self._register(ToolSpec("structure_bond_analyze", "键连与配位分析。", {"structure_path": {"type": "string"}}, True, ("structure_path",)), self._structure_bond_analyze)
         self._register(ToolSpec("structure_displacement_compare", "结构位移对比。", {"initial_path": {"type": "string"}, "final_path": {"type": "string"}, "top_n": {"type": "integer"}}, True, ("initial_path", "final_path")), self._structure_displacement_compare)
-        self._register(ToolSpec("adsorption_plan", "吸附任务规划。", {"prompt": {"type": "string"}, "project": {"type": "string"}, "adsorbate": {"type": "string"}, "material": {"type": "string"}, "slab_path": {"type": "string"}, "preferred_site": {"type": "string"}, "preferred_orientation": {"type": "string"}, "persist": {"type": "boolean"}}, True, ("prompt",)), self._adsorption_plan)
+        self._register(ToolSpec("adsorption_plan", "吸附任务级规划：判断缺少 slab/adsorbate/material 还是可进入候选生成；若要写具体候选科学理由，用 adsorption_candidate_plan。", {"prompt": {"type": "string"}, "project": {"type": "string"}, "adsorbate": {"type": "string"}, "material": {"type": "string"}, "slab_path": {"type": "string"}, "preferred_site": {"type": "string"}, "preferred_orientation": {"type": "string"}, "persist": {"type": "boolean"}}, True, ("prompt",)), self._adsorption_plan)
         self._register(ToolSpec("adsorption_build_slab", "构建 slab（structure_build_slab 的兼容别名）。", {"material": {"type": "string"}, "output_dir": {"type": "string"}, "miller_index": {"type": "array", "items": {"type": "integer"}, "minItems": 3, "maxItems": 3}, "supercell": {"type": "array", "items": {"type": "integer"}, "minItems": 3, "maxItems": 3}, "structure_path": {"type": "string"}, "mp_id": {"type": "string"}, "source": {"type": "string"}, "min_slab_size": {"type": "number"}, "min_vacuum_size": {"type": "number"}, "fixed_bottom_layers": {"type": "integer"}}, False, ("material", "output_dir")), self._adsorption_build_slab)
         self._register(ToolSpec("adsorption_candidates", "批量自动枚举所有 site×orientation 的兜底生成器，不做领域判断；优先用 structure_enumerate_sites + structure_add_adsorbate + adsorption_candidate_manifest_compose 走模型自主路径，仅在 slab/吸附物特别陌生或想要快速 baseline 时回退到本工具。", {"slab_path": {"type": "string"}, "adsorbate": {"type": "string"}, "material": {"type": "string"}, "prompt": {"type": "string"}, "project": {"type": "string"}, "output_dir": {"type": "string"}, "task_id": {"type": "string"}, "candidate_height": {"type": "number"}, "max_sites_per_family": {"type": "integer"}, "preferred_site": {"type": "string"}, "preferred_orientation": {"type": "string"}, "vacancy_species": {"type": "string"}}, False, ("slab_path", "adsorbate", "material")), self._adsorption_candidates)
         self._register(ToolSpec("adsorption_candidate_plan", "创建结构化推理 plan：rationale / expected_binding_motif / anchor_atom / target_sites(含 reason) / target_orientations / 排除位点。可直接填顶层字段，也可把这些字段放入 plan 对象；compose_manifest 之前建议先调它；跳过也只会进入 soft audit。", {"material": {"type": "string"}, "adsorbate": {"type": "string"}, "rationale": {"type": "string"}, "expected_binding_motif": {"type": "string"}, "anchor_atom": {"type": "string"}, "target_sites": {"type": "array", "items": {"type": "object"}}, "target_orientations": {"type": "array", "items": {"type": "string"}}, "excluded_sites_with_reason": {"type": "array", "items": {"type": "object"}}, "symmetry_pruning_applied": {"type": "boolean"}, "priors_consulted": {"type": "object"}, "project": {"type": "string"}, "task_id": {"type": "string"}, "notes": {"type": "string"}, "plan": {"type": "object"}}, False), self._adsorption_candidate_plan)
@@ -177,8 +177,7 @@ class ToolRegistry:
         self._register(ToolSpec("manifest_audit", "读已存盘 candidate_manifest.json 给行为画像：plan 链接 / reason 质量 / site 对齐 / prior 引用 / 候选规模 五维评分 + suggestions。不挡路，纯反馈。", {"manifest_path": {"type": "string"}}, True, ("manifest_path",)), self._manifest_audit)
         self._register(ToolSpec("candidate_outcome_record", "把已完成候选的 DFT 结果复盘写回 KB：E_ads、verdict、初末态位移/漂移、可复用经验。只记录证据，不假装执行。", {"project": {"type": "string"}, "material": {"type": "string"}, "adsorbate": {"type": "string"}, "candidate_id": {"type": "string"}, "verdict": {"type": "string"}, "adsorption_energy_ev": {"type": "number"}, "initial_path": {"type": "string"}, "final_path": {"type": "string"}, "manifest_path": {"type": "string"}, "calculation_summary": {"type": "string"}, "notes": {"type": "string"}}, False, ("project", "material", "adsorbate", "candidate_id", "verdict")), self._candidate_outcome_record)
         self._register(ToolSpec("adsorption_full_workflow", "生成吸附全流程工作区。", {"material": {"type": "string"}, "adsorbate": {"type": "string"}, "output_dir": {"type": "string"}}, False, ("material", "adsorbate", "output_dir")), self._adsorption_full_workflow)
-        self._register(ToolSpec("transition_state_plan", "TS 任务规划。", {"prompt": {"type": "string"}, "material": {"type": "string"}}, True), self._transition_state_plan)
-        self._register(ToolSpec("transition_state_dry_run", "TS dry-run。", {"prompt": {"type": "string"}, "material": {"type": "string"}}, True), self._transition_state_dry_run)
+        self._register(ToolSpec("transition_state_plan", "TS 任务规划；dry_run=true 时只返回可执行 dry-run 命令，不执行 NEB/Dimer。", {"prompt": {"type": "string"}, "material": {"type": "string"}, "dry_run": {"type": "boolean"}}, True), self._transition_state_plan)
         self._register(ToolSpec("ts_midpoint_candidates_enumerate", "基于 IS/FS 线性插值生成 TS/NEB 中间构型初猜；不执行 NEB/Dimer。", {"initial_path": {"type": "string"}, "final_path": {"type": "string"}, "output_dir": {"type": "string"}, "n_images": {"type": "integer"}}, False, ("initial_path", "final_path", "output_dir")), self._ts_midpoint_candidates_enumerate)
         self._register(ToolSpec("convergence_plan_compose", "组合 ENCUT/KPOINTS 收敛性测试矩阵；只生成计划，不提交计算。", {"material": {"type": "string"}, "property_target": {"type": "string"}, "encut_values": {"type": "array", "items": {"type": "integer"}}, "kpoint_grids": {"type": "array", "items": {"type": "array", "items": {"type": "integer"}}}, "force_threshold_ev_a": {"type": "number"}, "energy_tolerance_mev_atom": {"type": "number"}, "project": {"type": "string"}, "output_dir": {"type": "string"}}, False, ("material",)), self._convergence_plan_compose)
         self._register(ToolSpec("adsorption_eval_case_list", "列出小型文献先验 eval set，用于验证模型候选计划是否化学合理。", {}, True), self._adsorption_eval_case_list)
@@ -197,7 +196,6 @@ class ToolRegistry:
         self._register(ToolSpec("dft_run_list", "列出 run。", {"limit": {"type": "integer"}}, True), self._dft_run_list)
         self._register(ToolSpec("vasp_output_scan", "扫描 VASP 输出。", {"run_root": {"type": "string"}}, True), self._vasp_output_scan)
         self._register(ToolSpec("vasp_input_summary", "总结 VASP 输入。", {"run_root": {"type": "string"}}, True), self._vasp_input_summary)
-        self._register(ToolSpec("dft_task_plan", "创建 DFT task plan。", {"prompt": {"type": "string"}, "project": {"type": "string"}, "material": {"type": "string"}, "structure_path": {"type": "string"}, "task_type": {"type": "string"}}, False, ("prompt",)), self._dft_task_plan)
         self._register(ToolSpec("cluster_probe", "探测 SSH/SLURM 集群。", {}, True), self._cluster_probe)
         self._register(ToolSpec("cluster_config", "读取集群配置。", {}, True), self._cluster_config)
         self._register(ToolSpec("cluster_job_status_brief", "用户问'看看怎么样了'时秒回的轻量查询：单 job 的 squeue/sacct 状态 + elapsed + 节点。< 2 秒。", {"job_id": {"type": "string"}}, True, ("job_id",)), self._cluster_job_status_brief)
@@ -1147,16 +1145,12 @@ class ToolRegistry:
     def _transition_state_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
         prompt = str(payload.get("prompt") or "").strip()
         material = str(payload.get("material") or "").strip()
+        dry_run = bool(payload.get("dry_run", True))
         task = {
             "plan": {"experiment_type": "transition_state_search", "prompt": prompt, "material": material},
             "dft_command": ["aether-dft", "dft", "run", prompt, "--task-type", "transition_state_search", "--dry-run"],
         }
-        return {"status": "ok", "task": task}
-
-    def _transition_state_dry_run(self, payload: dict[str, Any]) -> dict[str, Any]:
-        result = self._transition_state_plan(payload)
-        result["dry_run"] = True
-        return result
+        return {"status": "ok", "task": task, "dry_run": dry_run, "deprecated_alias_removed": "transition_state_dry_run"}
 
     def _ts_midpoint_candidates_enumerate(self, payload: dict[str, Any]) -> dict[str, Any]:
         return interpolate_ts_midpoint_candidates(
@@ -1771,10 +1765,6 @@ class ToolRegistry:
                 "POTCAR.mapping.json": (inputs_dir / "POTCAR.mapping.json").exists(),
             },
         }
-
-    def _dft_task_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
-        envelope = create_task_plan(payload["prompt"], project=payload.get("project"), material=payload.get("material"), structure_path=payload.get("structure_path"), task_type=payload.get("task_type"))
-        return {"status": "ok", "task": envelope.to_dict()}
 
     def _cluster_job_status_brief(self, payload: dict[str, Any]) -> dict[str, Any]:
         from dft_app.remote.realtime import job_status_brief
