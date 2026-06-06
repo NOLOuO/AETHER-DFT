@@ -14,6 +14,60 @@ def _collapse_text(value: str, *, limit: int = 96) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def _should_persist_turn(prompt: str, tool_executions: list[Any]) -> bool:
+    """Decide whether a chat turn is substantial enough to write progress.
+
+    AETHER should remember real research movement, but startup checks and
+    meta-questions must not pollute `研究进展.md`.  Explicit tool use counts as
+    evidence of work; otherwise require intent words that imply progress.
+    """
+
+    if tool_executions:
+        return True
+    text = str(prompt or "").strip().lower()
+    if not text:
+        return False
+    meta_markers = [
+        "预加载",
+        "preload",
+        "启动时",
+        "不要调用工具",
+        "只用一句",
+        "只用两句",
+        "说明你",
+        "自我介绍",
+        "hello",
+        "测试响应",
+    ]
+    if any(marker in text for marker in meta_markers):
+        return False
+    progress_markers = [
+        "继续",
+        "推进",
+        "做完",
+        "记录",
+        "写回",
+        "更新进展",
+        "分析",
+        "解析",
+        "生成",
+        "建模",
+        "提交",
+        "取消",
+        "跑",
+        "计算",
+        "结果",
+        "outcar",
+        "收敛",
+        "结构",
+        "候选",
+        "吸附",
+        "频率",
+        "下一步",
+    ]
+    return any(marker in text for marker in progress_markers)
+
+
 def summarize_research_turn(record: dict[str, Any], *, project: str | None = None) -> dict[str, Any]:
     """Attach project-aware follow-up data to one agent turn.
 
@@ -49,7 +103,8 @@ def summarize_research_turn(record: dict[str, Any], *, project: str | None = Non
         blockers.append(f"本轮结束原因：{finish_reason}")
 
     focus = prompt or response or None
-    recommendations = recommend_next_tasks(project, focus=focus)
+    should_persist = bool(project and _should_persist_turn(prompt, tool_executions))
+    recommendations = recommend_next_tasks(project, focus=focus) if should_persist else []
     next_steps: list[str] = []
     for item in recommendations[:3]:
         title = str(item.get("title") or "").strip()
@@ -58,12 +113,12 @@ def summarize_research_turn(record: dict[str, Any], *, project: str | None = Non
             next_steps.append(f"{title}；{command}")
         elif title:
             next_steps.append(title)
-    if not next_steps:
+    if should_persist and not next_steps:
         next_steps.append("继续基于当前项目上下文推进下一步科研任务。")
 
     progress_path = None
     research_progress_path = None
-    if project:
+    if should_persist and project:
         progress_path = append_progress(project, completed=completed, blockers=blockers, next_steps=next_steps)
         if resolve_research_project(project) is not None:
             research_result = append_research_progress(project, completed=completed, blockers=blockers, next_steps=next_steps)
@@ -77,9 +132,10 @@ def summarize_research_turn(record: dict[str, Any], *, project: str | None = Non
         "completed": completed,
         "blockers": blockers,
         "next_steps": next_steps,
-            "progress_path": str(progress_path) if progress_path else None,
-            "research_progress_path": research_progress_path,
-        }
+        "persisted": should_persist,
+        "progress_path": str(progress_path) if progress_path else None,
+        "research_progress_path": research_progress_path,
+    }
     if progress_path:
         payload["project_progress_path"] = str(progress_path)
     return payload

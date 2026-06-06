@@ -53,6 +53,9 @@
 D:/miniconda3/Scripts/activate
 conda activate p312env
 
+# 启动前查看会预加载哪些项目设定
+aether preload --project MCH-Pt-Br
+
 # 交互式科研合伙人
 aether chat --project <project>
 
@@ -68,6 +71,8 @@ aether cluster probe
 aether outcar find --limit 5
 aether outcar analyze --latest --project MCH-Pt-Br --write-learning
 ```
+
+`preload` 默认只做本地只读检查；需要顺便真实探测集群时再加 `--probe-cluster`。对话入口每一轮都会把这些 project/session/research/cluster digest 注入给模型，`preload` 的作用是让这件事对用户可见。
 
 ## 真实 API 测试
 
@@ -90,7 +95,7 @@ conda activate p312env
 python -m pytest -q
 ```
 
-本轮回归结果：`239 passed, 1 skipped`。
+本轮回归结果：`242 passed, 1 skipped`。
 
 ## 真实模型后端 smoke
 
@@ -98,6 +103,7 @@ python -m pytest -q
 
 - `aether-dft model smoke --model deepseek:deepseek-v4-pro --project model-smoke-demo` → `status=ok`，工具链：`project_state_read`
 - `aether-dft model smoke --model bailian:qwen3.7-max --project model-smoke-demo` → `status=ok`，工具链：`project_state_read`
+- `aether-dft chat --project MCH-Pt-Br --max-steps 1 --max-tokens 500 "先不要调用工具，只用两句话说明你启动时已经预加载了哪些 MCH-Pt-Br 项目设定。"` → 真实 DeepSeek 响应，22.5s，能引用 MCH-Pt-Br 项目描述、历史沉淀和硬约束。
 - DeepSeek streaming smoke 使用本地 key 成功访问真实 API；该模型在 thinking 模式下返回了 `reasoning_content` 流但未在 1200 token 内返回最终 `content`，程序现在诚实降级为“只收到 reasoning_content，需提高 max_tokens 或调低 thinking”，不再抛异常。
 
 ## 真实 OUTCAR 解析记录

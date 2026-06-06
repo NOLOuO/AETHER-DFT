@@ -141,3 +141,38 @@ def test_agent_loop_attaches_research_progress_and_next_step(monkeypatch, tmp_pa
     assert record["progress"]["next_steps"]
     assert Path(record["project_progress_path"]).exists()
     assert "candidate" in record["progress"]["next_steps"][0].lower() or "候选" in record["progress"]["next_steps"][0]
+
+
+def test_agent_loop_does_not_persist_meta_preload_check(monkeypatch, tmp_path):
+    import aether_dft.paths as paths
+    import aether_dft.project_state as project_state
+
+    monkeypatch.setattr(paths, "PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(paths, "KNOWLEDGE_BASE_DIR", tmp_path / "knowledge_base")
+    monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(project_state, "PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(project_state, "KNOWLEDGE_BASE_DIR", tmp_path / "knowledge_base")
+
+    project_state.init_project("chem-demo", description="demo", overwrite=True)
+    before = project_state.project_paths("chem-demo").progress.read_text(encoding="utf-8")
+
+    class FakeLLM:
+        def __init__(self, app_root: Path):
+            pass
+
+        def call_messages_with_tools(self, messages, *, tools, provider_id, model_id, max_tokens=None, tool_choice="auto"):
+            return {
+                "content": "已预加载项目设定。",
+                "finish_reason": "stop",
+                "tool_calls": [],
+            }
+
+    monkeypatch.setattr("aether_dft.agent.DomesticCopilotLLM", FakeLLM)
+
+    record = run_agent_once("先不要调用工具，只用两句话说明你启动时已经预加载了哪些设定。", project="chem-demo")
+
+    after = project_state.project_paths("chem-demo").progress.read_text(encoding="utf-8")
+    assert record["progress"]["persisted"] is False
+    assert record["progress"]["next_steps"] == []
+    assert "project_progress_path" not in record
+    assert after == before

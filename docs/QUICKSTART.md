@@ -18,6 +18,7 @@ python -m pip install -e .
 ```powershell
 aether-dft doctor
 aether-dft models
+aether-dft preload --project MCH-Pt-Br
 aether-dft model smoke --model deepseek:deepseek-v4-pro
 aether-dft model smoke --model bailian:qwen3.7-max
 ```
@@ -28,6 +29,14 @@ API key 可放在 `api_keys.local.json`，或使用环境变量：
 - 阿里百炼 / Qwen: `DASHSCOPE_API_KEY`
 
 新增 OpenAI-compatible 模型时，优先复制 `config/model_providers.example.json` 为 `config/model_providers.json` 后改 provider/model/base_url/key env；不需要改 agent harness。
+
+`preload` 是正式对话前的“启动态检查”：它不调用模型，默认也不连集群，只告诉你下一轮模型会预加载哪些设定：
+
+- 当前模型、API key 是否可用、context window；
+- 绑定 project 的 `.aether/projects/<slug>/` 长期状态；
+- `research/AGENTS.md`、`research/Common/避坑清单.md`、项目 `研究进展.md` 和项目 common 规则；
+- 最近 session 摘要、research workspace digest、cluster runtime digest；
+- discussion / execution 两种模式会暴露多少工具。
 
 ## 2. 创建一个项目
 
@@ -129,6 +138,7 @@ aether-dft outcar analyze --latest --project MCH-Pt-Br --write-learning
 ```powershell
 aether-dft doctor
 aether-dft models
+aether-dft preload --project MCH-Pt-Br
 aether-dft model smoke --model deepseek:deepseek-v4-pro
 aether-dft model smoke --model bailian:qwen3.7-max
 aether-dft outcar find --limit 5

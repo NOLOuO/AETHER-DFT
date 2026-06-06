@@ -48,6 +48,7 @@ TOP_LEVEL_COMMANDS = {
     "models",
     "monitor",
     "outcar",
+    "preload",
     "project",
     "recommend",
     "run",
@@ -124,6 +125,7 @@ def print_quick_start() -> None:
     print("  aether model current")
     print("  aether project list")
     print("  aether recommend --project <slug>")
+    print("  aether preload --project <slug>")
     print("  aether outcar find --limit 5")
     print("  aether outcar analyze --latest --project <slug> --write-learning")
     print("  aether doctor")
@@ -175,12 +177,13 @@ def print_chat_home(*, session_id: str, project: str | None = None) -> None:
     line(f"Permission: {Colors.BLUE}{permission_mode_label()}{Colors.RESET}")
     line(f"Session: {session_id}")
     line(f"Project: {project or 'none'}")
+    line("Preload: project/session/research injected each turn")
     print(f"{Colors.DIM}└{'─' * box_width}┘{Colors.RESET}")
 
 
 def print_chat_shortcuts() -> None:
     print("直接输入自然语言即可；模型会自己判断是否需要调用工具。")
-    print("可选快捷：/status 状态；/context 上下文；/model 切换模型；/permission 切换权限；/exit 退出。")
+    print("可选快捷：/status 状态；/preload 预加载；/context 上下文；/model 切换模型；/permission 切换权限；/exit 退出。")
 
 
 def _shorten_inline(value: Any, *, limit: int = 160) -> str:
@@ -196,6 +199,7 @@ def print_chat_help() -> None:
     print("主流程：直接说科研目标、结构问题、计算方案或结果疑问；模型自行决定是否调用工具。")
     print("ask 权限模式下，写文件/提交作业/产生副作用时只会弹一次确认，再决定是否执行。")
     print(f"  {Colors.GREEN}/status{Colors.RESET}      当前 session/model/permission")
+    print(f"  {Colors.GREEN}/preload{Colors.RESET}     模型本轮会预加载哪些设定")
     print(f"  {Colors.GREEN}/context{Colors.RESET}     当前 1M context budget 与压缩状态")
     print(f"  {Colors.GREEN}/model{Colors.RESET}       查看或切换 deepseek/qwen")
     print(f"  {Colors.GREEN}/permission{Colors.RESET}  完全开发 / 需要用户同意")
@@ -578,6 +582,17 @@ def handle_model_smoke(args: argparse.Namespace) -> int:
     return 0 if payload["status"] == "ok" else 1
 
 
+def handle_preload(args: argparse.Namespace) -> int:
+    from .preload import build_preload_summary, format_preload_summary
+
+    summary = build_preload_summary(project=args.project, probe_cluster=args.probe_cluster)
+    if args.json:
+        print_json(summary.payload)
+    else:
+        print(format_preload_summary(summary))
+    return 0 if summary.status == "ok" else 1
+
+
 def handle_mainline(args: argparse.Namespace) -> int:
     prompt = " ".join(getattr(args, "prompt", []) or []).strip()
     print(f"{Colors.BOLD}{Colors.CYAN}AETHER-DFT mainline{Colors.RESET}")
@@ -951,6 +966,9 @@ def handle_chat(args: argparse.Namespace) -> int:
             continue
         if line == "/status":
             print_chat_status(session_store=session_store, session_id=session_id, project=args.project)
+            continue
+        if line == "/preload":
+            handle_preload(argparse.Namespace(project=args.project, probe_cluster=False, json=False))
             continue
         if line == "/context":
             print_chat_context_status(session_store=session_store, session_id=session_id)
@@ -1406,6 +1424,12 @@ def build_parser() -> argparse.ArgumentParser:
     models_parser = sub.add_parser("models", help="列出可用 OpenAI-compatible provider/model。")
     models_parser.add_argument("--json", action="store_true")
     models_parser.set_defaults(func=handle_models)
+
+    preload_parser = sub.add_parser("preload", help="显示启动时会预加载给模型的项目/会话/research/工具设定。")
+    preload_parser.add_argument("--project", help="要绑定的 research/project slug，例如 MCH-Pt-Br。")
+    preload_parser.add_argument("--probe-cluster", action="store_true", help="额外做一次真实 SSH 集群探测；默认不联网/不连集群。")
+    preload_parser.add_argument("--json", action="store_true")
+    preload_parser.set_defaults(func=handle_preload)
 
     demo_parser = sub.add_parser("demo", help="组会展示用极简首页，不提交、不联网。")
     demo_parser.add_argument("--run-root")

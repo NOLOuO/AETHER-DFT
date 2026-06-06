@@ -72,6 +72,25 @@ def test_cli_model_smoke_summarizes_required_tool(monkeypatch, capsys):
     assert "project=demo" in captured["prompt"]
 
 
+def test_cli_preload_reports_context_sources(capsys):
+    assert cli.main(["preload", "--project", "MCH-Pt-Br", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    assert payload["model"]["model_id"]
+    assert payload["project"]["slug"] == "MCH-Pt-Br"
+    assert payload["prompt_preload"]["discussion_tool_count"] > 0
+    assert payload["prompt_preload"]["execution_tool_count"] >= payload["prompt_preload"]["discussion_tool_count"]
+    assert "aether-dft chat --project MCH-Pt-Br" in payload["next_user_entrypoints"]
+
+
+def test_cli_preload_human_output_mentions_files(capsys):
+    assert cli.main(["preload", "--project", "MCH-Pt-Br"]) == 0
+    out = capsys.readouterr().out
+    assert "AETHER preload ready" in out
+    assert "research files preloaded" in out
+    assert "tools discussion/execution" in out
+
+
 def test_cli_outcar_find_lists_remote_outcars(monkeypatch, capsys):
     from dft_app.remote import RemoteExecutionResult
 
