@@ -72,7 +72,7 @@
 - 不做通用编程 / 通用任务智能体。
 - 不与 Claude Code / Codex 在工程执行上竞争——领域科研判断与长期项目陪伴才是差异点。
 
-## Python 与 Conda 环境（继承 F:\agents 约定）
+## Python 与 Conda 环境
 
 1. 涉及任何 Python、pip、pytest、脚本执行、依赖检查或 Python 解释器调用时，默认先执行 `D:/miniconda3/Scripts/activate`，再执行 `conda activate p312env`。
 2. 未激活 `p312env` 前，不得直接使用系统 `python`、`py`、`py -3`、base Python 或新建 `.venv` 作为回退方案。

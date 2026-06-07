@@ -2,14 +2,14 @@
 
 ## 已搬入
 
-- `dft_app/`：来自 `F:\_\DFTauto\DFT\auto_dft\dft_app`，作为 DFT 执行主线。
-- `dft_shared/`：来自 `F:\_\DFTauto\DFT\dft_tools\dft_shared`，作为共享结构/结果工具层。
+- `dft_app/`：DFT 执行主线模块，承载 planner / builder / runner / parser / analyzer / export。
+- `dft_shared/`：共享结构/结果工具层。
 - `tests/upstream_auto_dft/`：来自 auto_dft 的回归测试，作为后续适配锚点。
 
 ## 已适配
 
 - 默认 summary / planner 模型切换为 `bailian:qwen3.7-max`。
-- `dft_app.llm.key_store` 增加只读参考 key 路径查找，不复制密钥。
+- `dft_app.llm.key_store` 只读取当前项目 `api_keys.local.json` 与显式环境变量路径，不复制密钥、不硬编码个人工作区。
 - 新增 `aether-dft doctor` 作为最小外壳入口。
 
 ## 待搬入

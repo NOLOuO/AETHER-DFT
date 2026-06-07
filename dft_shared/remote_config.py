@@ -47,9 +47,9 @@ class RemoteConfig:
 
     # 远程目录预设
     remote_dirs: dict[str, str] = field(default_factory=lambda: {
-        "relax": "/home/szhang/DFTauto/relax",
-        "ts": "/home/szhang/DFTauto/ts",
-        "clean": "/home/szhang/clean",
+        "relax": "~/aether-dft/relax",
+        "ts": "~/aether-dft/ts",
+        "clean": "~/aether-dft/clean",
     })
 
     # 远程工具
@@ -85,7 +85,7 @@ class RemoteConfig:
         return cfg
 
     def get_remote_dir(self, preset: str = "relax") -> str:
-        return self.remote_dirs.get(preset, self.remote_dirs.get("relax", "/home/szhang/DFTauto/relax"))
+        return self.remote_dirs.get(preset, self.remote_dirs.get("relax", "~/aether-dft/relax"))
 
 
 def _load_from_toml(cfg: RemoteConfig) -> RemoteConfig:

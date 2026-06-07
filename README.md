@@ -14,9 +14,8 @@ AETHER-DFT 是面向计算化学 / DFT 的对话式科研合伙人骨架。
 - API Key：默认不复制密钥，只按顺序只读查找：
   1. 当前项目 `api_keys.local.json`
   2. `AETHER_DFT_API_KEYS_PATHS` 环境变量指定的分号分隔路径
-  3. `F:\agents\My-Agent\api_keys.local.json`
-  4. `F:\agents\api_keys.local.json`
-  5. `F:\_\DFTauto\research-copilot\api_keys.local.json`
+
+发布版不会硬编码个人工作区路径；如需复用已有密钥文件，请显式设置 `AETHER_DFT_API_KEYS_PATHS`。
 
 ## 仓库怎么读
 

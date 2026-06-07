@@ -9,16 +9,16 @@
 
 ## 安装
 
-推荐从 `dft_tools` 仓库根目录统一安装：
+推荐从包含各 DFT 工具包的仓库根目录统一安装：
 
 ```powershell
-cd F:/DFTauto/DFT/dft_tools
+cd <your-dft-tools-repo>
 pip install -e ./dft_shared -e ./xsd_mace_preopt -e ./mace_ts_search -e ./dft_web
 ```
 
 如果只需要共享基础设施，也可以单独安装：
 
 ```powershell
-cd F:/DFTauto/DFT/dft_tools/dft_shared
+cd <your-dft-tools-repo>/dft_shared
 pip install -e .
 ```

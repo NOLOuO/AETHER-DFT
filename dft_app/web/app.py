@@ -199,7 +199,7 @@ TEMPLATES = {
       <textarea name="prompt" placeholder="例如：计算 H2O 在 Cu(111) 上的吸附能"></textarea>
 
       <label>结构路径 <span class="hint">POSCAR / CIF / XSD</span></label>
-      <input type="text" name="structure_path" placeholder="例如：F:\\DFTauto\\...\\slab.vasp">
+      <input type="text" name="structure_path" placeholder="例如：C:\\path\\to\\slab.vasp">
 
       <label>材料名 <span class="hint">可选</span></label>
       <input type="text" name="material" placeholder="例如：Cu(111)">

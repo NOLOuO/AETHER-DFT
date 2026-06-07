@@ -48,6 +48,13 @@ def test_cli_model_current_smoke(capsys):
     assert payload["model_id"] in {"deepseek:deepseek-v4-pro", "bailian:qwen3.7-max"}
 
 
+def test_key_store_does_not_read_personal_workspace_fallbacks(tmp_path, monkeypatch):
+    from dft_app.llm.key_store import load_api_keys
+
+    monkeypatch.delenv("AETHER_DFT_API_KEYS_PATHS", raising=False)
+    assert load_api_keys(tmp_path) == {}
+
+
 def test_cli_model_smoke_summarizes_required_tool(monkeypatch, capsys):
     captured = {}
 

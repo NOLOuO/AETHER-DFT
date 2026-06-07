@@ -7,9 +7,9 @@
     from dft_shared.remote_backend import get_backend
 
     backend = get_backend()  # 根据 remote.toml / 环境变量自动选择
-    backend.run("ls -la /home/szhang/DFTauto/relax")
-    backend.upload(Path("POSCAR"), "/home/szhang/DFTauto/relax/")
-    backend.download("/home/szhang/DFTauto/relax/CONTCAR", Path("./output"))
+    backend.run("ls -la ~/aether-dft/relax")
+    backend.upload(Path("POSCAR"), "~/aether-dft/relax/")
+    backend.download("~/aether-dft/relax/CONTCAR", Path("./output"))
 """
 
 from __future__ import annotations

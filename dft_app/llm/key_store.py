@@ -18,13 +18,6 @@ def load_api_keys(app_root: Path) -> dict[str, str]:
     extra_paths = os.getenv("AETHER_DFT_API_KEYS_PATHS", "").strip()
     if extra_paths:
         paths.extend(Path(item.strip()) for item in extra_paths.split(";") if item.strip())
-    paths.extend(
-        [
-            Path(r"F:\agents\My-Agent\api_keys.local.json"),
-            Path(r"F:\agents\api_keys.local.json"),
-            Path(r"F:\_\DFTauto\research-copilot\api_keys.local.json"),
-        ]
-    )
     path = next((candidate for candidate in paths if candidate.exists()), None)
     if path is None:
         return {}
