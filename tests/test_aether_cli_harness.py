@@ -197,6 +197,38 @@ def test_cli_no_args_enters_interactive_when_tty(monkeypatch, capsys):
     assert "Program: " in out
 
 
+def test_cli_natural_language_resume_inherits_session_project(monkeypatch, tmp_path, capsys):
+    import aether_dft.paths as paths
+    import aether_dft.session_store as session_store
+
+    runtime_dir = tmp_path / "runtime"
+    monkeypatch.setattr(paths, "RUNTIME_DIR", runtime_dir)
+
+    store = session_store.AetherSessionStore()
+    session_id = store.start_session(project="MCH-Pt-Br", first_prompt="first")
+    store.append_turn(session_id, {"project": "MCH-Pt-Br", "prompt": "first", "response": "ok"})
+
+    captured = {}
+
+    def fake_ask_once(prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["kwargs"] = kwargs
+        return {
+            "response": "已续接项目上下文。",
+            "record_path": "trace.jsonl",
+            "tool_executions": [],
+            "progress": {"next_steps": []},
+        }
+
+    monkeypatch.setattr(cli, "ask_once", fake_ask_once)
+
+    assert cli.main(["继续看看这个课题"]) == 0
+
+    assert captured["kwargs"]["session_id"] == session_id
+    assert captured["kwargs"]["project"] == "MCH-Pt-Br"
+    assert "已续接项目上下文" in capsys.readouterr().out
+
+
 def test_cli_interactive_status_and_context_shortcuts(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     inputs = iter(["/status", "/context", "/help", "/exit"])

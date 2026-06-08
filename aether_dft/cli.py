@@ -872,6 +872,9 @@ def handle_chat(args: argparse.Namespace) -> int:
         payload = session_store.resume_payload(session_id=session_id, project=args.project)
         if payload["status"] == "ok":
             session_id = payload["session_id"]
+            resumed_project = (payload.get("state") or {}).get("project")
+            if not args.project and resumed_project:
+                args.project = str(resumed_project)
         elif session_id:
             print(f"错误: session 不存在: {session_id}")
             return 1
