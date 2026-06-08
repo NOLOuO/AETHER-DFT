@@ -207,16 +207,39 @@ class AetherSessionStore:
         record = dict(turn.get("record") or {})
         prompt = self._collapse_text(record.get("prompt"), limit=text_limit)
         response = self._collapse_text(record.get("response"), limit=text_limit)
-        tool_names = sorted(
-            {
-                str(item.get("name") or "").strip()
-                for item in list(record.get("tool_executions") or [])
-                if str(item.get("name") or "").strip()
-            }
-        )
+        tool_trail = self._tool_trail(list(record.get("tool_executions") or []))
         prefix = f"turn {turn_no}: " if turn_no is not None else ""
-        tools = f" tools=[{', '.join(tool_names)}]" if tool_names else ""
+        tools = f" tools=[{'; '.join(tool_trail)}]" if tool_trail else ""
         return f"- {prefix}user={prompt or 'n/a'} | assistant={response or 'n/a'}{tools}"
+
+    def _tool_trail(self, tool_executions: list[Any], *, limit: int = 5) -> list[str]:
+        """Compact recent tool activity without pulling large results into context."""
+
+        trail: list[str] = []
+        for item in tool_executions[-limit:]:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            result = item.get("result") if isinstance(item.get("result"), dict) else {}
+            status = str(result.get("status") or result.get("verdict") or "").strip()
+            arguments = item.get("arguments") if isinstance(item.get("arguments"), dict) else {}
+            arg_bits: list[str] = []
+            for key in ("project", "material", "adsorbate", "category", "query", "run_id", "job_id", "task_type"):
+                value = arguments.get(key) if isinstance(arguments, dict) else None
+                if value not in (None, "", [], {}):
+                    arg_bits.append(f"{key}={self._collapse_text(value, limit=36)}")
+                if len(arg_bits) >= 3:
+                    break
+            suffix_parts = []
+            if status:
+                suffix_parts.append(status)
+            if arg_bits:
+                suffix_parts.append(", ".join(arg_bits))
+            suffix = f"({'; '.join(suffix_parts)})" if suffix_parts else ""
+            trail.append(f"{name}{suffix}")
+        return trail
 
     def _build_compact_summary(self, rows: list[dict[str, Any]]) -> str:
         if not rows:
@@ -289,17 +312,11 @@ class AetherSessionStore:
             record = dict(turn.get("record") or {})
             prompt = self._collapse_text(record.get("prompt"))
             response = self._collapse_text(record.get("response"))
-            tool_names = sorted(
-                {
-                    str(item.get("name") or "").strip()
-                    for item in list(record.get("tool_executions") or [])
-                    if str(item.get("name") or "").strip()
-                }
-            )
+            tool_trail = self._tool_trail(list(record.get("tool_executions") or []))
             lines.append(f"- turn {offset} user: {prompt or 'n/a'}")
             lines.append(f"  assistant: {response or 'n/a'}")
-            if tool_names:
-                lines.append(f"  tools: {', '.join(tool_names)}")
+            if tool_trail:
+                lines.append(f"  tool_trail: {'; '.join(tool_trail)}")
 
         text = "\n".join(lines).strip()
         if len(text) <= max_chars:

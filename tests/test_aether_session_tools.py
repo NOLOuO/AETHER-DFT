@@ -56,6 +56,39 @@ def test_session_context_auto_compacts_before_prompt_budget(tmp_path: Path, monk
     assert len(context) <= SESSION_CONTEXT_MAX_CHARS
 
 
+def test_session_context_includes_compact_tool_trail_without_large_results(tmp_path: Path):
+    store = AetherSessionStore(tmp_path / "sessions")
+    session_id = store.start_session(project="demo")
+    store.append_turn(
+        session_id,
+        {
+            "project": "demo",
+            "prompt": "只读检查 H2O/Pt(111)",
+            "response": "已查到 H2O O-down 先验。",
+            "tool_executions": [
+                {
+                    "name": "adsorbate_chemistry_hint",
+                    "arguments": {"adsorbate": "H2O"},
+                    "result": {"status": "ok", "payload": "x" * 5000},
+                },
+                {
+                    "name": "aether_discover_tools",
+                    "arguments": {"category": "structure_modeling", "query": "Pt slab H2O"},
+                    "result": {"status": "ok", "schemas": [{"large": "y" * 5000}]},
+                },
+            ],
+        },
+    )
+
+    context = store.build_session_context(session_id)
+
+    assert "tool_trail:" in context
+    assert "adsorbate_chemistry_hint(ok; adsorbate=H2O)" in context
+    assert "aether_discover_tools(ok; category=structure_modeling" in context
+    assert "x" * 200 not in context
+    assert "y" * 200 not in context
+
+
 def test_permission_mode_blocks_write_tools_in_ask_mode():
     result = ToolRegistry(permission_mode="ask").run_tool(
         "project_progress_append",
