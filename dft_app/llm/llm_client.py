@@ -313,7 +313,12 @@ def call_openai_compatible_result(
             extract_reasoning_text(message.get("reasoning_details"))
         )
     if not content and not tool_calls:
-        raise RuntimeError("模型接口未返回可展示内容")
+        finish = str(choice.get("finish_reason") or "unknown")
+        content = (
+            f"模型未返回可展示正文（finish_reason={finish}）；"
+            "可能是输出 token 预算不足、provider 返回空内容，或工具后回答被截断。"
+            "我会基于已获得的工具结果继续给出保守结论；如需更完整回复，请继续追问或提高 max_tokens。"
+        )
     return {
         "content": content,
         "reasoning_content": reasoning_content,

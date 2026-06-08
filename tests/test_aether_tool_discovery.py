@@ -136,3 +136,37 @@ def test_agent_harness_finalizes_natural_reply_after_tool_limit(tmp_path: Path):
     assert "已发现结构建模能力" in record["response"]
     assert adapter.final_tools == []
     assert adapter.final_tool_choice == "none"
+
+
+class LengthThenFinalAdapter:
+    runtime = type("Runtime", (), {"model_id": "fake:length"})()
+
+    def __init__(self):
+        self.calls = 0
+        self.retry_tools = None
+        self.retry_tool_choice = None
+
+    def chat(self, messages, *, tools=None, tool_choice="auto", max_tokens=None):
+        self.calls += 1
+        if self.calls == 1:
+            return {"content": "当前证据：H2O 以 O-down", "finish_reason": "length", "tool_calls": []}
+        self.retry_tools = tools
+        self.retry_tool_choice = tool_choice
+        assert any("上一条回复因为 token 限制被截断" in str(message.get("content")) for message in messages if message.get("role") == "system")
+        return {
+            "content": "当前证据支持 O-down atop 作为主候选；关键决策是 slab 来源和候选数量；最小下一动作是确认 slab 参数后生成一个主候选。",
+            "finish_reason": "stop",
+            "tool_calls": [],
+        }
+
+
+def test_agent_harness_retries_concise_reply_after_length_finish(tmp_path: Path):
+    adapter = LengthThenFinalAdapter()
+    harness = AgentHarness(adapter=adapter, registry=ToolRegistry(), sessions=HarnessSessionStore(tmp_path / "sessions"))
+
+    record = harness.run_turn("[discussion-mode] 简短回答", project="demo", max_steps=1, max_tokens=200)
+
+    assert record["finish_reason"] == "length_finalized"
+    assert "最小下一动作" in record["response"]
+    assert adapter.retry_tools == []
+    assert adapter.retry_tool_choice == "none"

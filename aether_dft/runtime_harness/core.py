@@ -415,6 +415,35 @@ class AgentHarness:
                 response = _clean_text(content)
                 messages.append({"role": "assistant", "content": response})
                 messages = _clean_messages(messages)
+                if finish_reason == "length":
+                    messages.append(
+                        {
+                            "role": "system",
+                            "content": (
+                                "上一条回复因为 token 限制被截断。现在不要调用工具，不要表格，"
+                                "用不超过 220 个中文字给出完整结论：当前证据、关键决策点、最小下一动作。"
+                            ),
+                        }
+                    )
+                    messages = _clean_messages(messages)
+                    if progress_callback:
+                        progress_callback({"event": "final_reply_after_length", "session_id": session_id, "tool_count": len(tool_executions)})
+                    try:
+                        retry_reply = self.adapter.chat(
+                            messages,
+                            tools=[],
+                            tool_choice="none",
+                            max_tokens=max(int(max_tokens or 0), 1200),
+                            **({"stream_callback": stream_callback} if stream_callback is not None else {}),
+                        )
+                        retry_content = _clean_text(str(retry_reply.get("content") or ""))
+                        if retry_content:
+                            response = retry_content
+                            finish_reason = "length_finalized"
+                            messages.append({"role": "assistant", "content": response})
+                            messages = _clean_messages(messages)
+                    except Exception:
+                        response = (response + "\n\n[提示] 上一条回复被模型截断；请继续追问，我会基于已获得工具证据给出更短结论。").strip()
                 break
             else:
                 finish_reason = "tool_loop_limit"

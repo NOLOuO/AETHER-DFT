@@ -216,6 +216,38 @@ def test_chat_completions_streaming_degrades_when_only_reasoning_arrives(monkeyp
     assert [event["type"] for event in events] == ["reasoning_delta", "reasoning_delta"]
 
 
+def test_chat_completions_empty_message_degrades_without_throwing(monkeypatch):
+    class FakeCompletion:
+        def model_dump(self):
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": "", "tool_calls": []},
+                    }
+                ]
+            }
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return FakeCompletion()
+
+    class FakeClient:
+        chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr("dft_app.llm.llm_client._build_openai_client", lambda *args, **kwargs: FakeClient())
+
+    result = call_openai_compatible_result(
+        "deepseek",
+        "deepseek-v4-pro",
+        "fake-key",
+        [{"role": "user", "content": "hello"}],
+    )
+
+    assert result["finish_reason"] == "stop"
+    assert "模型未返回可展示正文" in result["content"]
+
+
 def test_qwen_tools_use_same_chat_completions_backend(monkeypatch):
     captured: dict[str, object] = {}
 
