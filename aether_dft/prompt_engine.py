@@ -77,19 +77,23 @@ def load_architecture_live_doc_snapshot(*, max_chars: int = 2400) -> dict[str, s
 
 
 def _tool_discovery_digest(*, max_tools: int = 80) -> str:
-    """Summarize visible tools without making the prompt a schema dump."""
+    """Summarize tool capabilities without making the prompt a schema dump."""
 
     try:
-        from aether_dft.runtime_harness.tool_registry import list_registered_tools
+        from aether_dft.runtime_harness.tool_registry import list_capability_categories
     except Exception:
         return ""
     rows: list[str] = []
-    for item in list_registered_tools()[:max_tools]:
-        name = str(item.get("name") or "").strip()
-        description = str(item.get("description") or "").strip()
-        if not name:
+    for item in list_capability_categories()[:max_tools]:
+        category = str(item.get("category") or "").strip()
+        label = str(item.get("label") or "").strip()
+        when_to_use = str(item.get("when_to_use") or "").strip()
+        examples = ", ".join(f"`{name}`" for name in item.get("example_tools") or [])
+        if not category:
             continue
-        rows.append(f"- `{name}` — {description[:120]}")
+        rows.append(f"- `{category}` — {label}；何时用：{when_to_use[:120]}；示例工具：{examples}")
+    rows.append("")
+    rows.append("使用方式：先按自然语言意图选择 category；若当前可见工具不够，调用 `aether_discover_tools` 按需解锁具体 schema。不要要求用户记工具名。")
     return "\n".join(rows)
 
 

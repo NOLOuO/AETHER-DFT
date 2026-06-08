@@ -224,10 +224,18 @@ class AgentHarness:
         tool_executions: list[dict[str, Any]] = []
         finish_reason = "stop"
         response = ""
-        try:
-            tools = self.registry.openai_tool_schemas(interaction_mode=interaction_mode)
-        except TypeError:
-            tools = self.registry.openai_tool_schemas()
+        discovered_tool_names: set[str] = set()
+
+        def refresh_tool_schemas() -> list[dict[str, Any]]:
+            try:
+                return self.registry.openai_tool_schemas(interaction_mode=interaction_mode, include_tool_names=sorted(discovered_tool_names))
+            except TypeError:
+                try:
+                    return self.registry.openai_tool_schemas(interaction_mode=interaction_mode)
+                except TypeError:
+                    return self.registry.openai_tool_schemas()
+
+        tools = refresh_tool_schemas()
         started_at = datetime.now().astimezone()
         force_final_reply_after_audit = False
         if progress_callback:
@@ -381,6 +389,26 @@ class AgentHarness:
                             )
                         messages.append({"role": "tool", "name": name, "tool_call_id": call.get("id"), "content": visible})
                         messages = _clean_messages(messages)
+                        if name == "aether_discover_tools" and isinstance(result.get("result"), dict):
+                            newly_discovered = {
+                                str(item)
+                                for item in result["result"].get("tool_names", [])
+                                if str(item).strip()
+                            }
+                            if newly_discovered:
+                                before_count = len(discovered_tool_names)
+                                discovered_tool_names.update(newly_discovered)
+                                if len(discovered_tool_names) != before_count:
+                                    tools = refresh_tool_schemas()
+                                    if progress_callback:
+                                        progress_callback(
+                                            {
+                                                "event": "tool_schema_unlocked",
+                                                "step": step_index + 1,
+                                                "tool_names": sorted(newly_discovered),
+                                                "available_tool_count": len(tools),
+                                            }
+                                        )
                         if name == "behavior_audit":
                             force_final_reply_after_audit = True
                     continue
@@ -390,6 +418,35 @@ class AgentHarness:
                 break
             else:
                 finish_reason = "tool_loop_limit"
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            "本轮工具步数已经用尽。现在必须停止调用工具，基于已经获得的工具结果给用户一个简短、"
+                            "诚实、证据化的自然语言总结；如果还缺工具结果，把它列为下一步，不要编造。"
+                        ),
+                    }
+                )
+                messages = _clean_messages(messages)
+                if progress_callback:
+                    progress_callback({"event": "final_reply_after_tool_limit", "session_id": session_id, "tool_count": len(tool_executions)})
+                try:
+                    final_kwargs: dict[str, Any] = {
+                        "tools": [],
+                        "tool_choice": "none",
+                        "max_tokens": max_tokens,
+                    }
+                    if stream_callback is not None:
+                        final_kwargs["stream_callback"] = stream_callback
+                    final_reply = self.adapter.chat(messages, **final_kwargs)
+                    final_content = _clean_text(str(final_reply.get("content") or ""))
+                    if final_content:
+                        response = final_content
+                        finish_reason = "tool_loop_limit_finalized"
+                        messages.append({"role": "assistant", "content": response})
+                        messages = _clean_messages(messages)
+                except Exception as exc:
+                    response = _clean_text(response or f"工具步数已达上限，且最终总结生成失败：{exc}")
 
         except KeyboardInterrupt:
             finish_reason = "user_interrupted"

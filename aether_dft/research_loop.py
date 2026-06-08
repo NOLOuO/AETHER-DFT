@@ -22,11 +22,26 @@ def _should_persist_turn(prompt: str, tool_executions: list[Any]) -> bool:
     evidence of work; otherwise require intent words that imply progress.
     """
 
-    if tool_executions:
-        return True
     text = str(prompt or "").strip().lower()
     if not text:
         return False
+    explicit_no_persist_markers = [
+        "只读",
+        "只做只读",
+        "不要写",
+        "不写",
+        "不能写",
+        "不要回写",
+        "不能回写",
+        "不要写 research",
+        "不能写 research",
+        "不要提交",
+        "不能提交",
+    ]
+    if any(marker in text for marker in explicit_no_persist_markers):
+        return False
+    if tool_executions:
+        return True
     meta_markers = [
         "预加载",
         "preload",
@@ -99,6 +114,8 @@ def summarize_research_turn(record: dict[str, Any], *, project: str | None = Non
     blockers: list[str] = []
     if finish_reason == "tool_loop_limit":
         blockers.append("工具调用轮数达到上限，需要继续拆分当前问题。")
+    elif finish_reason == "tool_loop_limit_finalized":
+        blockers.append("工具调用轮数达到上限；已基于现有证据给出临时总结，后续可继续细化。")
     elif finish_reason and finish_reason not in {"stop", "end_turn", "tool_calls"}:
         blockers.append(f"本轮结束原因：{finish_reason}")
 
@@ -108,10 +125,7 @@ def summarize_research_turn(record: dict[str, Any], *, project: str | None = Non
     next_steps: list[str] = []
     for item in recommendations[:3]:
         title = str(item.get("title") or "").strip()
-        command = str(item.get("command") or "").strip()
-        if title and command:
-            next_steps.append(f"{title}；{command}")
-        elif title:
+        if title:
             next_steps.append(title)
     if should_persist and not next_steps:
         next_steps.append("继续基于当前项目上下文推进下一步科研任务。")

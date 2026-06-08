@@ -176,3 +176,35 @@ def test_agent_loop_does_not_persist_meta_preload_check(monkeypatch, tmp_path):
     assert record["progress"]["next_steps"] == []
     assert "project_progress_path" not in record
     assert after == before
+
+
+def test_agent_loop_respects_explicit_read_only_even_with_tool_use(monkeypatch, tmp_path):
+    import aether_dft.paths as paths
+    import aether_dft.project_state as project_state
+
+    monkeypatch.setattr(paths, "PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(paths, "KNOWLEDGE_BASE_DIR", tmp_path / "knowledge_base")
+    monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(project_state, "PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(project_state, "KNOWLEDGE_BASE_DIR", tmp_path / "knowledge_base")
+
+    project_state.init_project("chem-demo", description="demo", overwrite=True)
+    before = project_state.project_paths("chem-demo").progress.read_text(encoding="utf-8")
+
+    from aether_dft.research_loop import summarize_research_turn
+
+    record = summarize_research_turn(
+        {
+            "prompt": "只读测试：可以调用只读工具，但不要写 research、不要提交。",
+            "response": "已读取能力地图。",
+            "finish_reason": "stop",
+            "tool_executions": [{"name": "aether_capability_map", "result": {"status": "ok"}}],
+        },
+        project="chem-demo",
+    )
+
+    after = project_state.project_paths("chem-demo").progress.read_text(encoding="utf-8")
+    assert record["progress"]["persisted"] is False
+    assert record["progress"]["next_steps"] == []
+    assert "project_progress_path" not in record
+    assert after == before

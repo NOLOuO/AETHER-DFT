@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from ase.io import read
 from dft_app.cli.main import collect_adsorption_workflow_status
@@ -117,6 +117,175 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+DISCOVERY_TOOL_NAMES = {"aether_capability_map", "aether_discover_tools"}
+
+
+CAPABILITY_CATEGORIES: dict[str, dict[str, Any]] = {
+    "project_memory": {
+        "label": "项目记忆 / 连续对话",
+        "when_to_use": "续接课题、读取/更新项目状态、总结当前讨论、形成长期 checkpoint。",
+        "tools": [
+            "project_continuity_digest",
+            "project_state_read",
+            "discussion_state_snapshot",
+            "research_cycle_checkpoint",
+            "recommend_next_tasks",
+            "next_experiment_propose",
+        ],
+    },
+    "research_context": {
+        "label": "research 工作区 / 文献与先验",
+        "when_to_use": "需要读 research 模板、项目进展、知识库、文献检索或跨项目先验时。",
+        "tools": [
+            "research_onboarding_context",
+            "research_proposal_plan",
+            "knowledge_search_for_system",
+            "knowledge_note_list",
+            "knowledge_note_search",
+            "knowledge_note_show",
+            "literature_search",
+            "web_search",
+        ],
+    },
+    "chemistry_reasoning": {
+        "label": "计算化学判断 / 小计算",
+        "when_to_use": "需要能量、速率、Boltzmann、吸附物化学先验或 evidence 审计时。",
+        "tools": [
+            "chemistry_compute",
+            "adsorbate_chemistry_hint",
+            "evidence_claim_audit",
+            "behavior_audit",
+            "image_understand",
+        ],
+    },
+    "structure_modeling": {
+        "label": "结构建模 / slab、吸附物、缺陷、TS 初猜",
+        "when_to_use": "用户自然语言要求建模、生成/检查结构、枚举吸附位点、构建缺陷或 TS 初猜时。",
+        "tools": [
+            "structure_modeling_tool_status",
+            "structure_modeling_intent_plan",
+            "structure_resolve",
+            "structure_convert",
+            "structure_supercell",
+            "structure_build_slab",
+            "slab_surface_inspect",
+            "structure_enumerate_sites",
+            "structure_add_adsorbate",
+            "candidate_quality_score",
+            "structure_relax_short",
+            "structure_defect",
+            "defect_site_enumerate",
+            "structure_add_vacancy",
+            "structure_add_dopant",
+            "structure_sanity_check",
+            "structure_bond_analyze",
+            "structure_displacement_compare",
+            "ts_midpoint_candidates_enumerate",
+        ],
+    },
+    "adsorption_authoring": {
+        "label": "吸附候选生成 / 模型主导筛选",
+        "when_to_use": "需要让模型基于化学理由选位点、定 orientation、写候选 manifest 或复盘候选结果时。",
+        "tools": [
+            "adsorption_plan",
+            "adsorption_candidate_plan",
+            "adsorption_candidate_plan_list",
+            "adsorption_candidate_manifest_compose",
+            "adsorption_candidates",
+            "manifest_audit",
+            "candidate_outcome_record",
+            "adsorption_workflow_status",
+        ],
+    },
+    "dft_tasking": {
+        "label": "DFT 输入生成 / VASP preflight",
+        "when_to_use": "需要从结构进入计算任务、生成/检查 INCAR/KPOINTS/job.slurm、套用 research 模板时。",
+        "tools": [
+            "task_type_catalog",
+            "cluster_execution_intent_plan",
+            "research_vasp_template_resolve",
+            "dft_run_task",
+            "dft_run_step",
+            "dft_run_report",
+            "dft_run_list",
+            "vasp_input_summary",
+            "vasp_input_preflight_check",
+            "convergence_plan_compose",
+            "ts_workflow_config",
+            "neb_input_check",
+            "dimer_input_check",
+        ],
+    },
+    "cluster_runtime": {
+        "label": "集群运行 / 同步 / 提交 / 查询",
+        "when_to_use": "需要 SSH/SLURM 探测、research 同步、提交、查询 job、tail 日志、取消测试任务或拉回结果时。",
+        "tools": [
+            "cluster_config",
+            "cluster_probe",
+            "cluster_my_jobs",
+            "cluster_job_status_brief",
+            "cluster_job_tail_log",
+            "cluster_job_partial_outcar",
+            "cluster_job_progress_estimate",
+            "research_workspace_diff",
+            "research_workspace_sync_to_cluster",
+            "research_workspace_sync_from_cluster",
+            "research_workspace_pull_logs",
+            "cluster_remote_submit",
+            "cluster_remote_monitor",
+            "cluster_remote_fetch",
+        ],
+    },
+    "result_analysis": {
+        "label": "结果解析 / OUTCAR、OSZICAR、CONTCAR",
+        "when_to_use": "需要判断收敛、能量趋势、结构位移、键连变化、下一步解释时。",
+        "tools": [
+            "vasp_output_scan",
+            "result_interpret",
+            "structure_bond_analyze",
+            "structure_displacement_compare",
+            "candidate_outcome_record",
+        ],
+    },
+    "writeback_learning": {
+        "label": "科研回写 / 经验沉淀",
+        "when_to_use": "得到了可复用结论、参数经验、失败原因或下一步计划，需要写回 research/KB 时。",
+        "tools": [
+            "research_progress_append",
+            "project_progress_append",
+            "research_learning_capture",
+            "knowledge_note_add",
+            "candidate_outcome_record",
+            "research_cycle_checkpoint",
+        ],
+    },
+    "evaluation": {
+        "label": "行为评估 / 模型候选质量",
+        "when_to_use": "需要评估模型是否会合理调用工具、候选计划是否化学合理、生成模型对比报告时。",
+        "tools": [
+            "adsorption_eval_case_list",
+            "adsorption_eval_score_plan",
+            "adsorption_eval_model_comparison_report",
+            "manifest_audit",
+            "behavior_audit",
+        ],
+    },
+}
+
+
+def _capability_summary() -> list[dict[str, Any]]:
+    return [
+        {
+            "category": name,
+            "label": str(data["label"]),
+            "when_to_use": str(data["when_to_use"]),
+            "tool_count": len(data["tools"]),
+            "example_tools": list(data["tools"])[:5],
+        }
+        for name, data in CAPABILITY_CATEGORIES.items()
+    ]
+
+
 class ToolRegistry:
     def __init__(self, *, allow_cluster_submit: bool = False, permission_mode: str | None = None):
         self.allow_cluster_submit = allow_cluster_submit
@@ -128,6 +297,8 @@ class ToolRegistry:
         self._tools[spec.name] = (spec, handler)
 
     def _register_all(self) -> None:
+        self._register(ToolSpec("aether_capability_map", "列出 AETHER 的能力类别；先看能力地图，再按科研任务自主选择是否 discover 某类工具。", {}, True), self._aether_capability_map)
+        self._register(ToolSpec("aether_discover_tools", "按 category/query/tool_names 按需解锁工具 schema。用于模型自己找能力，不是固定流程。", {"category": {"type": "string"}, "query": {"type": "string"}, "tool_names": {"type": "array", "items": {"type": "string"}}, "include_schemas": {"type": "boolean"}, "max_tools": {"type": "integer"}}, True), self._aether_discover_tools)
         self._register(ToolSpec("computational_chemistry_workflow_map", "列出 AETHER-DFT 两步主线与工作流阶段。", {}), self._workflow_map)
         self._register(ToolSpec("structure_modeling_tool_status", "报告 Step 2 结构建模工具能力、适用任务类型、证据门槛与当前完成度。", {}, True), self._structure_modeling_tool_status)
         self._register(ToolSpec("structure_modeling_intent_plan", "把自然语言 Step 2 建模意图转成非强制的工具选择建议、缺失输入和证据门槛；这是导航，不是固定流水线。", {"intent": {"type": "string"}, "available_inputs": {"type": "object"}, "project": {"type": "string"}, "allow_writes": {"type": "boolean"}}, True, ("intent",)), self._structure_modeling_intent_plan)
@@ -220,16 +391,18 @@ class ToolRegistry:
     def list_tools(self) -> list[dict[str, Any]]:
         return [spec.to_dict() for spec, _ in self._tools.values()]
 
-    def openai_tool_schemas(self, interaction_mode: str | None = None) -> list[dict[str, Any]]:
+    def openai_tool_schemas(self, interaction_mode: str | None = None, *, include_tool_names: Iterable[str] | None = None) -> list[dict[str, Any]]:
         tools = list(self._tools.values())
         if interaction_mode == "discussion":
-            names = self._discussion_tool_names()
+            names = self._discussion_tool_names() | set(include_tool_names or ()) | DISCOVERY_TOOL_NAMES
             tools = [(spec, handler) for spec, handler in tools if spec.name in names]
         return [_schema(spec.name, spec.description, spec.parameters, list(spec.required)) for spec, _ in tools]
 
     def _discussion_tool_names(self) -> set[str]:
         """Expose a lean evidence/discussion surface; execution mode still receives the full registry."""
         return {
+            "aether_capability_map",
+            "aether_discover_tools",
             "computational_chemistry_workflow_map",
             "project_continuity_digest",
             "research_cycle_checkpoint",
@@ -276,6 +449,99 @@ class ToolRegistry:
             "adsorption_eval_case_list",
             "adsorption_eval_score_plan",
         }
+
+    def _tool_summary(self, name: str) -> dict[str, Any] | None:
+        if name not in self._tools:
+            return None
+        spec, _ = self._tools[name]
+        category = self._category_for_tool(name)
+        return {
+            "name": spec.name,
+            "description": spec.description,
+            "category": category,
+            "read_only": spec.read_only,
+            "required": list(spec.required),
+        }
+
+    @staticmethod
+    def _category_for_tool(name: str) -> str:
+        for category, data in CAPABILITY_CATEGORIES.items():
+            if name in data["tools"]:
+                return category
+        if name in DISCOVERY_TOOL_NAMES:
+            return "tool_discovery"
+        return "uncategorized"
+
+    def _discover_tool_names(self, payload: dict[str, Any]) -> list[str]:
+        category = str(payload.get("category") or "").strip()
+        query = str(payload.get("query") or "").strip().lower()
+        requested = [str(item).strip() for item in payload.get("tool_names") or [] if str(item).strip()]
+        candidates: list[str] = []
+        if category:
+            data = CAPABILITY_CATEGORIES.get(category)
+            if data is None:
+                category_l = category.lower()
+                for key, item in CAPABILITY_CATEGORIES.items():
+                    haystack = f"{key} {item['label']} {item['when_to_use']}".lower()
+                    if category_l in haystack:
+                        data = item
+                        break
+            if data is not None:
+                candidates.extend(str(name) for name in data["tools"])
+        candidates.extend(requested)
+        if query:
+            tokens = [token for token in re.split(r"[\s,;，；/]+", query) if token]
+            for name, (spec, _) in self._tools.items():
+                haystack = f"{name} {spec.description} {self._category_for_tool(name)}".lower()
+                if all(token in haystack for token in tokens):
+                    candidates.append(name)
+        if not candidates and not category and not query and not requested:
+            candidates.extend(["project_continuity_digest", "project_state_read", "aether_capability_map"])
+        seen: set[str] = set()
+        valid: list[str] = []
+        for name in candidates:
+            if name in self._tools and name not in seen and name not in DISCOVERY_TOOL_NAMES:
+                seen.add(name)
+                valid.append(name)
+        try:
+            max_tools = max(1, min(int(payload.get("max_tools") or 12), 40))
+        except (TypeError, ValueError):
+            max_tools = 12
+        return valid[:max_tools]
+
+    def _aether_capability_map(self, _: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "status": "ok",
+            "message": "这是能力地图，不是固定流程。根据用户自然语言意图选择 category，再按需调用 aether_discover_tools 解锁具体工具。",
+            "categories": _capability_summary(),
+            "usage": {
+                "discover_by_category": {"category": "structure_modeling"},
+                "discover_by_query": {"query": "OUTCAR convergence energy"},
+                "discover_by_names": {"tool_names": ["research_vasp_template_resolve", "vasp_input_preflight_check"]},
+            },
+        }
+
+    def _aether_discover_tools(self, payload: dict[str, Any]) -> dict[str, Any]:
+        names = self._discover_tool_names(payload)
+        include_schemas = bool(payload.get("include_schemas", False))
+        summaries = [summary for name in names if (summary := self._tool_summary(name)) is not None]
+        result: dict[str, Any] = {
+            "status": "ok",
+            "category": str(payload.get("category") or "").strip(),
+            "query": str(payload.get("query") or "").strip(),
+            "tool_names": names,
+            "tools": summaries,
+            "model_instruction": "这些工具已按需发现；如果 harness 支持动态解锁，下一步可直接调用这些 tool。否则用返回的 required 字段组织下一步请求。",
+            "capabilities": _capability_summary(),
+        }
+        if include_schemas:
+            result["schemas"] = [
+                _schema(spec.name, spec.description, spec.parameters, list(spec.required))
+                for name in names
+                if (tool := self._tools.get(name)) is not None
+                for spec, _handler in [tool]
+            ]
+        return result
 
     def is_read_only_tool(self, name: str) -> bool:
         if name not in self._tools:
@@ -1912,3 +2178,7 @@ class ToolRegistry:
 
 def list_registered_tools() -> list[dict[str, Any]]:
     return ToolRegistry().list_tools()
+
+
+def list_capability_categories() -> list[dict[str, Any]]:
+    return _capability_summary()
