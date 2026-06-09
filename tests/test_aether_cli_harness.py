@@ -253,6 +253,50 @@ def test_cli_interactive_status_and_context_shortcuts(monkeypatch, capsys):
     assert "AETHER interactive chat" in out
 
 
+def test_cli_interactive_model_command_accepts_catalog_alias(monkeypatch, tmp_path, capsys):
+    import aether_dft.model_catalog as model_catalog
+    import aether_dft.paths as paths
+
+    monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(model_catalog, "PREFERENCES_PATH", tmp_path / "runtime" / "model-preferences.json")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    inputs = iter(["/model qwen", "/status", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    assert cli.main(["chat"]) == 0
+    out = capsys.readouterr().out
+    assert "model switched" in out
+    assert "bailian:qwen3.7-max" in out
+    assert '"model": "bailian:qwen3.7-max"' in out
+
+
+def test_cli_interactive_sessions_and_resume_command(monkeypatch, tmp_path, capsys):
+    import aether_dft.paths as paths
+    import aether_dft.session_store as session_store
+
+    runtime_dir = tmp_path / "runtime"
+    monkeypatch.setattr(paths, "RUNTIME_DIR", runtime_dir)
+
+    store = session_store.AetherSessionStore()
+    older = store.start_session(project="MCH-Pt-Br", first_prompt="old")
+    store.append_turn(older, {"project": "MCH-Pt-Br", "prompt": "old", "response": "old response"})
+    newer = store.start_session(project="Other", first_prompt="new")
+    store.append_turn(newer, {"project": "Other", "prompt": "new", "response": "new response"})
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    inputs = iter(["/sessions", f"/resume {older}", "/status", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    assert cli.main([]) == 0
+    out = capsys.readouterr().out
+    assert "recent sessions" in out
+    assert older in out
+    assert newer in out
+    assert f"resumed" in out
+    assert f'"id": "{older}"' in out
+    assert '"project": "MCH-Pt-Br"' in out
+
+
 def test_cli_mainline_prints_explicit_workflow(capsys):
     assert cli.main(["mainline"]) == 0
     out = capsys.readouterr().out

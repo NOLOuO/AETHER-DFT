@@ -19,6 +19,7 @@ from .chat import ask_once
 from .model_catalog import (
     format_model_table,
     load_model_catalog,
+    normalize_model_id,
     resolve_effective_model_id,
     set_default_model,
     split_model_id,
@@ -81,7 +82,7 @@ def visible_len(text: str) -> int:
 
 
 def ensure_console_utf8() -> None:
-    for stream_name in ("stdout", "stderr"):
+    for stream_name in ("stdin", "stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
         if stream is None or not hasattr(stream, "reconfigure"):
             continue
@@ -97,6 +98,13 @@ def print_json(data: Any) -> None:
 
 def program_model_id() -> str:
     return resolve_effective_model_id()
+
+
+def active_model_id(args: argparse.Namespace | None = None) -> str:
+    raw = getattr(args, "model", None) if args is not None else None
+    if raw:
+        return normalize_model_id(str(raw))
+    return program_model_id()
 
 
 def program_context_window() -> int | None:
@@ -118,10 +126,11 @@ def print_quick_start() -> None:
     print_banner()
     print()
     print("Usage:")
-    print("  aether 看看怎么样了          # fast-path 秒级队列状态")
-    print("  aether job 12345 怎么样      # fast-path 单作业状态")
-    print("  aether mainline [\"继续当前科研任务\"]")
-    print("  aether chat \"继续当前科研任务\"")
+    print("  aether                         # 进入持续交互式科研合伙人")
+    print("  aether \"帮我看下现在该做什么\"  # 自然语言单轮；模型自行调用工具")
+    print("  aether chat --resume           # 续接最近 session")
+    print("  aether chat --model qwen       # 进入交互并切换模型")
+    print("  aether mainline --resume       # 显式进入科研主线入口")
     print("  aether model current")
     print("  aether project list")
     print("  aether recommend --project <slug>")
@@ -157,7 +166,7 @@ def print_demo_home(run_root: str | None = None) -> None:
     print(f"{Colors.DIM}Type {Colors.GREEN}/help{Colors.DIM} for help, {Colors.GREEN}/exit{Colors.DIM} to quit{Colors.RESET}")
 
 
-def print_chat_home(*, session_id: str, project: str | None = None) -> None:
+def print_chat_home(*, session_id: str, project: str | None = None, model_id: str | None = None) -> None:
     box_width = 58
 
     def line(text: str = "") -> None:
@@ -170,7 +179,7 @@ def print_chat_home(*, session_id: str, project: str | None = None) -> None:
     print(f"{Colors.DIM}├{'─' * box_width}┤{Colors.RESET}")
     line(f"Program: {Colors.CYAN}{PROGRAM_NAME}{Colors.RESET}")
     line(f"Version: {Colors.GREEN}{__version__}{Colors.RESET}")
-    line(f"Model: {Colors.YELLOW}{program_model_id()}{Colors.RESET}")
+    line(f"Model: {Colors.YELLOW}{model_id or program_model_id()}{Colors.RESET}")
     context_window = program_context_window()
     if context_window:
         line(f"Context: {context_window:,} tokens")
@@ -183,7 +192,7 @@ def print_chat_home(*, session_id: str, project: str | None = None) -> None:
 
 def print_chat_shortcuts() -> None:
     print("直接输入自然语言即可；模型会自己判断是否需要调用工具。")
-    print("可选快捷：/status 状态；/preload 预加载；/context 上下文；/model 切换模型；/permission 切换权限；/exit 退出。")
+    print("可选快捷：/status 状态；/sessions 会话；/resume 续接；/model 切换模型；/permission 权限；/exit 退出。")
 
 
 def _shorten_inline(value: Any, *, limit: int = 160) -> str:
@@ -199,6 +208,8 @@ def print_chat_help() -> None:
     print("主流程：直接说科研目标、结构问题、计算方案或结果疑问；模型自行决定是否调用工具。")
     print("ask 权限模式下，写文件/提交作业/产生副作用时只会弹一次确认，再决定是否执行。")
     print(f"  {Colors.GREEN}/status{Colors.RESET}      当前 session/model/permission")
+    print(f"  {Colors.GREEN}/sessions{Colors.RESET}    最近会话列表")
+    print(f"  {Colors.GREEN}/resume [id]{Colors.RESET} 续接最近或指定 session")
     print(f"  {Colors.GREEN}/preload{Colors.RESET}     模型本轮会预加载哪些设定")
     print(f"  {Colors.GREEN}/context{Colors.RESET}     当前 1M context budget 与压缩状态")
     print(f"  {Colors.GREEN}/model{Colors.RESET}       查看或切换 deepseek/qwen")
@@ -210,13 +221,13 @@ def print_chat_help() -> None:
     print(f"{Colors.DIM}{'─' * 44}{Colors.RESET}\n")
 
 
-def print_chat_status(*, session_store: Any, session_id: str, project: str | None) -> None:
+def print_chat_status(*, session_store: Any, session_id: str, project: str | None, args: argparse.Namespace | None = None) -> None:
     state = session_store.load_state(session_id)
     print_json(
         {
             "program": PROGRAM_NAME,
             "version": __version__,
-            "model": program_model_id(),
+            "model": active_model_id(args),
             "context_window": program_context_window(),
             "permission": {"mode": get_permission_mode(), "label": permission_mode_label()},
             "session": {
@@ -227,6 +238,51 @@ def print_chat_status(*, session_store: Any, session_id: str, project: str | Non
             },
         }
     )
+
+
+def print_chat_sessions(*, session_store: Any, project: str | None, limit: int = 10) -> None:
+    sessions = session_store.list_sessions(project=project, limit=limit)
+    if not sessions:
+        print("没有可续接的 session。")
+        return
+    print(f"{Colors.CYAN}recent sessions{Colors.RESET}:")
+    for item in sessions:
+        project_label = item.project or "none"
+        first = _shorten_inline(item.first_prompt, limit=56) or "empty"
+        print(f"- {item.session_id}  project={project_label} turns={item.turn_count} updated={item.updated_at}")
+        print(f"  {Colors.DIM}{first}{Colors.RESET}")
+
+
+def print_resume_preview(payload: dict[str, Any]) -> None:
+    state = payload.get("state") or {}
+    print(
+        f"{Colors.GREEN}resumed{Colors.RESET}: "
+        f"{payload.get('session_id')} project={state.get('project') or 'none'} turns={state.get('turn_count') or 0}"
+    )
+    recent_turns = payload.get("recent_turns") or []
+    if recent_turns:
+        print("最近对话：")
+        for turn in recent_turns[-3:]:
+            record = turn.get("record", {})
+            print(f"- user: {_shorten_inline(record.get('prompt'), limit=90)}")
+            print(f"  assistant: {_shorten_inline(record.get('response'), limit=90)}")
+
+
+def handle_chat_resume_command(line: str, args: argparse.Namespace, session_store: Any, current_session_id: str) -> str:
+    raw = line[len("/resume") :].strip()
+    if raw in {"", "latest"}:
+        payload = session_store.resume_payload(project=args.project)
+    else:
+        payload = session_store.resume_payload(session_id=raw)
+    if payload.get("status") != "ok":
+        print("没有找到可续接的 session。用 /sessions 查看最近会话。")
+        return current_session_id
+    state = payload.get("state") or {}
+    resumed_project = state.get("project")
+    if resumed_project:
+        args.project = str(resumed_project)
+    print_resume_preview(payload)
+    return str(payload["session_id"])
 
 
 def print_chat_context_status(*, session_store: Any, session_id: str) -> None:
@@ -356,19 +412,21 @@ def print_turn_footer(record: dict[str, Any]) -> None:
 def handle_chat_model_command(line: str, args: argparse.Namespace) -> None:
     raw = line[len("/model") :].strip()
     if raw in {"", "current", "list"}:
-        print(f"{Colors.CYAN}current model{Colors.RESET}: {Colors.YELLOW}{program_model_id()}{Colors.RESET}")
-        print(format_model_table(load_model_catalog(Path.cwd()), program_model_id()))
-        print("切换：/model deepseek:deepseek-v4-pro  或  /model bailian:qwen3.7-max")
+        current = active_model_id(args)
+        print(f"{Colors.CYAN}current model{Colors.RESET}: {Colors.YELLOW}{current}{Colors.RESET}")
+        print(format_model_table(load_model_catalog(Path.cwd()), current))
+        print("切换：/model qwen  或  /model deepseek；也支持完整 provider:model。")
         return
     if raw.startswith("set "):
         raw = raw[4:].strip()
     try:
-        set_default_model(raw)
+        preferences = set_default_model(raw)
+        normalized = str(preferences["global_default_model_id"])
     except Exception as exc:
         print(f"{Colors.RED}model switch failed{Colors.RESET}: {exc}")
         return
-    args.model = raw
-    print(f"{Colors.GREEN}model switched{Colors.RESET}: {Colors.YELLOW}{raw}{Colors.RESET}")
+    args.model = normalized
+    print(f"{Colors.GREEN}model switched{Colors.RESET}: {Colors.YELLOW}{normalized}{Colors.RESET}")
 
 
 def handle_chat_permission_command(line: str) -> None:
@@ -944,19 +1002,17 @@ def handle_chat(args: argparse.Namespace) -> int:
 
     if not session_id:
         session_id = session_store.start_session(project=args.project)
-    print_chat_home(session_id=session_id, project=args.project)
+    print_chat_home(session_id=session_id, project=args.project, model_id=active_model_id(args))
     print_chat_shortcuts()
     if args.resume:
         payload = session_store.resume_payload(session_id=session_id, project=args.project)
         if payload["status"] == "ok" and payload["recent_turns"]:
-            print("最近对话：")
-            for turn in payload["recent_turns"][-3:]:
-                record = turn.get("record", {})
-                print(f"- user: {str(record.get('prompt') or '')[:80]}")
-                print(f"  assistant: {str(record.get('response') or '')[:80]}")
+            print_resume_preview(payload)
     while True:
         try:
-            line = input("aether> ").strip()
+            model_short = active_model_id(args).split(":", 1)[-1]
+            project_short = args.project or "no-project"
+            line = input(f"aether[{project_short}|{model_short}]> ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             return 0
@@ -969,11 +1025,17 @@ def handle_chat(args: argparse.Namespace) -> int:
             continue
         if line == "/clear":
             os.system("cls" if os.name == "nt" else "clear")
-            print_chat_home(session_id=session_id, project=args.project)
+            print_chat_home(session_id=session_id, project=args.project, model_id=active_model_id(args))
             print_chat_shortcuts()
             continue
         if line == "/status":
-            print_chat_status(session_store=session_store, session_id=session_id, project=args.project)
+            print_chat_status(session_store=session_store, session_id=session_id, project=args.project, args=args)
+            continue
+        if line == "/sessions":
+            print_chat_sessions(session_store=session_store, project=args.project)
+            continue
+        if line.startswith("/resume"):
+            session_id = handle_chat_resume_command(line, args, session_store, session_id)
             continue
         if line == "/preload":
             handle_preload(argparse.Namespace(project=args.project, probe_cluster=False, json=False))
@@ -1051,18 +1113,23 @@ def handle_chat(args: argparse.Namespace) -> int:
             print_json({"recommendations": recommend_next_tasks(args.project, focus=focus)})
             continue
         stream_printer, stream_state = make_stream_printer()
-        record = ask_once(
-            line,
-            project=args.project,
-            model_id=args.model,
-            max_tokens=args.max_tokens,
-            max_steps=args.max_steps,
-            session_id=session_id,
-            permission_mode=get_permission_mode(),
-            progress_callback=make_chat_progress_printer(),
-            permission_prompt_callback=make_permission_prompt_callback(),
-            stream_callback=stream_printer,
-        )
+        try:
+            record = ask_once(
+                line,
+                project=args.project,
+                model_id=args.model,
+                max_tokens=args.max_tokens,
+                max_steps=args.max_steps,
+                session_id=session_id,
+                permission_mode=get_permission_mode(),
+                progress_callback=make_chat_progress_printer(),
+                permission_prompt_callback=make_permission_prompt_callback(),
+                stream_callback=stream_printer,
+            )
+        except Exception as exc:
+            print(f"{Colors.RED}模型调用失败{Colors.RESET}: {_shorten_inline(str(exc), limit=360)}")
+            print(f"{Colors.DIM}本 session 仍然保留；可 /model qwen 切换后继续，或稍后重试。{Colors.RESET}")
+            continue
         print_streamed_or_final_response(record, stream_state)
         print_turn_footer(record)
         next_steps = (record.get("progress") or {}).get("next_steps") or []
@@ -1664,7 +1731,7 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser = sub.add_parser("chat", help="对话式科研合伙人入口；无 prompt 时进入 REPL。")
     chat_parser.add_argument("prompt", nargs="*")
     chat_parser.add_argument("--project")
-    chat_parser.add_argument("--model", help="临时使用 provider:model。")
+    chat_parser.add_argument("--model", help="临时使用模型；支持 qwen/deepseek 这类唯一别名或完整 provider:model。")
     chat_parser.add_argument("--max-tokens", type=int)
     chat_parser.add_argument("--max-steps", type=int, default=6)
     chat_parser.add_argument("--resume", action="store_true", help="续接最近或指定 session。")
@@ -1688,7 +1755,7 @@ def build_parser() -> argparse.ArgumentParser:
     mainline_parser = sub.add_parser("mainline", help="显式主线入口：讨论 → 方案 → 结构 → 推荐。")
     mainline_parser.add_argument("prompt", nargs="*")
     mainline_parser.add_argument("--project")
-    mainline_parser.add_argument("--model", help="临时使用 provider:model。")
+    mainline_parser.add_argument("--model", help="临时使用模型；支持 qwen/deepseek 这类唯一别名或完整 provider:model。")
     mainline_parser.add_argument("--max-tokens", type=int)
     mainline_parser.add_argument("--max-steps", type=int, default=6)
     mainline_parser.add_argument("--resume", action="store_true", help="续接最近或指定 session。")
