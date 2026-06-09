@@ -222,7 +222,7 @@ def test_cli_natural_language_resume_inherits_session_project(monkeypatch, tmp_p
 
     monkeypatch.setattr(cli, "ask_once", fake_ask_once)
 
-    assert cli.main(["继续看看这个课题"]) == 0
+    assert cli.main(["这个体系下一步怎么做"]) == 0
 
     assert captured["kwargs"]["session_id"] == session_id
     assert captured["kwargs"]["project"] == "MCH-Pt-Br"
