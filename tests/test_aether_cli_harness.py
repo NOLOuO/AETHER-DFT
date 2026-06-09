@@ -271,6 +271,25 @@ def test_cli_interactive_model_command_opens_selector(monkeypatch, tmp_path, cap
     assert '"model": "bailian:qwen3.7-max"' in out
 
 
+def test_cli_interactive_slash_opens_command_palette(monkeypatch, tmp_path, capsys):
+    import aether_dft.model_catalog as model_catalog
+    import aether_dft.paths as paths
+
+    monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(model_catalog, "PREFERENCES_PATH", tmp_path / "runtime" / "model-preferences.json")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    inputs = iter(["/", "1", "1", "/status", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    assert cli.main(["chat"]) == 0
+    out = capsys.readouterr().out
+    assert "slash commands" in out
+    assert "/model" in out
+    assert "select model" in out
+    assert "model switched" in out
+    assert '"model": "bailian:qwen3.7-max"' in out
+
+
 def test_cli_interactive_sessions_and_resume_command(monkeypatch, tmp_path, capsys):
     import aether_dft.paths as paths
     import aether_dft.session_store as session_store

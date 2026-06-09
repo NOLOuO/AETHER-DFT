@@ -192,7 +192,7 @@ def print_chat_home(*, session_id: str, project: str | None = None, model_id: st
 
 def print_chat_shortcuts() -> None:
     print("直接输入自然语言即可；模型会自己判断是否需要调用工具。")
-    print("可选快捷：/status 状态；/new 新会话；/resume 续接；/project 项目；/model 模型；/permission 权限；/exit 退出。")
+    print("输入 / 打开命令面板；也可直接用 /model、/project、/resume、/exit。")
 
 
 def _shorten_inline(value: Any, *, limit: int = 160) -> str:
@@ -207,6 +207,7 @@ def print_chat_help() -> None:
     print(f"{Colors.DIM}{'─' * 44}{Colors.RESET}")
     print("主流程：直接说科研目标、结构问题、计算方案或结果疑问；模型自行决定是否调用工具。")
     print("ask 权限模式下，写文件/提交作业/产生副作用时只会弹一次确认，再决定是否执行。")
+    print(f"  {Colors.GREEN}/{Colors.RESET}            打开命令面板")
     print(f"  {Colors.GREEN}/status{Colors.RESET}      当前 session/model/permission")
     print(f"  {Colors.GREEN}/sessions{Colors.RESET}    最近会话列表")
     print(f"  {Colors.GREEN}/new{Colors.RESET}         新开当前项目的 session")
@@ -220,6 +221,45 @@ def print_chat_help() -> None:
     print(f"  {Colors.GREEN}/clear{Colors.RESET}       清屏")
     print(f"  {Colors.GREEN}/exit{Colors.RESET}        退出")
     print(f"{Colors.DIM}{'─' * 44}{Colors.RESET}\n")
+
+
+CHAT_COMMAND_PALETTE: list[tuple[str, str]] = [
+    ("/model", "切换模型"),
+    ("/project", "切换 research 课题项目"),
+    ("/resume", "切换当前项目内的对话"),
+    ("/new", "新开当前项目会话"),
+    ("/status", "查看当前 session/model/project/permission"),
+    ("/sessions", "列出当前 scope 的最近会话"),
+    ("/permission", "切换权限模式"),
+    ("/context", "查看上下文预算和压缩状态"),
+    ("/preload", "查看本轮预加载设定"),
+    ("/recommend", "根据项目状态推荐下一步"),
+    ("/help", "查看帮助"),
+    ("/clear", "清屏"),
+    ("/exit", "退出"),
+]
+
+
+def handle_chat_command_palette() -> str | None:
+    print(f"{Colors.CYAN}slash commands{Colors.RESET}:")
+    for index, (command, description) in enumerate(CHAT_COMMAND_PALETTE, start=1):
+        print(f"  {index}. {Colors.GREEN}{command:<11}{Colors.RESET} {description}")
+    if not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty()):
+        print("非交互 stdin：请直接输入完整 slash command，例如 /model。")
+        return None
+    try:
+        choice = input("command> ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+    if not choice:
+        print("command cancelled")
+        return None
+    if choice.isdigit() and 1 <= int(choice) <= len(CHAT_COMMAND_PALETTE):
+        return CHAT_COMMAND_PALETTE[int(choice) - 1][0]
+    if not choice.startswith("/"):
+        choice = "/" + choice
+    return choice
 
 
 def print_chat_status(*, session_store: Any, session_id: str, project: str | None, args: argparse.Namespace | None = None) -> None:
@@ -1141,6 +1181,11 @@ def handle_chat(args: argparse.Namespace) -> int:
             return 0
         if not line:
             continue
+        if line in {"/", "/commands"}:
+            selected_command = handle_chat_command_palette()
+            if not selected_command:
+                continue
+            line = selected_command
         if line == "/help":
             print_chat_help()
             continue
