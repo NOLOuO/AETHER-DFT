@@ -89,11 +89,8 @@ def _matches_projects(text: str) -> bool:
 def _matches_status_overview(text: str) -> bool:
     return bool(
         re.search(
-            r"(看看|看下|现在|当前|目前|啥|什么).*(情况|状态|进度|队列|作业|jobs?)|"
-            r"(看看|看下).*(怎么样|如何)|"
-            r"(怎么样了|啥情况|什么情况)|"
-            r"(状态|进度|队列|作业)$|"
-            r"^(status|jobs?|queue)$",
+            r"^(status|jobs?|queue)$|"
+            r"^(队列|作业列表|作业状态)$",
             text,
         )
     )

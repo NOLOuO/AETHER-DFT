@@ -229,6 +229,19 @@ def test_cli_natural_language_resume_inherits_session_project(monkeypatch, tmp_p
     assert "已续接项目上下文" in capsys.readouterr().out
 
 
+def test_cli_natural_language_model_failure_is_user_readable(monkeypatch, capsys):
+    def fake_ask_once(prompt, **kwargs):
+        raise RuntimeError("DeepSeek 接口调用失败: Request timed out.")
+
+    monkeypatch.setattr(cli, "ask_once", fake_ask_once)
+
+    assert cli.main(["看看", "怎么样了"]) == 1
+    out = capsys.readouterr().out
+    assert "模型调用失败" in out
+    assert "Request timed out" in out
+    assert "Traceback" not in out
+
+
 def test_cli_interactive_status_and_context_shortcuts(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     inputs = iter(["/status", "/context", "/help", "/exit"])

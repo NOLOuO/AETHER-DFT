@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from aether_dft.model_catalog import load_model_catalog
+from aether_dft.model_catalog import load_model_catalog, normalize_model_id, split_model_id
 from dft_app.llm import DomesticCopilotLLM
 from dft_app.llm.llm_client import (
     _chat_tools_to_responses_tools,
@@ -42,6 +42,12 @@ def test_qwen37_uses_dashscope_beijing_openai_compatible_endpoint():
 def test_model_catalog_only_lists_project_fit_models():
     catalog = load_model_catalog(Path.cwd())
     assert set(catalog) == {"deepseek:deepseek-v4-pro", "bailian:qwen3.7-max"}
+
+
+def test_model_aliases_resolve_through_catalog_without_provider_specific_paths():
+    assert normalize_model_id("qwen") == "bailian:qwen3.7-max"
+    assert normalize_model_id("deepseek") == "deepseek:deepseek-v4-pro"
+    assert split_model_id("qwen") == ("bailian", "qwen3.7-max")
 
 
 def test_external_model_provider_config_extends_catalog(monkeypatch, tmp_path):

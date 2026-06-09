@@ -410,8 +410,9 @@ def test_research_workspace_tools_status_and_sync_dry_run(monkeypatch):
     assert captured["dry_run"] is False
 
 
-def test_turn_mode_infers_cluster_status_prompts_as_execution():
-    assert infer_turn_mode("看看怎么样了") == "execution"
+def test_turn_mode_uses_concrete_execution_evidence_not_user_phrases():
+    assert infer_turn_mode("看看怎么样了") == "discussion"
+    assert infer_turn_mode("这个体系下一步怎么做") == "discussion"
     assert infer_turn_mode("这个 OUTCAR 收敛了吗？") == "execution"
     assert infer_turn_mode("squeue 里 job_id 12345 状态") == "execution"
     assert infer_turn_mode("[execution-mode] 只做一次状态检查") == "execution"

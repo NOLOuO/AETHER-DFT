@@ -369,7 +369,7 @@ class ToolRegistry:
         self._register(ToolSpec("vasp_input_summary", "总结 VASP 输入。", {"run_root": {"type": "string"}}, True), self._vasp_input_summary)
         self._register(ToolSpec("cluster_probe", "探测 SSH/SLURM 集群。", {}, True), self._cluster_probe)
         self._register(ToolSpec("cluster_config", "读取集群配置。", {}, True), self._cluster_config)
-        self._register(ToolSpec("cluster_job_status_brief", "用户问'看看怎么样了'时秒回的轻量查询：单 job 的 squeue/sacct 状态 + elapsed + 节点。< 2 秒。", {"job_id": {"type": "string"}}, True, ("job_id",)), self._cluster_job_status_brief)
+        self._register(ToolSpec("cluster_job_status_brief", "轻量单 job 查询：squeue/sacct 状态 + elapsed + 节点。适合模型判断用户在问具体作业状态时调用。< 2 秒。", {"job_id": {"type": "string"}}, True, ("job_id",)), self._cluster_job_status_brief)
         self._register(ToolSpec("cluster_my_jobs", "squeue --me 简化版：列当前所有 running/pending job。< 2 秒。", {"limit": {"type": "integer"}}, True), self._cluster_my_jobs)
         self._register(ToolSpec("cluster_job_tail_log", "tail -n <lines> 集群上某 job 的日志（默认 vasp.out，找不到自动回落 logs/*、slurm.out、OSZICAR）。job_id 可用本地 run 记录反查 remote_run_root；也可直接传 remote_run_root。< 2 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "log_name": {"type": "string"}, "lines": {"type": "integer"}, "project_root": {"type": "string"}}, True), self._cluster_job_tail_log)
         self._register(ToolSpec("cluster_job_partial_outcar", "解析当前 OUTCAR 末段：能量 / 力 / ionic step / SCF 是否收敛。job_id 反查或直接 remote_run_root。< 3 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "project_root": {"type": "string"}}, True), self._cluster_job_partial_outcar)

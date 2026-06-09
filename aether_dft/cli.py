@@ -917,18 +917,23 @@ def handle_chat(args: argparse.Namespace) -> int:
 
     if prompt:
         stream_printer, stream_state = make_stream_printer()
-        record = ask_once(
-            prompt,
-            project=args.project,
-            model_id=args.model,
-            max_tokens=args.max_tokens,
-            max_steps=args.max_steps,
-            session_id=session_id,
-            permission_mode=get_permission_mode(),
-            progress_callback=make_chat_progress_printer(),
-            permission_prompt_callback=make_permission_prompt_callback(),
-            stream_callback=stream_printer,
-        )
+        try:
+            record = ask_once(
+                prompt,
+                project=args.project,
+                model_id=args.model,
+                max_tokens=args.max_tokens,
+                max_steps=args.max_steps,
+                session_id=session_id,
+                permission_mode=get_permission_mode(),
+                progress_callback=make_chat_progress_printer(),
+                permission_prompt_callback=make_permission_prompt_callback(),
+                stream_callback=stream_printer,
+            )
+        except Exception as exc:
+            print(f"{Colors.RED}模型调用失败{Colors.RESET}: {_shorten_inline(str(exc), limit=360)}")
+            print(f"{Colors.DIM}可以稍后重试，或临时切换同类 OpenAI-compatible 后端：aether chat --model qwen <你的问题>{Colors.RESET}")
+            return 1
         print_streamed_or_final_response(record, stream_state)
         print()
         print_turn_footer(record)
@@ -1847,14 +1852,6 @@ def main(argv: list[str] | None = None) -> int:
     if raw_args and raw_args[0] == "dft":
         return handle_dft(argparse.Namespace(dft_args=raw_args[1:]))
     if raw_args and raw_args[0] not in TOP_LEVEL_COMMANDS and not raw_args[0].startswith("-"):
-        query = " ".join(raw_args).strip()
-        from .fast_path import dispatch_fast_path
-
-        fast = dispatch_fast_path(query)
-        if fast.handled:
-            if fast.text:
-                print(fast.text)
-            return int(fast.exit_code)
         return handle_chat(
             argparse.Namespace(
                 prompt=raw_args,

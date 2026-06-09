@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from aether_dft.fast_path import FastPathResponse, dispatch_fast_path
+from aether_dft.fast_path import dispatch_fast_path
 
 
 class FakeRegistry:
@@ -59,15 +59,23 @@ class FakeRegistry:
         raise AssertionError(f"unexpected tool: {name}")
 
 
-def test_fast_path_status_overview_uses_cluster_my_jobs():
+def test_fast_path_explicit_jobs_command_uses_cluster_my_jobs():
     registry = FakeRegistry()
-    response = dispatch_fast_path("看看怎么样了", registry=registry)
+    response = dispatch_fast_path("jobs", registry=registry)
 
     assert response.handled is True
     assert response.route == "my_jobs"
     assert registry.calls == [("cluster_my_jobs", {"limit": 20})]
     assert "12345" in response.text
     assert "未调用 LLM" in response.text
+
+
+def test_fast_path_misses_vague_natural_language_status_prompt():
+    registry = FakeRegistry()
+    response = dispatch_fast_path("看看怎么样了", registry=registry)
+
+    assert response.handled is False
+    assert registry.calls == []
 
 
 def test_fast_path_single_job_status_tails_log():
@@ -102,15 +110,26 @@ def test_fast_path_misses_open_ended_science_prompt():
     assert response.handled is False
 
 
-def test_cli_top_level_fast_path_bypasses_parser_and_llm(monkeypatch, capsys):
+def test_cli_top_level_natural_language_does_not_bypass_model(monkeypatch, capsys):
     import aether_dft.fast_path as fast_path
     from aether_dft import cli
+
+    captured = {}
 
     monkeypatch.setattr(
         fast_path,
         "dispatch_fast_path",
-        lambda query: FastPathResponse(True, text=f"FAST:{query}", route="test"),
+        lambda query: (_ for _ in ()).throw(AssertionError("free-form natural language must not use fast-path")),
+    )
+    monkeypatch.setattr(
+        cli,
+        "ask_once",
+        lambda prompt, **kwargs: captured.setdefault(
+            "record",
+            {"response": "MODEL", "record_path": "trace.jsonl", "tool_executions": [], "progress": {"next_steps": []}},
+        ),
     )
 
     assert cli.main(["看看", "怎么样了"]) == 0
-    assert "FAST:看看 怎么样了" in capsys.readouterr().out
+    assert "MODEL" in capsys.readouterr().out
+    assert captured["record"]["response"] == "MODEL"

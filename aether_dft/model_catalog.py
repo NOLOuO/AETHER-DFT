@@ -38,12 +38,42 @@ def canonical_model_id(provider_id: str, model_name: str) -> str:
     return f"{provider_id}:{model_name}"
 
 
+def normalize_model_id(model_id: str, app_root: Path = PROJECT_ROOT) -> str:
+    raw = str(model_id or "").strip()
+    if not raw:
+        raise ValueError("模型 ID 不能为空")
+    if ":" in raw:
+        provider_id, model_name = raw.split(":", 1)
+        if not provider_id or not model_name:
+            raise ValueError("模型 ID 必须形如 provider:model，例如 deepseek:deepseek-v4-pro；也可以输入能唯一匹配的别名，例如 qwen")
+        return canonical_model_id(provider_id, model_name)
+
+    query = raw.lower()
+    matches: list[str] = []
+    for item in load_model_catalog(app_root).values():
+        fields = {
+            item.model_id.lower(),
+            item.provider_id.lower(),
+            item.model_name.lower(),
+            item.api_model.lower(),
+            item.display_name.lower(),
+        }
+        if query in fields or any(query in field for field in fields):
+            matches.append(item.model_id)
+
+    matches = sorted(set(matches))
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise ValueError("模型 ID 必须形如 provider:model，或输入模型目录里能唯一匹配的别名，例如 qwen/deepseek")
+    raise ValueError(f"模型别名不唯一：{raw} -> {', '.join(matches)}；请使用完整 provider:model")
+
+
 def split_model_id(model_id: str) -> tuple[str, str]:
-    if ":" not in model_id:
-        raise ValueError("模型 ID 必须形如 provider:model，例如 deepseek:deepseek-v4-pro")
+    model_id = normalize_model_id(model_id)
     provider_id, model_name = model_id.split(":", 1)
     if not provider_id or not model_name:
-        raise ValueError("模型 ID 必须形如 provider:model，例如 deepseek:deepseek-v4-pro")
+        raise ValueError("模型 ID 必须形如 provider:model，例如 deepseek:deepseek-v4-pro；也可以输入能唯一匹配的别名，例如 qwen")
     return provider_id, model_name
 
 
@@ -138,6 +168,7 @@ def resolve_effective_provider_model() -> tuple[str, str]:
 
 
 def set_default_model(model_id: str) -> dict[str, Any]:
+    model_id = normalize_model_id(model_id)
     provider_id, model_name = split_model_id(model_id)
     build_provider_model_config(provider_id, model_name)
     preferences = _load_preferences()

@@ -170,10 +170,6 @@ def infer_turn_mode(prompt: str) -> str:
         "日志",
         "收敛",
         "能量",
-        "看看怎么样",
-        "怎么样了",
-        "现在情况",
-        "跑得怎么样",
     ]
     return "execution" if any(marker in text for marker in execution_markers) else "discussion"
 
