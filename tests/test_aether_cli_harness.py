@@ -343,6 +343,38 @@ def test_cli_interactive_project_command_opens_selector(monkeypatch, tmp_path, c
     assert '"project": "MCH-Pt-Br"' in out
 
 
+def test_cli_interactive_permission_command_opens_selector(monkeypatch, tmp_path, capsys):
+    import aether_dft.paths as paths
+    import aether_dft.permissions as permissions
+
+    monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(permissions, "PERMISSIONS_PATH", tmp_path / "runtime" / "permissions.json")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    inputs = iter(["/permission", "2", "/status", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    assert cli.main(["chat"]) == 0
+    out = capsys.readouterr().out
+    assert "select permission" in out
+    assert "permission switched" in out
+    assert '"mode": "ask"' in out
+
+
+def test_cli_interactive_new_command_starts_fresh_session(monkeypatch, tmp_path, capsys):
+    import aether_dft.paths as paths
+
+    monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    inputs = iter(["/new", "/status", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    assert cli.main(["chat", "--project", "MCH-Pt-Br"]) == 0
+    out = capsys.readouterr().out
+    assert "new session" in out
+    assert '"project": "MCH-Pt-Br"' in out
+    assert '"turn_count": 0' in out
+
+
 def test_cli_mainline_prints_explicit_workflow(capsys):
     assert cli.main(["mainline"]) == 0
     out = capsys.readouterr().out

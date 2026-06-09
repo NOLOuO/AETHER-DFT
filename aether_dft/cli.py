@@ -192,7 +192,7 @@ def print_chat_home(*, session_id: str, project: str | None = None, model_id: st
 
 def print_chat_shortcuts() -> None:
     print("直接输入自然语言即可；模型会自己判断是否需要调用工具。")
-    print("可选快捷：/status 状态；/sessions 会话；/resume 续接选择器；/project 项目选择器；/model 模型选择器；/exit 退出。")
+    print("可选快捷：/status 状态；/new 新会话；/resume 续接；/project 项目；/model 模型；/permission 权限；/exit 退出。")
 
 
 def _shorten_inline(value: Any, *, limit: int = 160) -> str:
@@ -209,11 +209,12 @@ def print_chat_help() -> None:
     print("ask 权限模式下，写文件/提交作业/产生副作用时只会弹一次确认，再决定是否执行。")
     print(f"  {Colors.GREEN}/status{Colors.RESET}      当前 session/model/permission")
     print(f"  {Colors.GREEN}/sessions{Colors.RESET}    最近会话列表")
+    print(f"  {Colors.GREEN}/new{Colors.RESET}         新开当前项目的 session")
     print(f"  {Colors.GREEN}/resume{Colors.RESET}      打开会话续接选择器")
     print(f"  {Colors.GREEN}/preload{Colors.RESET}     模型本轮会预加载哪些设定")
     print(f"  {Colors.GREEN}/context{Colors.RESET}     当前 1M context budget 与压缩状态")
     print(f"  {Colors.GREEN}/model{Colors.RESET}       打开模型选择器")
-    print(f"  {Colors.GREEN}/permission{Colors.RESET}  完全开发 / 需要用户同意")
+    print(f"  {Colors.GREEN}/permission{Colors.RESET}  打开权限模式选择器")
     print(f"  {Colors.GREEN}/project{Colors.RESET}     打开项目选择器")
     print(f"  {Colors.GREEN}/recommend{Colors.RESET}   推荐下一步科研任务")
     print(f"  {Colors.GREEN}/clear{Colors.RESET}       清屏")
@@ -534,9 +535,27 @@ def handle_chat_model_command(line: str, args: argparse.Namespace) -> None:
 def handle_chat_permission_command(line: str) -> None:
     raw = line[len("/permission") :].strip()
     if not raw:
-        print(f"{Colors.CYAN}permission{Colors.RESET}: {Colors.YELLOW}{get_permission_mode()}{Colors.RESET} / {permission_mode_label()}")
-        print("切换：/permission dev（完全开发） 或 /permission ask（需要用户同意）")
-        return
+        current = get_permission_mode()
+        options = [("dev", "完全开发：低风险可逆动作自动推进"), ("ask", "需要用户同意：写入/提交等副作用前确认")]
+        print(f"{Colors.CYAN}select permission{Colors.RESET} (current: {Colors.YELLOW}{current} / {permission_mode_label()}{Colors.RESET})")
+        for index, (mode, label) in enumerate(options, start=1):
+            marker = "*" if mode == current else " "
+            print(f"  {index}. {marker} {mode}  {Colors.DIM}{label}{Colors.RESET}")
+        if not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty()):
+            print("非交互 stdin：请使用 /permission dev 或 /permission ask。")
+            return
+        try:
+            choice = input("permission> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if not choice:
+            print("permission unchanged")
+            return
+        if choice.isdigit() and 1 <= int(choice) <= len(options):
+            raw = options[int(choice) - 1][0]
+        else:
+            raw = choice
     try:
         payload = set_permission_mode(raw)
     except Exception as exc:
@@ -1135,6 +1154,13 @@ def handle_chat(args: argparse.Namespace) -> int:
             continue
         if line == "/sessions":
             print_chat_sessions(session_store=session_store, project=args.project)
+            continue
+        if line.startswith("/new"):
+            raw_project = line[len("/new") :].strip()
+            if raw_project:
+                args.project = None if raw_project in {"none", "clear", "no-project"} else raw_project
+            session_id = session_store.start_session(project=args.project)
+            print(f"{Colors.GREEN}new session{Colors.RESET}: {session_id} project={args.project or 'none'}")
             continue
         if line.startswith("/resume"):
             session_id = handle_chat_resume_command(line, args, session_store, session_id)
