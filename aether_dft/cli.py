@@ -192,7 +192,7 @@ def print_chat_home(*, session_id: str, project: str | None = None, model_id: st
 
 def print_chat_shortcuts() -> None:
     print("直接输入自然语言即可；模型会自己判断是否需要调用工具。")
-    print("可选快捷：/status 状态；/sessions 会话；/resume 续接；/model 切换模型；/permission 权限；/exit 退出。")
+    print("可选快捷：/status 状态；/sessions 会话；/resume 续接；/model 模型选择器；/permission 权限；/exit 退出。")
 
 
 def _shorten_inline(value: Any, *, limit: int = 160) -> str:
@@ -212,7 +212,7 @@ def print_chat_help() -> None:
     print(f"  {Colors.GREEN}/resume [id]{Colors.RESET} 续接最近或指定 session")
     print(f"  {Colors.GREEN}/preload{Colors.RESET}     模型本轮会预加载哪些设定")
     print(f"  {Colors.GREEN}/context{Colors.RESET}     当前 1M context budget 与压缩状态")
-    print(f"  {Colors.GREEN}/model{Colors.RESET}       查看或切换 deepseek/qwen")
+    print(f"  {Colors.GREEN}/model{Colors.RESET}       打开模型选择器")
     print(f"  {Colors.GREEN}/permission{Colors.RESET}  完全开发 / 需要用户同意")
     print(f"  {Colors.GREEN}/project{Colors.RESET}     当前项目状态")
     print(f"  {Colors.GREEN}/recommend{Colors.RESET}   推荐下一步科研任务")
@@ -411,12 +411,35 @@ def print_turn_footer(record: dict[str, Any]) -> None:
 
 def handle_chat_model_command(line: str, args: argparse.Namespace) -> None:
     raw = line[len("/model") :].strip()
-    if raw in {"", "current", "list"}:
-        current = active_model_id(args)
+    current = active_model_id(args)
+    catalog = load_model_catalog(Path.cwd())
+    if raw in {"current", "list"}:
         print(f"{Colors.CYAN}current model{Colors.RESET}: {Colors.YELLOW}{current}{Colors.RESET}")
-        print(format_model_table(load_model_catalog(Path.cwd()), current))
-        print("切换：/model qwen  或  /model deepseek；也支持完整 provider:model。")
+        print(format_model_table(catalog, current))
         return
+    if raw == "":
+        models = sorted(catalog)
+        print(f"{Colors.CYAN}select model{Colors.RESET} (current: {Colors.YELLOW}{current}{Colors.RESET})")
+        for index, model_id in enumerate(models, start=1):
+            item = catalog[model_id]
+            marker = "*" if model_id == current else " "
+            status = "available" if item.available else f"missing key: {item.api_key_env}"
+            print(f"  {index}. {marker} {model_id}  [{status}]")
+        if not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty()):
+            print("非交互 stdin：输入 /model <编号或别名> 可直接切换。")
+            return
+        try:
+            choice = input("model> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if not choice:
+            print("model unchanged")
+            return
+        if choice.isdigit() and 1 <= int(choice) <= len(models):
+            raw = models[int(choice) - 1]
+        else:
+            raw = choice
     if raw.startswith("set "):
         raw = raw[4:].strip()
     try:

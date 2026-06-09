@@ -253,18 +253,19 @@ def test_cli_interactive_status_and_context_shortcuts(monkeypatch, capsys):
     assert "AETHER interactive chat" in out
 
 
-def test_cli_interactive_model_command_accepts_catalog_alias(monkeypatch, tmp_path, capsys):
+def test_cli_interactive_model_command_opens_selector(monkeypatch, tmp_path, capsys):
     import aether_dft.model_catalog as model_catalog
     import aether_dft.paths as paths
 
     monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path / "runtime")
     monkeypatch.setattr(model_catalog, "PREFERENCES_PATH", tmp_path / "runtime" / "model-preferences.json")
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    inputs = iter(["/model qwen", "/status", "/exit"])
+    inputs = iter(["/model", "1", "/status", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
 
     assert cli.main(["chat"]) == 0
     out = capsys.readouterr().out
+    assert "select model" in out
     assert "model switched" in out
     assert "bailian:qwen3.7-max" in out
     assert '"model": "bailian:qwen3.7-max"' in out
