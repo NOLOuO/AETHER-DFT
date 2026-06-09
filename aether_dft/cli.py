@@ -192,7 +192,7 @@ def print_chat_home(*, session_id: str, project: str | None = None, model_id: st
 
 def print_chat_shortcuts() -> None:
     print("直接输入自然语言即可；模型会自己判断是否需要调用工具。")
-    print("可选快捷：/status 状态；/sessions 会话；/resume 续接；/model 模型选择器；/permission 权限；/exit 退出。")
+    print("可选快捷：/status 状态；/sessions 会话；/resume 续接选择器；/project 项目选择器；/model 模型选择器；/exit 退出。")
 
 
 def _shorten_inline(value: Any, *, limit: int = 160) -> str:
@@ -209,12 +209,12 @@ def print_chat_help() -> None:
     print("ask 权限模式下，写文件/提交作业/产生副作用时只会弹一次确认，再决定是否执行。")
     print(f"  {Colors.GREEN}/status{Colors.RESET}      当前 session/model/permission")
     print(f"  {Colors.GREEN}/sessions{Colors.RESET}    最近会话列表")
-    print(f"  {Colors.GREEN}/resume [id]{Colors.RESET} 续接最近或指定 session")
+    print(f"  {Colors.GREEN}/resume{Colors.RESET}      打开会话续接选择器")
     print(f"  {Colors.GREEN}/preload{Colors.RESET}     模型本轮会预加载哪些设定")
     print(f"  {Colors.GREEN}/context{Colors.RESET}     当前 1M context budget 与压缩状态")
     print(f"  {Colors.GREEN}/model{Colors.RESET}       打开模型选择器")
     print(f"  {Colors.GREEN}/permission{Colors.RESET}  完全开发 / 需要用户同意")
-    print(f"  {Colors.GREEN}/project{Colors.RESET}     当前项目状态")
+    print(f"  {Colors.GREEN}/project{Colors.RESET}     打开项目选择器")
     print(f"  {Colors.GREEN}/recommend{Colors.RESET}   推荐下一步科研任务")
     print(f"  {Colors.GREEN}/clear{Colors.RESET}       清屏")
     print(f"  {Colors.GREEN}/exit{Colors.RESET}        退出")
@@ -270,10 +270,35 @@ def print_resume_preview(payload: dict[str, Any]) -> None:
 
 def handle_chat_resume_command(line: str, args: argparse.Namespace, session_store: Any, current_session_id: str) -> str:
     raw = line[len("/resume") :].strip()
-    if raw in {"", "latest"}:
-        payload = session_store.resume_payload(project=args.project)
-    else:
-        payload = session_store.resume_payload(session_id=raw)
+    if raw == "":
+        sessions = session_store.list_sessions(project=args.project, limit=10)
+        if not sessions:
+            print("没有可续接的 session。")
+            return current_session_id
+        print(f"{Colors.CYAN}resume session{Colors.RESET}:")
+        for index, item in enumerate(sessions, start=1):
+            first = _shorten_inline(item.first_prompt, limit=64) or "empty"
+            print(f"  {index}. {item.session_id}  project={item.project or 'none'} turns={item.turn_count}")
+            print(f"     {Colors.DIM}{first}{Colors.RESET}")
+        if not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty()):
+            print("非交互 stdin：请使用 /resume latest 或 /resume <session_id>。")
+            return current_session_id
+        try:
+            choice = input("resume> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return current_session_id
+        if not choice:
+            print("session unchanged")
+            return current_session_id
+        if choice.isdigit() and 1 <= int(choice) <= len(sessions):
+            raw = sessions[int(choice) - 1].session_id
+        else:
+            raw = choice
+    try:
+        payload = session_store.resume_payload(project=args.project) if raw == "latest" else session_store.resume_payload(session_id=raw)
+    except Exception:
+        payload = {"status": "missing"}
     if payload.get("status") != "ok":
         print("没有找到可续接的 session。用 /sessions 查看最近会话。")
         return current_session_id
@@ -283,6 +308,60 @@ def handle_chat_resume_command(line: str, args: argparse.Namespace, session_stor
         args.project = str(resumed_project)
     print_resume_preview(payload)
     return str(payload["session_id"])
+
+
+def handle_chat_project_command(line: str, args: argparse.Namespace, session_store: Any, current_session_id: str) -> str:
+    raw = line[len("/project") :].strip()
+    if raw in {"current", "show"}:
+        if not args.project:
+            print("当前没有绑定项目。输入 /project 打开项目选择器。")
+            return current_session_id
+        print_json({"project": load_project(args.project), "context": read_project_context(args.project)})
+        return current_session_id
+    if raw in {"", "list"}:
+        projects = list_projects()
+        if not projects:
+            print("还没有项目。可以继续自然语言说明课题，或先用 project init 创建。")
+            return current_session_id
+        print(f"{Colors.CYAN}select project{Colors.RESET} (current: {Colors.YELLOW}{args.project or 'none'}{Colors.RESET})")
+        for index, item in enumerate(projects, start=1):
+            slug = str(item.get("slug") or item.get("name") or "")
+            title = str(item.get("title") or item.get("name") or slug)
+            marker = "*" if slug == args.project else " "
+            print(f"  {index}. {marker} {slug}  {Colors.DIM}{_shorten_inline(title, limit=60)}{Colors.RESET}")
+        if raw == "list" or not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty()):
+            print("非交互 stdin：请使用 /project <slug>；交互式输入 /project 后可选编号。")
+            return current_session_id
+        try:
+            choice = input("project> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return current_session_id
+        if not choice:
+            print("project unchanged")
+            return current_session_id
+        if choice.isdigit() and 1 <= int(choice) <= len(projects):
+            raw = str(projects[int(choice) - 1].get("slug") or projects[int(choice) - 1].get("name") or "")
+        else:
+            raw = choice
+    if raw in {"none", "clear", "unbind"}:
+        args.project = None
+        session_id = session_store.start_session(project=None)
+        print(f"{Colors.GREEN}project cleared{Colors.RESET}; new session: {session_id}")
+        return session_id
+    try:
+        project = load_project(raw)
+    except Exception as exc:
+        print(f"{Colors.RED}project switch failed{Colors.RESET}: {exc}")
+        return current_session_id
+    slug = str(project.get("slug") or raw)
+    args.project = slug
+    session_id = session_store.latest_session_id(project=slug) or session_store.start_session(project=slug)
+    print(f"{Colors.GREEN}project switched{Colors.RESET}: {Colors.YELLOW}{slug}{Colors.RESET}")
+    payload = session_store.resume_payload(session_id=session_id)
+    if payload.get("status") == "ok":
+        print_resume_preview(payload)
+    return session_id
 
 
 def print_chat_context_status(*, session_store: Any, session_id: str) -> None:
@@ -1123,11 +1202,8 @@ def handle_chat(args: argparse.Namespace) -> int:
             )
             print_json(plan.to_dict())
             continue
-        if line == "/project":
-            if not args.project:
-                print("no project bound; restart with --project <slug>")
-                continue
-            print_json({"project": load_project(args.project), "context": read_project_context(args.project)})
+        if line.startswith("/project"):
+            session_id = handle_chat_project_command(line, args, session_store, session_id)
             continue
         if line.startswith("/recommend"):
             from .recommendations import recommend_next_tasks

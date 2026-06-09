@@ -288,13 +288,58 @@ def test_cli_interactive_sessions_and_resume_command(monkeypatch, tmp_path, caps
     inputs = iter(["/sessions", f"/resume {older}", "/status", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
 
-    assert cli.main([]) == 0
+    assert cli.main(["chat"]) == 0
     out = capsys.readouterr().out
     assert "recent sessions" in out
     assert older in out
     assert newer in out
     assert f"resumed" in out
     assert f'"id": "{older}"' in out
+    assert '"project": "MCH-Pt-Br"' in out
+
+
+def test_cli_interactive_resume_command_opens_selector(monkeypatch, tmp_path, capsys):
+    import aether_dft.paths as paths
+    import aether_dft.session_store as session_store
+
+    runtime_dir = tmp_path / "runtime"
+    monkeypatch.setattr(paths, "RUNTIME_DIR", runtime_dir)
+
+    store = session_store.AetherSessionStore()
+    older = store.start_session(project="MCH-Pt-Br", first_prompt="old")
+    store.append_turn(older, {"project": "MCH-Pt-Br", "prompt": "old", "response": "old response"})
+    newer = store.start_session(project="Other", first_prompt="new")
+    store.append_turn(newer, {"project": "Other", "prompt": "new", "response": "new response"})
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    inputs = iter(["/resume", "3", "/status", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    assert cli.main(["chat"]) == 0
+    out = capsys.readouterr().out
+    assert "resume session" in out
+    assert older in out
+    assert newer in out
+    assert f'"id": "{older}"' in out
+    assert '"project": "MCH-Pt-Br"' in out
+
+
+def test_cli_interactive_project_command_opens_selector(monkeypatch, tmp_path, capsys):
+    import aether_dft.paths as paths
+
+    monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(cli, "list_projects", lambda: [{"slug": "MCH-Pt-Br", "title": "MCH on Pt"}])
+    monkeypatch.setattr(cli, "load_project", lambda slug: {"slug": slug, "title": "MCH on Pt"})
+    monkeypatch.setattr(cli, "read_project_context", lambda slug: f"context for {slug}")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    inputs = iter(["/project", "1", "/status", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    assert cli.main(["chat"]) == 0
+    out = capsys.readouterr().out
+    assert "select project" in out
+    assert "project switched" in out
+    assert "MCH-Pt-Br" in out
     assert '"project": "MCH-Pt-Br"' in out
 
 
