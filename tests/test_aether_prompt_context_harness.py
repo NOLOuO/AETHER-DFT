@@ -113,3 +113,30 @@ def test_project_state_markdown_is_written(tmp_path: Path, monkeypatch):
     assert text.startswith("---")
     assert "current_focus" in text
     assert "项目状态" in text
+
+
+def test_project_state_lists_research_workspace_projects(tmp_path: Path, monkeypatch):
+    from aether_dft import research_workspace
+
+    research_root = tmp_path / "research"
+    project_root = research_root / "MCH-Pt-Br"
+    project_root.mkdir(parents=True)
+    (research_root / "Common").mkdir()
+    (project_root / "研究进展.md").write_text("MCH 研究进展来自 research。", encoding="utf-8")
+    (project_root / "common").mkdir()
+    (project_root / "common" / "规则.md").write_text("项目规则。", encoding="utf-8")
+    monkeypatch.setattr(research_workspace, "RESEARCH_ROOT", research_root)
+    monkeypatch.setattr(research_workspace, "COMMON_DIR", research_root / "Common")
+
+    projects = project_state.list_projects()
+    assert projects[0]["slug"] == "MCH-Pt-Br"
+    assert projects[0]["source"] == "research"
+    assert projects[0]["research_project"] is True
+
+    loaded = project_state.load_project("mch pt br")
+    assert loaded["slug"] == "MCH-Pt-Br"
+    assert loaded["research"]["root"].endswith("MCH-Pt-Br")
+
+    context = project_state.read_project_context("MCH-Pt-Br")
+    assert "MCH 研究进展来自 research" in context
+    assert "项目规则" in context

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .paths import KNOWLEDGE_BASE_DIR, PROJECTS_DIR, ensure_project_dirs
+from .research_workspace import list_research_projects, read_research_onboarding_context, resolve_research_project
 
 
 def slugify(value: str) -> str:
@@ -174,17 +175,73 @@ def init_project(name: str, *, description: str = "", overwrite: bool = False) -
 
 def list_projects() -> list[dict[str, Any]]:
     ensure_project_dirs()
-    items: list[dict[str, Any]] = []
+    items_by_key: dict[str, dict[str, Any]] = {}
+    for slug in list_research_projects():
+        research_paths = resolve_research_project(slug)
+        title = slug
+        updated_at = ""
+        progress_path = str(research_paths.progress) if research_paths else ""
+        if research_paths and research_paths.progress.exists():
+            try:
+                updated_at = datetime.fromtimestamp(research_paths.progress.stat().st_mtime).astimezone().isoformat(timespec="seconds")
+            except Exception:
+                updated_at = ""
+        items_by_key[slugify(slug)] = {
+            "slug": slug,
+            "name": slug,
+            "title": title,
+            "description": f"research/{slug}",
+            "status": "active",
+            "source": "research",
+            "research_project": True,
+            "research_root": str(research_paths.root) if research_paths else "",
+            "research_progress": progress_path,
+            "updated_at": updated_at,
+        }
     for metadata_path in sorted(PROJECTS_DIR.glob("*/project.json")):
         try:
             data = json.loads(metadata_path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        items.append(data)
-    return items
+        slug = str(data.get("slug") or metadata_path.parent.name)
+        key = slugify(slug)
+        if key in items_by_key:
+            merged = dict(data)
+            merged.update({k: v for k, v in items_by_key[key].items() if v not in ("", None, [], {})})
+            merged["source"] = "research+aether"
+            items_by_key[key] = merged
+        else:
+            data.setdefault("slug", slug)
+            data.setdefault("source", "aether")
+            data.setdefault("research_project", False)
+            items_by_key[key] = data
+    return sorted(items_by_key.values(), key=lambda item: (0 if item.get("research_project") else 1, str(item.get("slug") or "").lower()))
 
 
 def load_project(slug: str) -> dict[str, Any]:
+    research_paths = resolve_research_project(slug)
+    if research_paths is not None:
+        metadata: dict[str, Any] = {
+            "slug": research_paths.slug,
+            "name": research_paths.slug,
+            "title": research_paths.slug,
+            "description": f"research/{research_paths.slug}",
+            "status": "active",
+            "source": "research",
+            "research_project": True,
+            "research": research_paths.to_dict(),
+        }
+        aether_paths = project_paths(research_paths.slug)
+        if aether_paths.metadata.exists():
+            try:
+                saved = json.loads(aether_paths.metadata.read_text(encoding="utf-8"))
+                metadata.update({k: v for k, v in saved.items() if v not in ("", None, [], {})})
+                metadata["source"] = "research+aether"
+                metadata["research_project"] = True
+                metadata["research"] = research_paths.to_dict()
+            except Exception:
+                pass
+        return metadata
     paths = project_paths(slug)
     if not paths.metadata.exists():
         raise FileNotFoundError(f"项目不存在: {slug}")
@@ -198,8 +255,13 @@ def _truncate_text(text: str, max_chars: int | None) -> str:
 
 
 def read_project_context(slug: str, *, max_chars: int | None = None) -> str:
+    research_paths = resolve_research_project(slug)
     paths = project_paths(slug)
     parts = []
+    if research_paths is not None:
+        onboarding = read_research_onboarding_context(research_paths.slug, max_chars=max_chars or 14000)
+        if str(onboarding.get("context") or "").strip():
+            parts.append("## Research workspace context\n" + str(onboarding.get("context") or ""))
     if paths.state_md.exists():
         parts.append("## Project state markdown\n" + paths.state_md.read_text(encoding="utf-8"))
     if paths.metadata.exists():
@@ -214,8 +276,13 @@ def read_project_context(slug: str, *, max_chars: int | None = None) -> str:
 def read_project_context_digest(slug: str, *, max_chars: int = 7000) -> str:
     """Prompt-safe project context: current state first, newest progress next."""
 
+    research_paths = resolve_research_project(slug)
     paths = project_paths(slug)
     parts = []
+    if research_paths is not None:
+        onboarding = read_research_onboarding_context(research_paths.slug, max_chars=max_chars)
+        if str(onboarding.get("context") or "").strip():
+            parts.append("## Research workspace digest\n" + str(onboarding.get("context") or ""))
     if paths.metadata.exists():
         parts.append("## Project metadata\n" + paths.metadata.read_text(encoding="utf-8"))
     if paths.state.exists():

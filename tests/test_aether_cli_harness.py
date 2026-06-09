@@ -324,6 +324,32 @@ def test_cli_interactive_resume_command_opens_selector(monkeypatch, tmp_path, ca
     assert '"project": "MCH-Pt-Br"' in out
 
 
+def test_cli_interactive_resume_is_scoped_to_current_project(monkeypatch, tmp_path, capsys):
+    import aether_dft.paths as paths
+    import aether_dft.session_store as session_store
+
+    runtime_dir = tmp_path / "runtime"
+    monkeypatch.setattr(paths, "RUNTIME_DIR", runtime_dir)
+
+    store = session_store.AetherSessionStore()
+    target = store.start_session(project="MCH-Pt-Br", first_prompt="target")
+    store.append_turn(target, {"project": "MCH-Pt-Br", "prompt": "target", "response": "target response"})
+    other = store.start_session(project="Other", first_prompt="other")
+    store.append_turn(other, {"project": "Other", "prompt": "other", "response": "other response"})
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    inputs = iter(["/resume", "2", "/status", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    assert cli.main(["chat", "--project", "MCH-Pt-Br"]) == 0
+    out = capsys.readouterr().out
+    assert "resume session" in out
+    assert target in out
+    assert other not in out
+    assert f'"id": "{target}"' in out
+    assert '"project": "MCH-Pt-Br"' in out
+
+
 def test_cli_interactive_project_command_opens_selector(monkeypatch, tmp_path, capsys):
     import aether_dft.paths as paths
 
