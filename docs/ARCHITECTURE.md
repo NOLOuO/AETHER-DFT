@@ -1,6 +1,6 @@
 # AETHER-DFT Architecture
 
-AETHER-DFT 采用类似 Codex / Claude Code / My-Agent 的分层 harness 结构：模型只负责推理，项目本身负责工具、状态、记忆、任务和可验证执行。
+AETHER-DFT 采用类似 Codex / Claude Code 的分层 harness 结构：模型只负责推理，项目本身负责工具、状态、记忆、任务和可验证执行。
 
 ## 目录分层
 
@@ -59,14 +59,14 @@ client.chat.completions.create(
 2. DFT 主线优先从 `semi_auto_dft` 继承。
 3. 结构/结果工具优先从 `dft_tools/dft_shared` 继承。
 4. 后续项目状态、知识库和长期记忆再从 `research-copilot` / `DeepScientist` 抽象接入。
-5. 对话式工作流外壳借鉴 `My-Agent`，但用户侧入口统一收敛到 `aether-dft`。
+5. 对话式外壳统一收敛到 `aether-dft`：持续 REPL、命令面板、项目/会话/模型选择器。
 
 ## 下一阶段接口目标
 
 - `python -m aether_dft`：标准包入口，等价于 `aether`。
-- `aether-dft mainline`：显式主线入口，讨论 → 方案 → 结构 → 推荐。
+- `aether-dft` / `python -m aether_dft`：默认进入持续 REPL；输入 `/` 打开命令面板。
 - `aether-dft doctor`：检查本地运行时。
-- `aether-dft chat`：对话式科研合伙人主入口。
+- `aether-dft "自然语言科研问题"`：一次性模型主导回合；模型按证据选择工具。
 - `aether-dft project ...`：创建/进入项目。
 - `aether-dft run ...`：把自然语言研究任务转入 DFT 主线。
 - `dft ...`：保留底层 DFT 自动化 CLI。
@@ -105,3 +105,4 @@ AETHER-DFT 现在有一层轻量 Codex/Claude Code-like harness：
 - `aether-dft adsorption plan`：在缺 slab/adsorbate/material 时不假装能算，而是给出 concrete missing inputs。
 - `aether-dft adsorption candidates`：复用 `dft_app` 的吸附候选生成器，产出 manifest、candidate POSCAR/CIF。
 - `chat` REPL `/adsorb` 与 `/recommend`：让对话入口具备“科研合伙人持续推进”能力。
+

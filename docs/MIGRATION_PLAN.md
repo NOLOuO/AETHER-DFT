@@ -17,4 +17,5 @@
 1. `research-copilot/core/project.py` 的项目容器和状态目录。
 2. `research-copilot/agent/research_automation` 的 harvest / knowledge_base 流。
 3. `dft_tools` 的 `.xsd <-> POSCAR` 明确工具入口。
-4. My-Agent 的 `.my-agent` 风格运行时和 workflow command 外壳。
+4. 交互式运行时和 slash-command 外壳。
+

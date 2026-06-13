@@ -448,7 +448,7 @@ def test_cli_mainline_prints_explicit_workflow(capsys):
     assert cli.main(["mainline"]) == 0
     out = capsys.readouterr().out
     assert "AETHER-DFT mainline" in out
-    assert "discussion -> plan -> structure -> recommend" in out
+    assert "evidence-led research chat" in out
 
 
 def test_package_module_entry_prints_help():

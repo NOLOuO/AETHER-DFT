@@ -67,7 +67,7 @@ def test_fast_path_explicit_jobs_command_uses_cluster_my_jobs():
     assert response.route == "my_jobs"
     assert registry.calls == [("cluster_my_jobs", {"limit": 20})]
     assert "12345" in response.text
-    assert "未调用 LLM" in response.text
+    assert "快捷查询" in response.text
 
 
 def test_fast_path_misses_vague_natural_language_status_prompt():
@@ -119,7 +119,7 @@ def test_cli_top_level_natural_language_does_not_bypass_model(monkeypatch, capsy
     monkeypatch.setattr(
         fast_path,
         "dispatch_fast_path",
-        lambda query: (_ for _ in ()).throw(AssertionError("free-form natural language must not use fast-path")),
+        lambda query: (_ for _ in ()).throw(AssertionError("free-form natural language must not use shortcut bypass")),
     )
     monkeypatch.setattr(
         cli,

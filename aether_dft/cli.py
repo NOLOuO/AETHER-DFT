@@ -866,7 +866,7 @@ def handle_preload(args: argparse.Namespace) -> int:
 def handle_mainline(args: argparse.Namespace) -> int:
     prompt = " ".join(getattr(args, "prompt", []) or []).strip()
     print(f"{Colors.BOLD}{Colors.CYAN}AETHER-DFT mainline{Colors.RESET}")
-    print(f"{Colors.DIM}discussion -> plan -> structure -> recommend{Colors.RESET}")
+    print(f"{Colors.DIM}evidence-led research chat; no fixed workflow. Use / for command palette in REPL.{Colors.RESET}")
     if prompt:
         print(f"{Colors.DIM}prompt: {prompt}{Colors.RESET}")
         return handle_chat(args)
@@ -885,9 +885,9 @@ def handle_mainline(args: argparse.Namespace) -> int:
         print_json(
             {
                 "mainline": [
-                    "1. 讨论课题并沉淀方案",
-                    "2. 获取/生成/检查结构",
-                    "3. 推荐下一步科研任务",
+                    "直接进入 aether 交互式 REPL，用自然语言说明当前科研目标。",
+                    "模型会按证据决定是否读 research、查结构、调用建模/集群工具。",
+                    "需要切项目、模型、会话时输入 / 打开命令面板。",
                 ]
             }
         )
@@ -1349,7 +1349,7 @@ def handle_chat(args: argparse.Namespace) -> int:
             )
         except Exception as exc:
             print(f"{Colors.RED}模型调用失败{Colors.RESET}: {_shorten_inline(str(exc), limit=360)}")
-            print(f"{Colors.DIM}本 session 仍然保留；可 /model qwen 切换后继续，或稍后重试。{Colors.RESET}")
+            print(f"{Colors.DIM}本 session 仍然保留；输入 /model 打开模型选择器后继续，或稍后重试。{Colors.RESET}")
             continue
         print_streamed_or_final_response(record, stream_state)
         print_turn_footer(record)
@@ -1714,7 +1714,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     doctor_parser = sub.add_parser("doctor", help="检查程序名称、版本、模型运行时与项目底座。")
-    doctor_parser.add_argument("--model", help="临时检查指定模型，格式 provider:model。")
+    doctor_parser.add_argument("--model", help="临时检查指定模型；支持 qwen/deepseek 或完整模型 ID。")
     doctor_parser.set_defaults(func=doctor)
 
     models_parser = sub.add_parser("models", help="列出可用 OpenAI-compatible provider/model。")
@@ -1736,11 +1736,11 @@ def build_parser() -> argparse.ArgumentParser:
     model_sub = model_parser.add_subparsers(dest="model_command")
     model_current = model_sub.add_parser("current", help="显示当前模型。")
     model_current.set_defaults(func=handle_model_current)
-    model_set = model_sub.add_parser("set", help="设置默认模型，格式 provider:model。")
+    model_set = model_sub.add_parser("set", help="设置默认模型；支持 qwen/deepseek 或完整模型 ID。")
     model_set.add_argument("model_id")
     model_set.set_defaults(func=handle_model_set)
     model_smoke = model_sub.add_parser("smoke", help="真实调用当前/指定模型，验证工具调用后端。")
-    model_smoke.add_argument("--model", help="临时使用 provider:model；默认当前模型。")
+    model_smoke.add_argument("--model", help="临时使用模型；支持 qwen/deepseek 或完整模型 ID；默认当前模型。")
     model_smoke.add_argument("--project", default="model-smoke-demo")
     model_smoke.add_argument("--max-steps", type=int, default=4)
     model_smoke.add_argument("--max-tokens", type=int, default=1200)
@@ -1952,7 +1952,7 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser = sub.add_parser("chat", help="对话式科研合伙人入口；无 prompt 时进入 REPL。")
     chat_parser.add_argument("prompt", nargs="*")
     chat_parser.add_argument("--project")
-    chat_parser.add_argument("--model", help="临时使用模型；支持 qwen/deepseek 这类唯一别名或完整 provider:model。")
+    chat_parser.add_argument("--model", help="临时使用模型；支持 qwen/deepseek 这类唯一别名或完整模型 ID。")
     chat_parser.add_argument("--max-tokens", type=int)
     chat_parser.add_argument("--max-steps", type=int, default=6)
     chat_parser.add_argument("--resume", action="store_true", help="续接最近或指定 session。")
@@ -1973,10 +1973,10 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("--planner", choices=["rule", "auto"], default="rule")
     chat_parser.set_defaults(func=handle_chat)
 
-    mainline_parser = sub.add_parser("mainline", help="显式主线入口：讨论 → 方案 → 结构 → 推荐。")
+    mainline_parser = sub.add_parser("mainline", help="兼容入口：模型主导科研回合（推荐直接运行 aether-dft 进入 REPL）。")
     mainline_parser.add_argument("prompt", nargs="*")
     mainline_parser.add_argument("--project")
-    mainline_parser.add_argument("--model", help="临时使用模型；支持 qwen/deepseek 这类唯一别名或完整 provider:model。")
+    mainline_parser.add_argument("--model", help="临时使用模型；支持 qwen/deepseek 这类唯一别名或完整模型 ID。")
     mainline_parser.add_argument("--max-tokens", type=int)
     mainline_parser.add_argument("--max-steps", type=int, default=6)
     mainline_parser.add_argument("--resume", action="store_true", help="续接最近或指定 session。")
@@ -2064,7 +2064,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent_parser = sub.add_parser("agent", help="让 qwen/OpenAI-compatible 模型通过工具调用 AETHER-DFT/集群。")
     agent_parser.add_argument("prompt", nargs="+")
     agent_parser.add_argument("--project")
-    agent_parser.add_argument("--model", help="临时使用 provider:model，例如 deepseek:deepseek-v4-pro。")
+    agent_parser.add_argument("--model", help="临时使用模型；支持 qwen/deepseek 或完整模型 ID。")
     agent_parser.add_argument("--max-tokens", type=int)
     agent_parser.add_argument("--max-steps", type=int, default=6)
     agent_parser.add_argument(
@@ -2077,7 +2077,7 @@ def build_parser() -> argparse.ArgumentParser:
     ask_parser = sub.add_parser("ask", help="简写：让当前模型通过工具回答/操作。")
     ask_parser.add_argument("prompt", nargs="+")
     ask_parser.add_argument("--project")
-    ask_parser.add_argument("--model", help="临时使用 provider:model，例如 deepseek:deepseek-v4-pro。")
+    ask_parser.add_argument("--model", help="临时使用模型；支持 qwen/deepseek 或完整模型 ID。")
     ask_parser.add_argument("--max-tokens", type=int)
     ask_parser.add_argument("--max-steps", type=int, default=6)
     ask_parser.add_argument("--allow-cluster-submit", action="store_true")

@@ -27,15 +27,22 @@ AETHER-DFT 是面向计算化学 / DFT 的对话式科研合伙人骨架。
 ## 最常用入口
 
 ```powershell
-aether
-aether mainline
-python -m aether_dft
-aether chat "继续当前科研任务"
-aether model current
-aether model set deepseek:deepseek-v4-pro
-aether permission ask
-aether recommend --project demo
+aether                         # 进入持续交互式科研合伙人
+python -m aether_dft           # 同上
+aether "帮我看一下现在该做什么"  # 单轮自然语言；模型自己决定是否调用工具
+aether project list            # 查看 research/ 课题项目
+aether preload --project MCH-Pt-Br
 aether adsorption plan "计算 H2O 在 Pt(111) 上的吸附" --adsorbate H2O --material Pt(111)
+```
+
+进入 `aether` 之后，直接输入自然语言。需要切状态时输入 `/` 打开命令面板：
+
+```text
+/model       切换模型
+/project     切换 research 课题项目
+/resume      切换当前项目里的对话
+/new         新开当前项目会话
+/permission  切换权限模式
 ```
 
 ## 默认环境
@@ -47,12 +54,12 @@ aether adsorption plan "计算 H2O 在 Pt(111) 上的吸附" --adsorbate H2O --m
 - Python/pytest/pip：先 `D:/miniconda3/Scripts/activate`，再 `conda activate p312env`
 - 结构/执行能力：`dft_app/` + `dft_shared/`
 - 编排/提示/工具：`aether_dft/runtime_harness/`、`aether_dft/prompt_assets/`、`aether_dft/tool_specs/`
-- 项目状态：`.aether/projects/`、`.aether/knowledge_base/`、`.aether/runtime/`、`.aether/runs/`
+- 项目状态：用户面对的是 `research/<project>/`；`.aether/` 保存会话、运行记录、索引和兼容元数据。
 
 ## 当前开发版交付状态
 
 - M11-M17 主线已完成：模型可按证据自主选择工具，不再依赖固定流程。
 - 已补长期科研续接能力：`project_continuity_digest` 汇总证据状态，`research_cycle_checkpoint` 落盘阶段性判断，`evidence_claim_audit` 防止无证据结论。
-- 最近一次手动真实 API 验证（2026-05-26）：`deepseek:deepseek-v4-pro` 能调用工具完成 H2O/Pt(111) 候选建模计划。
+- 最近一次手动真实交互验证（2026-06-14）：REPL `/` 命令面板、`/model`、`/project`、`/resume` 可用；`qwen` 后端可真实对话和调用只读工具。
 - 最近一次手动真实 Step 3 冒烟（2026-05-26）：build → preflight → remote submit → cancel → fetch，提交后立即取消。
 - 详细交付说明见 [`docs/DELIVERY.md`](docs/DELIVERY.md)。

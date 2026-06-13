@@ -183,7 +183,7 @@ def _format_my_jobs(registry: RegistryLike) -> str:
     jobs = result.get("jobs") or []
     if not jobs:
         return "当前 squeue --me 没有 running/pending 作业。"
-    lines = [f"当前队列：{len(jobs)} 个作业（fast-path，未调用 LLM）", ""]
+    lines = [f"当前队列：{len(jobs)} 个作业（快捷查询）", ""]
     lines.append(f"{'JOBID':<10} {'STATE':<10} {'ELAPSED':<10} {'NODE':<12} NAME / REASON")
     for job in jobs:
         lines.append(
@@ -200,7 +200,7 @@ def _format_my_jobs(registry: RegistryLike) -> str:
 
 def _format_job_brief(registry: RegistryLike, job_id: str) -> str:
     status = _run_tool(registry, "cluster_job_status_brief", {"job_id": job_id})
-    lines = [f"Job {job_id} 状态（fast-path）：", _format_dict_compact(status)]
+    lines = [f"Job {job_id} 状态（快捷查询）：", _format_dict_compact(status)]
     tail = _run_tool(registry, "cluster_job_tail_log", {"job_id": job_id, "lines": 20})
     if tail.get("status") == "ok":
         lines.extend(["", f"日志尾部：{tail.get('log_path_relative') or ''}", str(tail.get("tail") or "").strip()])
@@ -213,7 +213,7 @@ def _format_job_convergence(registry: RegistryLike, job_id: str) -> str:
     status = _run_tool(registry, "cluster_job_status_brief", {"job_id": job_id})
     outcar = _run_tool(registry, "cluster_job_partial_outcar", {"job_id": job_id})
     progress = _run_tool(registry, "cluster_job_progress_estimate", {"job_id": job_id})
-    lines = [f"Job {job_id} 收敛快照（fast-path）：", ""]
+    lines = [f"Job {job_id} 收敛快照（快捷查询）：", ""]
     lines.append("队列：" + _format_dict_compact(status))
     lines.append("OUTCAR：" + _format_dict_compact(outcar))
     lines.append("趋势：" + _format_dict_compact(progress))

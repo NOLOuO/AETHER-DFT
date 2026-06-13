@@ -45,7 +45,7 @@ def normalize_model_id(model_id: str, app_root: Path = PROJECT_ROOT) -> str:
     if ":" in raw:
         provider_id, model_name = raw.split(":", 1)
         if not provider_id or not model_name:
-            raise ValueError("模型 ID 必须形如 provider:model，例如 deepseek:deepseek-v4-pro；也可以输入能唯一匹配的别名，例如 qwen")
+            raise ValueError("请输入模型别名（例如 qwen/deepseek）或完整模型 ID（例如 deepseek:deepseek-v4-pro）")
         return canonical_model_id(provider_id, model_name)
 
     query = raw.lower()
@@ -65,15 +65,15 @@ def normalize_model_id(model_id: str, app_root: Path = PROJECT_ROOT) -> str:
     if len(matches) == 1:
         return matches[0]
     if not matches:
-        raise ValueError("模型 ID 必须形如 provider:model，或输入模型目录里能唯一匹配的别名，例如 qwen/deepseek")
-    raise ValueError(f"模型别名不唯一：{raw} -> {', '.join(matches)}；请使用完整 provider:model")
+        raise ValueError("请输入模型别名（例如 qwen/deepseek）或模型目录里的完整模型 ID")
+    raise ValueError(f"模型别名不唯一：{raw} -> {', '.join(matches)}；请使用完整模型 ID")
 
 
 def split_model_id(model_id: str) -> tuple[str, str]:
     model_id = normalize_model_id(model_id)
     provider_id, model_name = model_id.split(":", 1)
     if not provider_id or not model_name:
-        raise ValueError("模型 ID 必须形如 provider:model，例如 deepseek:deepseek-v4-pro；也可以输入能唯一匹配的别名，例如 qwen")
+        raise ValueError("请输入模型别名（例如 qwen/deepseek）或完整模型 ID（例如 deepseek:deepseek-v4-pro）")
     return provider_id, model_name
 
 
