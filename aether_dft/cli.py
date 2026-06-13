@@ -309,10 +309,27 @@ def print_resume_preview(payload: dict[str, Any]) -> None:
             print(f"  assistant: {_shorten_inline(record.get('response'), limit=90)}")
 
 
+def _resumable_sessions(session_store: Any, *, project: str | None, current_session_id: str, limit: int = 20) -> list[Any]:
+    return [item for item in session_store.list_sessions(project=project, limit=limit) if item.session_id != current_session_id]
+
+
+def _session_matches_query(item: Any, query: str) -> bool:
+    text = " ".join(
+        [
+            str(getattr(item, "session_id", "") or ""),
+            str(getattr(item, "project", "") or ""),
+            str(getattr(item, "first_prompt", "") or ""),
+            str(getattr(item, "last_response", "") or ""),
+        ]
+    ).lower()
+    return query.lower() in text
+
+
 def handle_chat_resume_command(line: str, args: argparse.Namespace, session_store: Any, current_session_id: str) -> str:
     raw = line[len("/resume") :].strip()
+    scoped_sessions = _resumable_sessions(session_store, project=args.project, current_session_id=current_session_id, limit=20)
     if raw == "":
-        sessions = session_store.list_sessions(project=args.project, limit=10)
+        sessions = scoped_sessions[:10]
         if not sessions:
             print("没有可续接的 session。")
             return current_session_id
@@ -336,8 +353,42 @@ def handle_chat_resume_command(line: str, args: argparse.Namespace, session_stor
             raw = sessions[int(choice) - 1].session_id
         else:
             raw = choice
+    elif raw == "latest":
+        if scoped_sessions:
+            raw = scoped_sessions[0].session_id
+        else:
+            print("没有可续接的 session。")
+            return current_session_id
+    elif not raw.startswith("session_"):
+        matches = [item for item in scoped_sessions if _session_matches_query(item, raw)]
+        if len(matches) == 1:
+            raw = matches[0].session_id
+        elif len(matches) > 1:
+            print(f"{Colors.CYAN}resume matches for {raw!r}{Colors.RESET}:")
+            for index, item in enumerate(matches[:10], start=1):
+                first = _shorten_inline(item.first_prompt, limit=64) or "empty"
+                print(f"  {index}. {item.session_id}  project={item.project or 'none'} turns={item.turn_count}")
+                print(f"     {Colors.DIM}{first}{Colors.RESET}")
+            if not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty()):
+                print("非交互 stdin：请使用 /resume <session_id>。")
+                return current_session_id
+            try:
+                choice = input("resume> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return current_session_id
+            if not choice:
+                print("session unchanged")
+                return current_session_id
+            if choice.isdigit() and 1 <= int(choice) <= len(matches[:10]):
+                raw = matches[int(choice) - 1].session_id
+            else:
+                raw = choice
+        else:
+            print(f"没有找到匹配 {raw!r} 的 session。用 /resume 打开选择器。")
+            return current_session_id
     try:
-        payload = session_store.resume_payload(project=args.project) if raw == "latest" else session_store.resume_payload(session_id=raw)
+        payload = session_store.resume_payload(session_id=raw)
     except Exception:
         payload = {"status": "missing"}
     if payload.get("status") != "ok":

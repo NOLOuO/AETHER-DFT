@@ -331,7 +331,7 @@ def test_cli_interactive_resume_command_opens_selector(monkeypatch, tmp_path, ca
     store.append_turn(newer, {"project": "Other", "prompt": "new", "response": "new response"})
 
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    inputs = iter(["/resume", "3", "/status", "/exit"])
+    inputs = iter(["/resume", "2", "/status", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
 
     assert cli.main(["chat"]) == 0
@@ -357,7 +357,7 @@ def test_cli_interactive_resume_is_scoped_to_current_project(monkeypatch, tmp_pa
     store.append_turn(other, {"project": "Other", "prompt": "other", "response": "other response"})
 
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    inputs = iter(["/resume", "2", "/status", "/exit"])
+    inputs = iter(["/resume", "1", "/status", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
 
     assert cli.main(["chat", "--project", "MCH-Pt-Br"]) == 0
@@ -366,6 +366,30 @@ def test_cli_interactive_resume_is_scoped_to_current_project(monkeypatch, tmp_pa
     assert target in out
     assert other not in out
     assert f'"id": "{target}"' in out
+    assert '"project": "MCH-Pt-Br"' in out
+
+
+def test_cli_interactive_resume_searches_current_project_sessions(monkeypatch, tmp_path, capsys):
+    import aether_dft.paths as paths
+    import aether_dft.session_store as session_store
+
+    runtime_dir = tmp_path / "runtime"
+    monkeypatch.setattr(paths, "RUNTIME_DIR", runtime_dir)
+
+    store = session_store.AetherSessionStore()
+    target = store.start_session(project="MCH-Pt-Br", first_prompt="TS barrier discussion")
+    store.append_turn(target, {"project": "MCH-Pt-Br", "prompt": "TS barrier discussion", "response": "barrier response"})
+    other = store.start_session(project="Other", first_prompt="TS barrier discussion")
+    store.append_turn(other, {"project": "Other", "prompt": "TS barrier discussion", "response": "other response"})
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    inputs = iter(["/resume barrier", "/status", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    assert cli.main(["chat", "--project", "MCH-Pt-Br"]) == 0
+    out = capsys.readouterr().out
+    assert f'"id": "{target}"' in out
+    assert other not in out
     assert '"project": "MCH-Pt-Br"' in out
 
 
