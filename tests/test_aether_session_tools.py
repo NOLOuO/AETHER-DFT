@@ -106,6 +106,33 @@ def test_session_context_auto_compacts_before_prompt_budget(tmp_path: Path, monk
     assert len(context) <= SESSION_CONTEXT_MAX_CHARS
 
 
+def test_session_manual_compact_keeps_recent_turns_without_deleting_transcript(tmp_path: Path):
+    store = AetherSessionStore(tmp_path / "sessions")
+    session_id = store.start_session(project="demo")
+    for index in range(6):
+        store.append_turn(
+            session_id,
+            {
+                "project": "demo",
+                "prompt": f"prompt {index}",
+                "response": f"response {index}",
+            },
+        )
+
+    result = store.compact_session(session_id, keep_recent=2)
+    context = store.build_session_context(session_id)
+    transcript = store.read_transcript(session_id, limit=10)
+
+    assert result["status"] == "ok"
+    assert result["compacted_turn_count"] == 4
+    assert len(transcript) == 6
+    assert "Compacted Session Summary" in context
+    assert "prompt 0" in context
+    assert "turn 5 user: prompt 4" in context
+    assert "turn 6 user: prompt 5" in context
+    assert "turn 3 user: prompt 2" not in context
+
+
 def test_session_context_includes_compact_tool_trail_without_large_results(tmp_path: Path):
     store = AetherSessionStore(tmp_path / "sessions")
     session_id = store.start_session(project="demo")

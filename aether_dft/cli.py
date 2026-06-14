@@ -214,6 +214,7 @@ def print_chat_help() -> None:
     print(f"  {Colors.GREEN}/resume{Colors.RESET}      打开会话续接选择器")
     print(f"  {Colors.GREEN}/preload{Colors.RESET}     模型本轮会预加载哪些设定")
     print(f"  {Colors.GREEN}/context{Colors.RESET}     当前 1M context budget 与压缩状态")
+    print(f"  {Colors.GREEN}/compact{Colors.RESET}     手动压缩旧对话上下文，保留完整 transcript")
     print(f"  {Colors.GREEN}/model{Colors.RESET}       打开模型选择器")
     print(f"  {Colors.GREEN}/permission{Colors.RESET}  打开权限模式选择器")
     print(f"  {Colors.GREEN}/project{Colors.RESET}     打开项目选择器")
@@ -232,6 +233,7 @@ CHAT_COMMAND_PALETTE: list[tuple[str, str]] = [
     ("/sessions", "列出当前 scope 的最近会话"),
     ("/permission", "切换权限模式"),
     ("/context", "查看上下文预算和压缩状态"),
+    ("/compact", "压缩旧对话上下文"),
     ("/preload", "查看本轮预加载设定"),
     ("/recommend", "根据项目状态推荐下一步"),
     ("/help", "查看帮助"),
@@ -486,6 +488,32 @@ def print_chat_context_status(*, session_store: Any, session_id: str) -> None:
             "has_compact_summary": bool(str(state.get("compact_summary") or "").strip()),
         }
     )
+
+
+def handle_chat_compact_command(line: str, *, session_store: Any, session_id: str) -> None:
+    raw = line[len("/compact") :].strip()
+    keep_recent = 12
+    if raw:
+        try:
+            keep_recent = max(1, min(int(raw), 200))
+        except ValueError:
+            print("用法：/compact [保留最近轮数]，例如 /compact 12")
+            return
+    if not hasattr(session_store, "compact_session"):
+        print("当前 session store 不支持 compact。")
+        return
+    result = session_store.compact_session(session_id, keep_recent=keep_recent, trigger="manual")
+    if result.get("status") == "ok":
+        print(
+            f"{Colors.GREEN}compact complete{Colors.RESET}: "
+            f"compacted={result.get('compacted_turn_count')} keep_recent={result.get('keep_recent')} "
+            f"summary_chars={result.get('compact_summary_chars')}"
+        )
+    else:
+        print(
+            f"{Colors.YELLOW}compact skipped{Colors.RESET}: "
+            f"{result.get('reason')} turns={result.get('turn_count')} keep_recent={result.get('keep_recent')}"
+        )
 
 
 def make_chat_progress_printer() -> Any:
@@ -1280,6 +1308,9 @@ def handle_chat(args: argparse.Namespace) -> int:
             continue
         if line == "/context":
             print_chat_context_status(session_store=session_store, session_id=session_id)
+            continue
+        if line.startswith("/compact"):
+            handle_chat_compact_command(line, session_store=session_store, session_id=session_id)
             continue
         if line.startswith("/model"):
             handle_chat_model_command(line, args)

@@ -354,26 +354,70 @@ class AetherSessionStore:
         approx_chars = sum(len(json.dumps(row.get("record") or row, ensure_ascii=False, default=str)) for row in rows)
         if approx_chars < usable_context_chars():
             return
-        older_rows = rows[:-SESSION_COMPACTION_KEEP_RECENT_TURNS]
+        self.compact_session(session_id, keep_recent=SESSION_COMPACTION_KEEP_RECENT_TURNS, trigger="automatic")
+
+    def compact_session(
+        self,
+        session_id: str,
+        *,
+        keep_recent: int = SESSION_COMPACTION_KEEP_RECENT_TURNS,
+        trigger: str = "manual",
+    ) -> dict[str, Any]:
+        """Write a compact summary for older turns without deleting transcript rows."""
+
+        keep_recent = max(1, int(keep_recent or SESSION_COMPACTION_KEEP_RECENT_TURNS))
+        rows = self._read_transcript_rows(session_id)
+        if len(rows) <= keep_recent:
+            state = self.load_state(session_id)
+            return {
+                "status": "skipped",
+                "reason": "not_enough_turns",
+                "session_id": session_id,
+                "turn_count": len(rows),
+                "keep_recent": keep_recent,
+                "compacted_turn_count": int(state.get("compacted_turn_count") or 0),
+            }
+        older_rows = rows[:-keep_recent]
         summary = self._build_compact_summary(older_rows)
         if not summary:
-            return
+            return {
+                "status": "skipped",
+                "reason": "empty_summary",
+                "session_id": session_id,
+                "turn_count": len(rows),
+                "keep_recent": keep_recent,
+            }
         state = self.load_state(session_id)
         state["compact_summary"] = summary
         state["compacted_turn_count"] = len(older_rows)
         state["last_compacted_at"] = _now_iso()
+        state["last_compact_trigger"] = trigger
+        state["compact_keep_recent_turns"] = keep_recent
         self._state_path(session_id).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         entries = [entry for entry in self._load_index() if entry.get("session_id") != session_id]
         entries.insert(0, state)
         self._save_index(entries)
         self._write_project_session_reference(state)
+        return {
+            "status": "ok",
+            "session_id": session_id,
+            "turn_count": len(rows),
+            "keep_recent": keep_recent,
+            "compacted_turn_count": len(older_rows),
+            "compact_summary_chars": len(summary),
+            "trigger": trigger,
+        }
 
     def build_session_context(self, session_id: str, *, limit: int | None = None, max_chars: int | None = None) -> str:
         """Summarize recent turns so a resumed session actually carries forward context."""
 
         state = self.load_state(session_id)
         max_chars = max_chars or usable_context_chars()
-        recent_turns = self.read_transcript(session_id, limit=limit or 10_000)
+        if limit is None and int(state.get("compacted_turn_count") or 0) > 0:
+            default_limit = int(state.get("compact_keep_recent_turns") or SESSION_COMPACTION_KEEP_RECENT_TURNS)
+        else:
+            default_limit = 10_000
+        recent_turns = self.read_transcript(session_id, limit=limit or default_limit)
         if not recent_turns:
             return ""
 

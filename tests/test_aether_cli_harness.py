@@ -253,6 +253,23 @@ def test_cli_interactive_status_and_context_shortcuts(monkeypatch, capsys):
     assert "AETHER interactive chat" in out
 
 
+def test_cli_compact_command_compacts_current_session(tmp_path, capsys):
+    from aether_dft.session_store import AetherSessionStore
+
+    store = AetherSessionStore(tmp_path / "sessions")
+    session_id = store.start_session(project="demo")
+    for index in range(5):
+        store.append_turn(session_id, {"project": "demo", "prompt": f"p{index}", "response": f"r{index}"})
+
+    cli.handle_chat_compact_command("/compact 2", session_store=store, session_id=session_id)
+
+    out = capsys.readouterr().out
+    state = store.load_state(session_id)
+    assert "compact complete" in out
+    assert state["compacted_turn_count"] == 3
+    assert state["compact_keep_recent_turns"] == 2
+
+
 def test_cli_interactive_model_command_opens_selector(monkeypatch, tmp_path, capsys):
     import aether_dft.model_catalog as model_catalog
     import aether_dft.paths as paths
