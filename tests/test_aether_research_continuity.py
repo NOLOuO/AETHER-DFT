@@ -23,8 +23,9 @@ def test_continuity_tools_are_registered_and_in_workflow_map():
 
     assert {"project_continuity_digest", "research_cycle_checkpoint", "evidence_claim_audit"}.issubset(names)
     workflow = registry.run_tool("computational_chemistry_workflow_map", {})["result"]
-    assert "project_continuity_digest" in workflow["mainline"][0]["tools"]
-    assert "research_cycle_checkpoint" in workflow["mainline"][2]["tools"]
+    categories = {item["category"]: set(item["tools"]) for item in workflow["capability_stages"]}
+    assert "project_continuity_digest" in categories["project_context"]
+    assert "research_cycle_checkpoint" in categories["writeback_learning"]
 
 
 def test_project_continuity_digest_reads_runs_without_forcing_workflow(tmp_path: Path, monkeypatch):

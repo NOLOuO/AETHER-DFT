@@ -267,12 +267,15 @@ class _MemorySessionStore:
         return Path("memory-transcript.jsonl")
 
 
-def test_harness_default_steps_depend_on_discussion_vs_execution_mode():
+def test_harness_default_steps_do_not_keyword_route_natural_language():
     harness = AgentHarness(adapter=_NoToolAdapter(), registry=ToolRegistry(), sessions=_MemorySessionStore())
     discussion = harness.run_turn("先聊聊 H2O 在 Pt(111) 上可能怎么吸附")
-    execution = harness.run_turn("把这个 POSCAR 生成 INCAR 并准备提交集群")
+    natural_execution_request = harness.run_turn("把这个 POSCAR 生成 INCAR 并准备提交集群")
+    explicit_execution = harness.run_turn("[execution-mode] 把这个 POSCAR 生成 INCAR 并准备提交集群")
 
     assert discussion["interaction_mode"] == "discussion"
-    assert discussion["max_steps_used"] == 4
-    assert execution["interaction_mode"] == "execution"
-    assert execution["max_steps_used"] == 15
+    assert discussion["max_steps_used"] == 8
+    assert natural_execution_request["interaction_mode"] == "discussion"
+    assert natural_execution_request["max_steps_used"] == 8
+    assert explicit_execution["interaction_mode"] == "execution"
+    assert explicit_execution["max_steps_used"] == 15

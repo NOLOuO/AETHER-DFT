@@ -41,10 +41,6 @@ def _derive_session_title(text: Any, *, limit: int = 42) -> str:
     cleaned = " ".join(_clean_text(text).split()).strip()
     if not cleaned:
         return "New research chat"
-    for prefix in ("只做", "请", "帮我", "继续", "讨论一下", "分析一下"):
-        if cleaned.startswith(prefix) and len(cleaned) > len(prefix) + 2:
-            cleaned = cleaned[len(prefix) :].lstrip("：: ，,")
-            break
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[: limit - 1].rstrip() + "…"

@@ -13,7 +13,7 @@ from aether_dft.permissions import get_permission_mode, permission_mode_label, s
 from .session import HarnessSessionStore
 from .tool_registry import ToolRegistry
 
-DISCUSSION_MAX_STEPS = 4
+DISCUSSION_MAX_STEPS = 8
 EXECUTION_MAX_STEPS = 15
 MAX_TOOL_CALLS_PER_STEP = 8
 MAX_MUTATING_TOOL_CALLS_PER_STEP = 3
@@ -129,49 +129,21 @@ def require_permission(action: str, *, destructive: bool = False) -> dict[str, A
 
 
 def infer_turn_mode(prompt: str) -> str:
+    """Return the tool-schema exposure mode for a turn.
+
+    Natural-language prompts are intentionally not keyword-routed here. The
+    model receives the lean discussion surface plus capability discovery, then
+    decides which concrete tools to unlock. Execution mode is reserved for
+    explicit machine-readable overrides from CLI/tests/advanced callers.
+    """
+
     text = str(prompt or "").lower()
     if any(tag in text for tag in ("[execution-mode]", "[execution]", "<execution-mode>")):
         return "execution"
     if any(tag in text for tag in ("[discussion-mode]", "[discussion]", "<discussion-mode>")):
         return "discussion"
-    execution_markers = [
-        "提交",
-        "集群",
-        "slurm",
-        "sbatch",
-        "生成输入",
-        "incar",
-        "poscar",
-        "建模",
-        "构建",
-        "建一个",
-        "生成结构",
-        "build",
-        "run",
-        "跑计算",
-        "计算文件",
-        "计算包",
-        "开始计算",
-        "同步",
-        "sync",
-        "fetch",
-        "monitor",
-        "vasp",
-        "outcar",
-        "oszicar",
-        "contcar",
-        "squeue",
-        "sacct",
-        "job_id",
-        "job id",
-        "jobid",
-        "队列",
-        "作业",
-        "日志",
-        "收敛",
-        "能量",
-    ]
-    return "execution" if any(marker in text for marker in execution_markers) else "discussion"
+    return "discussion"
+
 
 
 class AgentHarness:

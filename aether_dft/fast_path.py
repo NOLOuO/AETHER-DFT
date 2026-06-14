@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-"""Natural-language CLI fast paths.
+"""Explicit CLI shortcuts.
 
-These paths intentionally bypass the LLM for high-frequency, read-only status
-questions.  They are not a fixed research workflow; they are a latency shortcut
-for intents where the correct tool is obvious and safe.
+Free-form natural language must go through the model harness.  This module only
+handles small command-like inputs such as ``jobs`` or ``job 12345 progress`` so
+the product does not become a pile of hard-coded natural-language if/else
+routes.
 """
 
 from dataclasses import dataclass
@@ -30,11 +31,11 @@ JOB_ID_RE = re.compile(r"(?<![\w.-])(\d{4,})(?![\w.-])")
 
 
 def dispatch_fast_path(query: str, *, registry: RegistryLike | None = None) -> FastPathResponse:
-    """Return a fast response for obvious read-only CLI intents.
+    """Return a fast response for explicit read-only CLI shortcut commands.
 
     ``handled=False`` means the caller should fall through to the normal LLM
-    harness.  Fast paths must stay conservative: if an intent is ambiguous or
-    would write/submit/cancel, miss and let the model/user-confirmation path
+    harness.  Shortcut paths must stay conservative: if the input looks like a
+    natural-language sentence, miss and let the model/user-confirmation path
     handle it.
     """
 
@@ -83,29 +84,23 @@ def _run_tool(registry: RegistryLike, name: str, args: dict[str, Any]) -> dict[s
 
 
 def _matches_projects(text: str) -> bool:
-    return bool(re.search(r"(有哪些|列出|list|show).*(项目|projects?)|项目列表|我的项目", text))
+    return text in {"projects", "project list", "list projects"}
 
 
 def _matches_status_overview(text: str) -> bool:
-    return bool(
-        re.search(
-            r"^(status|jobs?|queue)$|"
-            r"^(队列|作业列表|作业状态)$",
-            text,
-        )
-    )
+    return text in {"jobs", "job list", "queue", "squeue"}
 
 
 def _matches_job_status(text: str) -> bool:
-    return bool(re.search(r"(job|作业|任务|状态|怎么样|进度|看看|看下|queue|squeue)", text))
+    return bool(re.fullmatch(r"(job|squeue)\s+\d{4,}", text))
 
 
 def _matches_convergence(text: str) -> bool:
-    return bool(re.search(r"(收敛|算到哪|到哪|outcar|oszicar|能量|converg|progress)", text))
+    return bool(re.fullmatch(r"(job\s+)?\d{4,}\s+(progress|outcar|oszicar|convergence)", text))
 
 
 def _matches_last_results(text: str) -> bool:
-    return bool(re.search(r"(上次|最近|latest|last).*(结果|run|计算|任务)|最近run|最近计算", text))
+    return text in {"runs", "run list", "latest runs", "last runs"}
 
 
 def _extract_job_id(text: str) -> str | None:
@@ -114,21 +109,23 @@ def _extract_job_id(text: str) -> str | None:
 
 
 def _extract_model_switch(text: str) -> str | None:
-    if not re.search(r"(切到|切换|使用|换成|set|switch).*(deepseek|qwen|bailian)", text):
+    match = re.fullmatch(r"model\s+(?:set\s+)?(deepseek|qwen|bailian)", text)
+    if not match:
         return None
-    if "deepseek" in text:
+    target = match.group(1)
+    if target == "deepseek":
         return "deepseek:deepseek-v4-pro"
-    if "qwen" in text or "bailian" in text or "百炼" in text:
+    if target in {"qwen", "bailian"}:
         return "bailian:qwen3.7-max"
     return None
 
 
 def _extract_project_lookup(raw: str) -> str | None:
-    match = re.search(r"(?:切到|进入|打开|查看|使用)\s*([\w\u4e00-\u9fff.-]+)\s*(?:项目)?", raw, flags=re.I)
-    if not match or "模型" in raw or "deepseek" in raw.lower() or "qwen" in raw.lower():
+    match = re.fullmatch(r"project\s+(?:show\s+)?([A-Za-z0-9_.-]+)", raw.strip(), flags=re.I)
+    if not match:
         return None
     value = match.group(1).strip()
-    if value in {"项目", "project"}:
+    if value.lower() in {"project", "show"}:
         return None
     return value
 
@@ -164,7 +161,7 @@ def _format_project_lookup(project: str) -> str:
             f"状态：{data.get('status') or 'unknown'}",
             f"描述：{data.get('description') or '（无）'}",
             f"状态文件：{paths.state_md}",
-            f"继续对话：aether-dft chat --project {data.get('slug') or project} \"继续\"",
+            f"进入对话：aether-dft chat --project {data.get('slug') or project}",
         ]
     )
 
@@ -194,7 +191,7 @@ def _format_my_jobs(registry: RegistryLike) -> str:
             f"{job.get('name') or ''} {job.get('reason') or ''}".rstrip()
         )
     lines.append("")
-    lines.append("要看单个作业：aether-dft job <JOBID> 怎么样")
+    lines.append("要看单个作业：aether-dft job <JOBID>")
     return "\n".join(lines)
 
 

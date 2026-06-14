@@ -898,7 +898,7 @@ def handle_mainline(args: argparse.Namespace) -> int:
     else:
         print_json(
             {
-                "mainline": [
+                "entrypoint": [
                     "直接进入 aether 交互式 REPL，用自然语言说明当前科研目标。",
                     "模型会按证据决定是否读 research、查结构、调用建模/集群工具。",
                     "需要切项目、模型、会话时输入 / 打开命令面板。",

@@ -33,8 +33,8 @@ def recommend_next_tasks(project: str | None = None, *, focus: str | None = None
         research_context = read_research_onboarding_context(project, max_chars=10000)["context"]
         context = (context + "\n\n" + research_context).strip()
         tasks = list_task_records(project)
-        notes = search_notes(project, focus or "吸附 adsorption DFT")
-        outcome_notes = search_notes(project, "candidate_outcome adsorption outcome")
+        notes = search_notes(project, focus or "")
+        outcome_notes = search_notes(project, "candidate_outcome outcome")
         sessions = AetherSessionStore().list_sessions(project=project, limit=3)
     else:
         context = ""
@@ -43,35 +43,31 @@ def recommend_next_tasks(project: str | None = None, *, focus: str | None = None
         outcome_notes = []
         sessions = AetherSessionStore().list_sessions(limit=3)
 
-    lowered = (context + "\n" + "\n".join(str(task) for task in tasks) + "\n" + "\n".join(item.first_prompt for item in sessions)).lower()
-    if focus and any(token in focus.lower() for token in ["吸附", "adsorption", "adsorb"]):
-        lowered += " adsorption"
-
-    if "adsorption" in lowered or "吸附" in lowered or not tasks:
+    if project:
         recommendations.extend(
             [
                 Recommendation(
-                    title="准备 slab 结构并生成吸附候选",
-                    reason="吸附任务的第一可执行瓶颈通常是表面模型 + adsorbate + 位点/取向枚举。",
-                    command=(
-                        "aether-dft adsorption candidates --slab-path <POSCAR> "
-                        "--adsorbate <ADSORBATE> --material <MATERIAL> --project <PROJECT>"
-                    ),
+                    title="先做项目证据盘点",
+                    reason="下一步应由 research 进展、最近 session、run 记录和集群状态共同决定，而不是由关键词分支决定。",
+                    command=f'aether-dft "{project} 这个课题现在有哪些证据、缺口和最小下一步？"',
                     priority="high",
                 ),
                 Recommendation(
-                    title="选择候选并记录下一步计算方案",
-                    reason="AETHER 当前主线先收束到结构候选与方案沉淀，不默认直接提交或解析计算。",
-                    command="在对话中让 AETHER 总结候选选择依据，并按项目规则追加 research progress。",
+                    title="让模型选择必要工具",
+                    reason="如果需要建模、输入生成或集群执行，模型应先查看能力地图并按需解锁工具 schema。",
+                    command="在 REPL 中自然语言说明目标；不要手动套固定流程。",
                     priority="high",
-                ),
-                Recommendation(
-                    title="进入后续 DFT 前先做结构 sanity check",
-                    reason="真实计算前应先检查最短距离、真空层、固定层和吸附物初始高度。",
-                    command="让 AETHER 调用 structure_sanity_check / structure_bond_analyze 检查候选 POSCAR。",
-                    priority="medium",
                 ),
             ]
+        )
+    elif not tasks:
+        recommendations.append(
+            Recommendation(
+                title="先选择 research 课题",
+                reason="没有 project 时，系统无法可靠关联 research 进展、会话和 run records。",
+                command="aether-dft project list",
+                priority="high",
+            )
         )
     if notes:
         recommendations.append(

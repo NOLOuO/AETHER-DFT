@@ -413,8 +413,8 @@ def test_research_workspace_tools_status_and_sync_dry_run(monkeypatch):
 def test_turn_mode_uses_concrete_execution_evidence_not_user_phrases():
     assert infer_turn_mode("看看怎么样了") == "discussion"
     assert infer_turn_mode("这个体系下一步怎么做") == "discussion"
-    assert infer_turn_mode("这个 OUTCAR 收敛了吗？") == "execution"
-    assert infer_turn_mode("squeue 里 job_id 12345 状态") == "execution"
+    assert infer_turn_mode("这个 OUTCAR 收敛了吗？") == "discussion"
+    assert infer_turn_mode("squeue 里 job_id 12345 状态") == "discussion"
     assert infer_turn_mode("[execution-mode] 只做一次状态检查") == "execution"
     assert infer_turn_mode("[discussion-mode] 先讨论机理，不跑工具") == "discussion"
 
@@ -622,36 +622,25 @@ def test_agent_harness_prompts_for_permission_and_retries_approved_tool(tmp_path
     assert harness.registry.calls[1]["_permission_granted"] is True
 
 
-def test_workflow_map_exposes_full_computational_chemistry_flow():
+def test_workflow_map_exposes_capabilities_not_fixed_steps():
     result = ToolRegistry().run_tool("computational_chemistry_workflow_map", {})
-    assert result["result"]["status"] == "ok"
-    assert result["result"]["mainline"][0]["step"] == 1
-    assert result["result"]["mainline"][1]["step"] == 2
-    assert "research_onboarding_context" in result["result"]["mainline"][0]["tools"]
-    assert "research_proposal_plan" in result["result"]["mainline"][0]["tools"]
-    assert "architecture_live_doc_snapshot" in result["result"]["mainline"][0]["tools"]
-    assert "architecture_live_doc_update" in result["result"]["mainline"][0]["tools"]
-    assert "structure_modeling_tool_status" in result["result"]["mainline"][1]["tools"]
-    assert "structure_modeling_intent_plan" in result["result"]["mainline"][1]["tools"]
-    assert "structure_resolve" in result["result"]["mainline"][1]["tools"]
-    assert "structure_sanity_check" in result["result"]["mainline"][1]["tools"]
-    assert "structure_defect" in result["result"]["mainline"][1]["tools"]
-    assert "adsorption_plan" in result["result"]["mainline"][1]["tools"]
-    assert "cluster_execution_intent_plan" in result["result"]["mainline"][2]["tools"]
-    assert "research_onboarding_context" in result["result"]["mainline"][2]["tools"]
-    assert "research_vasp_template_resolve" in result["result"]["mainline"][2]["tools"]
-    assert "vasp_input_preflight_check" in result["result"]["mainline"][2]["tools"]
-    assert "cluster_remote_submit" in result["result"]["mainline"][2]["tools"]
-    phases = [item["phase"] for item in result["result"]["workflow"]]
-    assert phases == [
-        "project_context",
-        "structure_io",
-        "adsorption_modeling",
-        "dft_tasking",
-        "cluster_execution",
-        "parse",
-        "knowledge_backflow",
-    ]
+    payload = result["result"]
+    assert payload["status"] == "ok"
+    assert "不是固定流程" in payload["principle"]
+    categories = {item["category"]: set(item["tools"]) for item in payload["capability_stages"]}
+    assert "mainline" not in payload
+    assert "project_context" in categories
+    assert "structure_modeling" in categories
+    assert "dft_execution" in categories
+    assert "realtime_cluster_status" in categories
+    assert "research_onboarding_context" in categories["project_context"]
+    assert "research_proposal_plan" in categories["project_context"]
+    assert "structure_modeling_tool_status" in categories["structure_modeling"]
+    assert "structure_resolve" in categories["structure_modeling"]
+    assert "research_vasp_template_resolve" in categories["dft_execution"]
+    assert "vasp_input_preflight_check" in categories["dft_execution"]
+    assert "cluster_remote_submit" in categories["dft_execution"]
+    assert "cluster_job_partial_outcar" in categories["realtime_cluster_status"]
 
 
 def test_structure_modeling_tool_status_is_decision_matrix_not_fixed_pipeline():
@@ -673,6 +662,7 @@ def test_structure_modeling_intent_plan_guides_adsorption_without_fixed_pipeline
         "structure_modeling_intent_plan",
         {
             "intent": "为 H2O 在 Pt(111) 上生成少量有科学理由的吸附候选",
+            "task_type": "adsorption",
             "available_inputs": {
                 "adsorbate": "H2O",
                 "material": "Pt(111)",
@@ -1023,6 +1013,7 @@ def test_cluster_execution_intent_uses_project_from_available_inputs():
         "cluster_execution_intent_plan",
         {
             "intent": "给 MCH-Pt-Br 已优化中间体做频率计算输入",
+            "task_type": "vibrational_frequency",
             "available_inputs": {
                 "project": "MCH-Pt-Br",
                 "structure_path": "candidate.POSCAR",
@@ -1035,6 +1026,24 @@ def test_cluster_execution_intent_uses_project_from_available_inputs():
     assert payload["template_preview"]["template_id"] == "mch_pt_br_stable_intermediate_frequency"
     build_group = next(group for group in payload["tool_groups"] if "dft_run_task" in group["candidate_tools"])
     assert build_group["recommended_arguments"]["project"] == "MCH-Pt-Br"
+
+
+def test_cluster_execution_intent_does_not_infer_task_type_from_language():
+    result = ToolRegistry().run_tool(
+        "cluster_execution_intent_plan",
+        {
+            "intent": "给 MCH-Pt-Br 已优化中间体做频率计算输入",
+            "available_inputs": {
+                "project": "MCH-Pt-Br",
+                "structure_path": "candidate.POSCAR",
+                "material": "MCH/Pt(111)",
+            },
+        },
+    )
+    payload = result["result"]
+    assert payload["recommended_task_type"] == ""
+    assert "task_type" in payload["missing_inputs"]
+    assert payload["next_decision"]["next_action"] == "model_select_task_type"
 
 
 def test_cluster_execution_intent_adapts_when_run_root_already_exists():

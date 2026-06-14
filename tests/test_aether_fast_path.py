@@ -80,7 +80,7 @@ def test_fast_path_misses_vague_natural_language_status_prompt():
 
 def test_fast_path_single_job_status_tails_log():
     registry = FakeRegistry()
-    response = dispatch_fast_path("job 12345 怎么样", registry=registry)
+    response = dispatch_fast_path("job 12345", registry=registry)
 
     assert response.handled is True
     assert response.route == "job_status"
@@ -91,7 +91,7 @@ def test_fast_path_single_job_status_tails_log():
 
 def test_fast_path_job_convergence_uses_outcar_and_progress():
     registry = FakeRegistry()
-    response = dispatch_fast_path("12345 收敛了吗", registry=registry)
+    response = dispatch_fast_path("job 12345 progress", registry=registry)
 
     assert response.handled is True
     assert response.route == "job_convergence"
@@ -102,6 +102,14 @@ def test_fast_path_job_convergence_uses_outcar_and_progress():
     ]
     assert "last_toten_ev=-1.23" in response.text
     assert "convergence_score=0.7" in response.text
+
+
+def test_fast_path_misses_natural_language_job_progress_prompt():
+    registry = FakeRegistry()
+    response = dispatch_fast_path("12345 收敛了吗", registry=registry)
+
+    assert response.handled is False
+    assert registry.calls == []
 
 
 def test_fast_path_misses_open_ended_science_prompt():

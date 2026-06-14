@@ -140,7 +140,7 @@ def test_agent_loop_attaches_research_progress_and_next_step(monkeypatch, tmp_pa
     assert record["response"] == "建议先做 slab，再生成吸附候选。"
     assert record["progress"]["next_steps"]
     assert Path(record["project_progress_path"]).exists()
-    assert "candidate" in record["progress"]["next_steps"][0].lower() or "候选" in record["progress"]["next_steps"][0]
+    assert "证据盘点" in record["progress"]["next_steps"][0]
 
 
 def test_agent_loop_does_not_persist_meta_preload_check(monkeypatch, tmp_path):

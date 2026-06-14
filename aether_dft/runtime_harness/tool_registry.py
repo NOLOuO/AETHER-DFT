@@ -299,9 +299,9 @@ class ToolRegistry:
     def _register_all(self) -> None:
         self._register(ToolSpec("aether_capability_map", "列出 AETHER 的能力类别；先看能力地图，再按科研任务自主选择是否 discover 某类工具。", {}, True), self._aether_capability_map)
         self._register(ToolSpec("aether_discover_tools", "按 category/query/tool_names 按需解锁工具 schema。用于模型自己找能力，不是固定流程。", {"category": {"type": "string"}, "query": {"type": "string"}, "tool_names": {"type": "array", "items": {"type": "string"}}, "include_schemas": {"type": "boolean"}, "max_tools": {"type": "integer"}}, True), self._aether_discover_tools)
-        self._register(ToolSpec("computational_chemistry_workflow_map", "列出 AETHER-DFT 两步主线与工作流阶段。", {}), self._workflow_map)
+        self._register(ToolSpec("computational_chemistry_workflow_map", "列出 AETHER-DFT 可用科研能力阶段；这是能力地图，不是固定流程。", {}), self._workflow_map)
         self._register(ToolSpec("structure_modeling_tool_status", "报告 Step 2 结构建模工具能力、适用任务类型、证据门槛与当前完成度。", {}, True), self._structure_modeling_tool_status)
-        self._register(ToolSpec("structure_modeling_intent_plan", "把自然语言 Step 2 建模意图转成非强制的工具选择建议、缺失输入和证据门槛；这是导航，不是固定流水线。", {"intent": {"type": "string"}, "available_inputs": {"type": "object"}, "project": {"type": "string"}, "allow_writes": {"type": "boolean"}}, True, ("intent",)), self._structure_modeling_intent_plan)
+        self._register(ToolSpec("structure_modeling_intent_plan", "根据模型显式选择的 task_type 给出结构建模工具建议、缺失输入和证据门槛；不从自然语言关键词猜测路线。", {"intent": {"type": "string"}, "task_type": {"type": "string"}, "available_inputs": {"type": "object"}, "project": {"type": "string"}, "allow_writes": {"type": "boolean"}}, True, ("intent",)), self._structure_modeling_intent_plan)
         self._register(ToolSpec("research_onboarding_context", "读取 research 入职上下文：AGENTS、避坑清单、项目研究进展。", {"project": {"type": "string"}, "max_chars": {"type": "integer"}}, True), self._research_onboarding_context)
         self._register(ToolSpec("research_proposal_plan", "把自然语言课题讨论整理成科学问题、结构需求、证据需求和下一步。", {"prompt": {"type": "string"}, "project": {"type": "string"}}, True, ("prompt",)), self._research_proposal_plan)
         self._register(ToolSpec("research_progress_append", "按研究工作区格式倒序追加 research/<项目>/研究进展.md。", {"project": {"type": "string"}, "completed": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}}, False, ("project",)), self._research_progress_append)
@@ -358,7 +358,7 @@ class ToolRegistry:
         self._register(ToolSpec("neb_input_check", "检查 NEB 输入。", {"n_images": {"type": "integer"}}, True), self._neb_input_check)
         self._register(ToolSpec("dimer_input_check", "检查 Dimer 输入。", {"work_dir": {"type": "string"}}, True), self._dimer_input_check)
         self._register(ToolSpec("task_type_catalog", "列出任务类型。", {}, True), self._task_type_catalog)
-        self._register(ToolSpec("cluster_execution_intent_plan", "把 Step 3 集群执行意图转成 research 模板读取、build、preflight、probe、submit/monitor/fetch 的非固定工具导航。", {"intent": {"type": "string"}, "available_inputs": {"type": "object"}, "project": {"type": "string"}, "allow_submit": {"type": "boolean"}}, True, ("intent",)), self._cluster_execution_intent_plan)
+        self._register(ToolSpec("cluster_execution_intent_plan", "根据模型显式选择的 task_type，把集群执行目标转成 research 模板读取、build、preflight、probe、submit/monitor/fetch 的非固定工具导航。", {"intent": {"type": "string"}, "task_type": {"type": "string"}, "available_inputs": {"type": "object"}, "project": {"type": "string"}, "allow_submit": {"type": "boolean"}}, True, ("intent",)), self._cluster_execution_intent_plan)
         self._register(ToolSpec("research_vasp_template_resolve", "把 project/task_type/prompt 映射成 research 中可安全自动应用的 VASP 模板约束和 INCAR 核对项；只解析不提交。", {"project": {"type": "string"}, "task_type": {"type": "string"}, "prompt": {"type": "string"}, "material": {"type": "string"}}, True), self._research_vasp_template_resolve)
         self._register(ToolSpec("vasp_input_preflight_check", "提交集群前核对 VASP 输入包：POSCAR/INCAR/KPOINTS/job.slurm/POTCAR 映射、research 规则证据与阻塞项；只检查不提交。", {"run_root": {"type": "string"}, "inputs_dir": {"type": "string"}, "project": {"type": "string"}, "task_type": {"type": "string"}, "require_potcar": {"type": "boolean"}}, True), self._vasp_input_preflight_check)
         self._register(ToolSpec("dft_run_step", "执行单步 DFT 主线。", {"phase": {"type": "string"}}, False), self._dft_run_step)
@@ -585,19 +585,14 @@ class ToolRegistry:
     def _workflow_map(self, _: dict[str, Any]) -> dict[str, Any]:
         return {
             "status": "ok",
-            "mainline": [
-                {"step": 1, "title": "discussion -> plan", "tools": ["project_continuity_digest", "web_search", "literature_search", "evidence_claim_audit", "chemistry_compute", "image_understand", "discussion_state_snapshot", "research_cycle_checkpoint", "research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "architecture_live_doc_update", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
-                {"step": 2, "title": "structure -> model", "tools": ["structure_modeling_tool_status", "structure_modeling_intent_plan", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
-                {"step": 3, "title": "execute -> explain -> write_back", "tools": ["project_continuity_digest", "cluster_execution_intent_plan", "research_onboarding_context", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "cluster_job_status_brief", "cluster_my_jobs", "cluster_job_tail_log", "cluster_job_partial_outcar", "cluster_job_progress_estimate", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "vasp_output_scan", "result_interpret", "next_experiment_propose", "research_learning_capture", "candidate_outcome_record", "research_cycle_checkpoint", "evidence_claim_audit", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show", "project_progress_append", "behavior_audit"]},
-            ],
-            "workflow": [
-                {"phase": "project_context"},
-                {"phase": "structure_io"},
-                {"phase": "adsorption_modeling"},
-                {"phase": "dft_tasking"},
-                {"phase": "cluster_execution"},
-                {"phase": "parse"},
-                {"phase": "knowledge_backflow"},
+            "principle": "能力地图不是固定流程；模型应根据 research/session/tool evidence 自主选择最小必要工具。",
+            "capability_stages": [
+                {"category": "project_context", "tools": ["project_continuity_digest", "web_search", "literature_search", "evidence_claim_audit", "chemistry_compute", "image_understand", "discussion_state_snapshot", "research_cycle_checkpoint", "research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
+                {"category": "structure_modeling", "tools": ["structure_modeling_tool_status", "structure_modeling_intent_plan", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
+                {"category": "dft_execution", "tools": ["cluster_execution_intent_plan", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch"]},
+                {"category": "realtime_cluster_status", "tools": ["cluster_job_status_brief", "cluster_my_jobs", "cluster_job_tail_log", "cluster_job_partial_outcar", "cluster_job_progress_estimate"]},
+                {"category": "result_analysis", "tools": ["vasp_output_scan", "result_interpret", "next_experiment_propose", "candidate_outcome_record"]},
+                {"category": "writeback_learning", "tools": ["research_learning_capture", "research_cycle_checkpoint", "evidence_claim_audit", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show", "project_progress_append", "behavior_audit"]},
             ],
             "evaluation_tools": ["adsorption_eval_case_list", "adsorption_eval_score_plan"],
         }
@@ -609,25 +604,16 @@ class ToolRegistry:
         available = payload.get("available_inputs") or {}
         if not isinstance(available, dict):
             available = {}
-        text = " ".join([intent, json.dumps(available, ensure_ascii=False)]).lower()
-
-        def has_any(*needles: str) -> bool:
-            return any(needle.lower() in text for needle in needles)
-
-        if has_any("吸附", "adsorption", "adsorbate", "candidate", "候选", "h2o", "co2", "co ", "oh", "ooh"):
-            task_type = "adsorption"
-        elif has_any("slab", "surface", "表面", "晶面", "miller", "(111)", "(100)", "(110)"):
-            task_type = "slab"
-        elif has_any("缺陷", "vacancy", "空位", "dopant", "掺杂", "substitution", "替换"):
-            task_type = "defect"
-        elif has_any("neb", "ts", "过渡态", "transition state", "反应路径", "插值"):
-            task_type = "ts_neb"
-        elif has_any("收敛", "convergence", "encut", "kpoint", "k-point"):
-            task_type = "convergence"
-        elif has_any("转换", "convert", "poscar", "cif", "xsd", "格式"):
-            task_type = "conversion"
-        else:
-            task_type = "unknown"
+        task_type = str(payload.get("task_type") or available.get("task_type") or "").strip().lower() or "unknown"
+        aliases = {
+            "adsorb": "adsorption",
+            "surface": "slab",
+            "neb": "ts_neb",
+            "ts": "ts_neb",
+            "transition_state": "ts_neb",
+            "format_conversion": "conversion",
+        }
+        task_type = aliases.get(task_type, task_type)
 
         project = str(payload.get("project") or "").strip() or None
         allow_writes = bool(payload.get("allow_writes", True))
@@ -730,9 +716,16 @@ class ToolRegistry:
             quality_gates = ["转换后应再 sanity_check，不能只说文件已写。"]
         else:
             groups = [
-                {"purpose": "先识别建模任务类型", "candidate_tools": ["structure_modeling_tool_status", "research_proposal_plan"], "call_when": "用户意图不清或缺少结构来源/目标。"},
+                {
+                    "purpose": "让模型基于证据选择 task_type",
+                    "candidate_tools": ["structure_modeling_tool_status", "research_proposal_plan", "aether_capability_map", "aether_discover_tools"],
+                    "call_when": "调用方未显式提供 task_type；本工具不会从自然语言关键词猜测。",
+                },
             ]
-            quality_gates = ["先追问或读取项目上下文；不要猜测并写结构。"]
+            quality_gates = [
+                "请模型根据 project/research/session/tool evidence 选择 task_type，再用 task_type=adsorption/slab/defect/ts_neb/convergence/conversion 重新调用。",
+                "不要猜测并写结构。",
+            ]
 
         return {
             "status": "ok",
@@ -1492,26 +1485,18 @@ class ToolRegistry:
             available = {}
         project = str(payload.get("project") or "").strip() or str(available.get("project") or "").strip() or None
         allow_submit = bool(payload.get("allow_submit", False))
-        text = " ".join([intent, json.dumps(available, ensure_ascii=False)]).lower()
-
-        def has_any(*needles: str) -> bool:
-            return any(needle.lower() in text for needle in needles)
-
-        if has_any("freq", "frequency", "频率", "zpe", "自由能"):
-            task_stage = "frequency_correction"
-            recommended_task_type = "vibrational_frequency"
-        elif has_any("dimer", "ts", "过渡态"):
-            task_stage = "ts_dimer"
-            recommended_task_type = "transition_state_search"
-        elif has_any("scf", "single", "单点", "静态"):
-            task_stage = "single_point_or_scf"
-            recommended_task_type = "single_point"
-        elif has_any("relax", "优化", "结构优化"):
-            task_stage = "relax"
-            recommended_task_type = "relax"
-        else:
-            task_stage = "build_and_submit"
-            recommended_task_type = str(available.get("task_type") or "relax")
+        explicit_task_type = str(payload.get("task_type") or available.get("task_type") or "").strip()
+        task_aliases = {
+            "freq": "vibrational_frequency",
+            "frequency": "vibrational_frequency",
+            "dimer": "transition_state_search",
+            "ts": "transition_state_search",
+            "static": "single_point",
+            "scf": "single_point",
+            "optimization": "relax",
+        }
+        recommended_task_type = task_aliases.get(explicit_task_type.lower(), explicit_task_type)
+        task_stage = "model_selected_task" if recommended_task_type else "model_must_select_task_type"
 
         missing: list[str] = []
         if not any(str(available.get(key) or "").strip() for key in ("structure_path", "poscar_path", "candidate_poscar_path")):
@@ -1520,13 +1505,15 @@ class ToolRegistry:
             missing.append("material")
         if not (project or str(available.get("project") or "").strip()):
             missing.append("project")
+        if not recommended_task_type:
+            missing.append("task_type")
 
         structure_path = available.get("structure_path") or available.get("poscar_path") or available.get("candidate_poscar_path")
         material = available.get("material")
         research_paths = self._research_rule_paths(project)
         template_preview = resolve_research_vasp_template(
             project,
-            recommended_task_type,
+            recommended_task_type or "unspecified",
             prompt=intent,
             material=str(material) if material else None,
         )
@@ -1628,6 +1615,13 @@ class ToolRegistry:
                 "reason": "缺少 project，不能安全选择 research 规则。",
                 "missing": missing,
             }
+        elif "task_type" in missing:
+            next_decision = {
+                "next_action": "model_select_task_type",
+                "recommended_tools": ["task_type_catalog", "research_onboarding_context"],
+                "reason": "缺少模型显式选择的 task_type；本工具不会从自然语言关键词推断 relax/frequency/ts/single_point。",
+                "missing": missing,
+            }
         else:
             next_decision = {
                 "next_action": "resolve_research_constraints",
@@ -1648,6 +1642,7 @@ class ToolRegistry:
             "step": 3,
             "task_stage": task_stage,
             "recommended_task_type": recommended_task_type,
+            "task_type_selection": "explicit" if recommended_task_type else "missing; model must choose from task_type_catalog/research evidence, not keyword routing",
             "principle": "Step 3 教模型如何判断和调用工具，不是固定程序；模型通常先说明证据、选择工具、读取结果，再决定下一步。",
             "project": project,
             "available_inputs": available,

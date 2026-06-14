@@ -142,29 +142,16 @@ def build_research_proposal(prompt: str, *, project: str | None = None) -> dict[
     text = " ".join(str(prompt or "").split())
     onboarding = read_research_onboarding_context(project, max_chars=9000)
     missing: list[str] = []
-    lowered = text.lower()
     if not text:
         missing.append("research_question")
     if not project:
         missing.append("project")
-    if not any(token in lowered for token in ["结构", "structure", "slab", "cluster", "poscar", "cif", "xsd"]):
-        missing.append("initial_structure_or_model")
-    if not any(token in lowered for token in ["证据", "计算", "dft", "能量", "吸附", "ts", "频率", "路径", "mechanism"]):
-        missing.append("target_evidence")
-
-    likely_stage = "discussion"
-    if any(token in lowered for token in ["poscar", "cif", "xsd", "slab", "吸附", "adsorption"]):
-        likely_stage = "structure_modeling"
-    if any(token in lowered for token in ["ts", "neb", "dimer", "频率"]):
-        likely_stage = "method_planning"
 
     next_actions = [
-        "确认科学问题、目标结构和需要的计算证据。",
-        "读取或生成初始结构，并先做 sanity check。",
-        "若是吸附问题，走 adsorption_plan -> adsorption_build_slab -> adsorption_candidates。",
+        "先读取 research 进展、项目 common 规则和最近 session，确认当前科学状态。",
+        "由模型基于证据判断缺少哪些结构、计算输出或文献/模板依据；不要靠关键词固定分支。",
+        "若需要建模或执行，先调用能力地图/工具发现，再选择最小必要工具。",
     ]
-    if likely_stage == "method_planning":
-        next_actions.insert(1, "先核对 research/Common/避坑清单.md 与项目 common 规则，避免违反既定方法学。")
     if missing:
         next_actions.insert(0, "补齐缺失输入：" + "、".join(missing))
 
@@ -172,13 +159,13 @@ def build_research_proposal(prompt: str, *, project: str | None = None) -> dict[
         "status": "needs_inputs" if missing else "ready",
         "project": project,
         "prompt": text,
-        "likely_stage": likely_stage,
+        "likely_stage": "model_decides_from_evidence",
         "missing_inputs": missing,
         "proposal": {
             "scientific_question": text or "未提供",
             "hypothesis": "待与用户讨论确认；不要硬编码材料、吸附质或反应路径。",
-            "required_structures": ["初始 bulk/slab/cluster 结构", "必要时的缺陷/掺杂/吸附构型"],
-            "required_evidence": ["结构合理性检查", "后续 DFT/频率/路径计算证据（按项目规则选择）"],
+            "required_structures": ["由模型读取 project/research 证据后列出，不由本工具关键词推断。"],
+            "required_evidence": ["由模型按当前科研问题决定；没有证据时标记为待查而不是编造。"],
             "next_actions": next_actions,
         },
         "onboarding_files_read": onboarding["files_read"],

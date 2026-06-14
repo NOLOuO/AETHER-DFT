@@ -147,7 +147,8 @@ def test_cli_adsorption_plan_and_recommend(capsys):
     assert cli.main(["recommend", "--project", "adsorption-demo", "--focus", "adsorption"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["recommendations"]
-    assert any("候选" in item["title"] or "slab" in item["title"].lower() for item in payload["recommendations"])
+    assert any("证据盘点" in item["title"] for item in payload["recommendations"])
+    assert not any("slab" in item["title"].lower() for item in payload["recommendations"])
 
 
 def test_cli_adsorption_candidates_smoke(tmp_path, capsys):

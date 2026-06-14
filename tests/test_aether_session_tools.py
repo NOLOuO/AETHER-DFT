@@ -41,8 +41,8 @@ def test_session_title_uses_first_real_prompt_when_session_starts_empty(tmp_path
     )
 
     payload = store.resume_payload(session_id=session_id)
-    assert payload["state"]["title"].startswith("H2O 在 Pt(111)")
-    assert store.list_sessions(project="demo")[0].title.startswith("H2O 在 Pt(111)")
+    assert payload["state"]["title"].startswith("讨论一下 H2O 在 Pt(111)")
+    assert store.list_sessions(project="demo")[0].title.startswith("讨论一下 H2O 在 Pt(111)")
 
 
 def test_session_store_mirrors_project_session_reference(tmp_path: Path, monkeypatch):

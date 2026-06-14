@@ -15,7 +15,7 @@
 | TS/NEB 初猜 | IS/FS 是否同原子顺序、位移是否合理 | `ts_midpoint_candidates_enumerate` / `neb_input_check` | 插值 images；不是 TS 结果 |
 | 收敛性测试 | 目标性质、误差阈值、计算预算 | `convergence_plan_compose` | ENCUT/KPOINTS 测试矩阵 |
 
-如果你不确定用户意图属于哪类 Step 2 建模任务，先调用 `structure_modeling_intent_plan(intent=..., available_inputs=...)`。它只给**导航建议**：缺哪些输入、哪些工具组可能有用、哪些质量门槛不能越过；它不是固定执行计划，不能代替你的科研判断。
+如果你不确定用户意图属于哪类 Step 2 建模任务，先读 project/research/session 证据或调用能力地图；不要让程序用关键词替你猜。只有当你已经基于证据选择了任务类型时，再调用 `structure_modeling_intent_plan(intent=..., task_type=..., available_inputs=...)` 获取**导航建议**：缺哪些输入、哪些工具组可能有用、哪些质量门槛不能越过；它不是固定执行计划，不能代替你的科研判断。
 
 ### 证据门槛，而不是死流程
 

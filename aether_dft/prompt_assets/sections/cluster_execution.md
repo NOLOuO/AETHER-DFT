@@ -29,7 +29,7 @@
 
 ### 先读 research 规则，再生成输入
 
-涉及集群 / VASP / INCAR / KPOINTS / 频率 / Dimer / TS 任务时，通常先获取研究规则；真正 build/submit 前必须有项目规则证据：
+涉及集群 / VASP / INCAR / KPOINTS 任务时，通常先获取研究规则；真正 build/submit 前必须有项目规则证据。任务类型由你基于证据显式选择并作为 `task_type` 传给工具；不要让程序从自然语言关键词替你猜 relax / frequency / TS / single-point。
 
 - `research_onboarding_context(project=...)`：读取 `research/AGENTS.md`、`research/Common/避坑清单.md`、项目 `研究进展.md`。
 - `research_vasp_template_resolve(project=..., task_type=..., prompt=...)`：把 research 中已经固化的项目口径解析成可执行的 `incar_overrides` / `expected_incar` / `blocked_method_rules`；这是给模型用的约束，不是固定流水线。
@@ -40,7 +40,7 @@
 
 | 用户意图 | 先看什么证据 | 常用工具原语 | 产物 |
 | --- | --- | --- | --- |
-| 判断能否进入集群执行 | 结构路径、任务类型、项目规则、submit profile | `cluster_execution_intent_plan` / `research_onboarding_context` / `research_vasp_template_resolve` | 缺口列表 + 模板约束 + 工具建议 |
+| 判断能否进入集群执行 | 结构路径、你显式选择的任务类型、项目规则、submit profile | `cluster_execution_intent_plan(task_type=...)` / `research_onboarding_context` / `research_vasp_template_resolve` | 缺口列表 + 模板约束 + 工具建议 |
 | 生成 VASP 输入包 | Step 2 结构文件、任务类型、research 模板 | `dft_run_task(execution_mode="build")`（会把可解析 research 模板写入 spec/INCAR 覆盖） | run_root + inputs/POSCAR/INCAR/KPOINTS/job.slurm |
 | 提交前核对 | 输入文件是否齐全、模板来源、INCAR 关键参数、SLURM 脚本、POTCAR 状态 | `vasp_input_preflight_check` / `vasp_input_summary`（会逐项对照 `expected_incar`） | readiness / blockers / warnings |
 | 连接集群 | SSH alias、登录节点、远程 base dir | `cluster_config` / `cluster_probe` | 集群配置与连通性证据 |
