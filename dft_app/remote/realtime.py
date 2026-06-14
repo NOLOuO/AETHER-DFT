@@ -21,8 +21,9 @@ _ACTIVE_STATES = {"PENDING", "CONFIGURING", "RUNNING", "COMPLETING", "SUSPENDED"
 _SAFE_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 # log_name 只接受 basename，禁止 '/'；上层会自动尝试 logs/<name>、outputs/<name> 等前缀
 _SAFE_LOG_BASENAME_RE = re.compile(r"^[A-Za-z0-9_.@+:-]+$")
-# remote_run_root 必须是合理的远端绝对路径（或 ~）；禁止 shell 元字符与路径穿越
-_SAFE_REMOTE_PATH_RE = re.compile(r"^[A-Za-z0-9_./@~+:\-]+$")
+# remote_run_root 必须是合理的远端绝对路径（或 ~）；允许科研目录里的 Unicode，
+# 但禁止 shell 元字符、引号、反斜杠、空白与路径穿越。
+_UNSAFE_REMOTE_PATH_CHARS_RE = re.compile(r"[\s$;&|><`'\"\\\r\n]")
 
 
 def _runner(config: RemoteClusterConfig | None = None) -> SSHRemoteRunner:
@@ -69,15 +70,16 @@ def _safe_remote_path(path: str | None, config: RemoteClusterConfig) -> str:
 
     Shell quoting 只能防命令注入，不能防模型拿当前 SSH 凭证去试探
     ``/etc``、``/home/otheruser`` 或当前用户 home 下的敏感文件。因此这里把
-    路径限制在当前配置的 ``remote_base_dir`` 或 ``/scratch/<user>/`` 下。
+    路径限制在当前配置的 ``remote_base_dir``、``/scratch/<user>/`` 或
+    ``/home/<user>/research`` 下。最后一项用于 AETHER 的 research 工作区
+    与集群 ``~/research`` 对齐，只开放该目录，不开放整个 home。
     """
     value = str(path or "").strip()
     if not value:
         raise ValueError("remote_run_root 不能为空。")
-    if not _SAFE_REMOTE_PATH_RE.fullmatch(value):
+    if _UNSAFE_REMOTE_PATH_CHARS_RE.search(value):
         raise ValueError(
-            "remote_run_root 含非法字符（只允许字母/数字/_./@~+:- 和 '/'）；"
-            "禁止 shell 元字符（$ ; & | > < ` ' \" \\ 等）与空格。"
+            "remote_run_root 含非法字符；禁止 shell 元字符（$ ; & | > < ` ' \" \\ 等）、空白和换行。"
         )
     parts = [p for p in value.split("/") if p]
     if any(p == ".." for p in parts):
@@ -96,6 +98,7 @@ def _safe_remote_path(path: str | None, config: RemoteClusterConfig) -> str:
     allowed_roots = {
         clean(config.remote_base_dir),
         clean(f"/scratch/{config.user}"),
+        clean(f"/home/{config.user}/research"),
     }
     if not any(normalized == root or normalized.startswith(root + "/") for root in allowed_roots if root != "/"):
         raise ValueError(
@@ -212,6 +215,52 @@ def job_status_brief(job_id: str) -> dict[str, Any]:
         "exit_code": exit_code,
         "source": "sacct",
         "backend": result["backend"],
+    }
+
+
+def job_cancel(job_id: str) -> dict[str, Any]:
+    """精确取消单个 SLURM job，并回读同一 job_id 验证。
+
+    这是一个有副作用的操作，但安全边界必须窄：只接受一个经过 allow-list
+    校验的 job_id，不支持通配符、范围、``--me`` 或批量取消。
+    """
+    try:
+        job_id = _safe_job_id(job_id)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+    if not job_id:
+        return {"status": "error", "message": "job_id 不能为空。"}
+    runner = _runner()
+    cancel = _exec(runner, f"scancel {job_id}", timeout=20)
+    if not cancel["ok"]:
+        return {
+            "status": "error",
+            "job_id": job_id,
+            "message": cancel["stderr"] or cancel["stdout"] or "scancel 调用失败",
+            "backend": cancel["backend"],
+        }
+    check = _exec(runner, f"squeue -j {job_id} -h -o '%i|%T|%R'", timeout=20)
+    if check["ok"] and not check["stdout"]:
+        return {
+            "status": "canceled",
+            "job_id": job_id,
+            "verified_absent_from_squeue": True,
+            "backend": cancel["backend"],
+        }
+    if check["ok"]:
+        return {
+            "status": "pending_verification",
+            "job_id": job_id,
+            "verified_absent_from_squeue": False,
+            "squeue": check["stdout"],
+            "backend": cancel["backend"],
+        }
+    return {
+        "status": "submitted_cancel",
+        "job_id": job_id,
+        "verified_absent_from_squeue": None,
+        "message": check["stderr"] or check["stdout"] or "已调用 scancel，但 squeue 验证失败。",
+        "backend": cancel["backend"],
     }
 
 
@@ -353,9 +402,12 @@ def job_partial_outcar(
     except ValueError as exc:
         return {"status": "error", "message": str(exc), "remote_run_root": resolved_root_raw}
     quoted_outcar = _quote_shell(f"{resolved_root}/OUTCAR")
-    # 只取 OUTCAR 尾段以减少传输量
+    # 取 OUTCAR 尾段 + 全文件关键行的最后一小段。已完成的大 OUTCAR 末尾常是
+    # timing/memory accounting，单纯 tail 可能看不到最后一次能量/力。
     cmd = (
-        f"if [ -f {quoted_outcar} ]; then tail -n 400 {quoted_outcar}; "
+        f"if [ -f {quoted_outcar} ]; then "
+        f"{{ tail -n 400 {quoted_outcar}; "
+        f"grep -E \"TOTEN|FORCES: max atom|Iteration|reached required accuracy\" {quoted_outcar} | tail -n 160; }}; "
         f"else echo __AETHER_NO_OUTCAR__; fi"
     )
     result = _exec(runner, cmd, timeout=30)
@@ -370,18 +422,20 @@ def job_partial_outcar(
     text = result["stdout"]
     toten_matches = re.findall(r"TOTEN\s*=\s*(-?\d+\.\d+)", text)
     free_matches = re.findall(r"free\s+energy\s+TOTEN\s*=\s*(-?\d+\.\d+)", text)
-    force_match = re.search(r"FORCES: max atom, RMS\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)", text)
-    ionic_match = re.search(r"-+\s*Iteration\s*(\d+)\s*\(\s*(\d+)\s*\)", text)
+    force_matches = re.findall(r"FORCES: max atom, RMS\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)", text)
+    ionic_matches = re.findall(r"-+\s*Iteration\s*(\d+)\s*\(\s*(\d+)\s*\)", text)
+    force_match = force_matches[-1] if force_matches else None
+    ionic_match = ionic_matches[-1] if ionic_matches else None
     accuracy_reached = "reached required accuracy" in text.lower()
     return {
         "status": "ok",
         "remote_run_root": resolved_root,
         "last_toten_ev": float(toten_matches[-1]) if toten_matches else None,
         "last_free_energy_ev": float(free_matches[-1]) if free_matches else None,
-        "max_force_ev_a": float(force_match.group(1)) if force_match else None,
-        "rms_force_ev_a": float(force_match.group(2)) if force_match else None,
-        "last_ionic_step": int(ionic_match.group(1)) if ionic_match else None,
-        "last_scf_iter_within_step": int(ionic_match.group(2)) if ionic_match else None,
+        "max_force_ev_a": float(force_match[0]) if force_match else None,
+        "rms_force_ev_a": float(force_match[1]) if force_match else None,
+        "last_ionic_step": int(ionic_match[0]) if ionic_match else None,
+        "last_scf_iter_within_step": int(ionic_match[1]) if ionic_match else None,
         "accuracy_reached": accuracy_reached,
         "guidance": (
             "accuracy_reached=True 表示已收敛；False + max_force_ev_a > EDIFFG 阈值通常还需要更多 ionic step。"

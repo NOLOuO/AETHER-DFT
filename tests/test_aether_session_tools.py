@@ -234,3 +234,10 @@ def test_cli_session_and_tools_smoke(tmp_path: Path, monkeypatch, capsys):
     assert cli.main(["tools", "run", "recommend_next_tasks", "--arguments", "{\"focus\":\"adsorption\"}"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["result"]["status"] == "ok"
+
+    args_file = tmp_path / "tool-args.json"
+    args_file.write_text(json.dumps({"focus": "cluster"}), encoding="utf-8")
+    assert cli.main(["tools", "run", "recommend_next_tasks", "--arguments-file", str(args_file)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["arguments"]["focus"] == "cluster"
+    assert payload["result"]["status"] == "ok"

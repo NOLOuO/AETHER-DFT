@@ -227,6 +227,7 @@ CAPABILITY_CATEGORIES: dict[str, dict[str, Any]] = {
             "cluster_job_tail_log",
             "cluster_job_partial_outcar",
             "cluster_job_progress_estimate",
+            "cluster_job_cancel",
             "research_workspace_diff",
             "research_workspace_sync_to_cluster",
             "research_workspace_sync_from_cluster",
@@ -374,6 +375,7 @@ class ToolRegistry:
         self._register(ToolSpec("cluster_job_tail_log", "tail -n <lines> 集群上某 job 的日志（默认 vasp.out，找不到自动回落 logs/*、slurm.out、OSZICAR）。job_id 可用本地 run 记录反查 remote_run_root；也可直接传 remote_run_root。< 2 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "log_name": {"type": "string"}, "lines": {"type": "integer"}, "project_root": {"type": "string"}}, True), self._cluster_job_tail_log)
         self._register(ToolSpec("cluster_job_partial_outcar", "解析当前 OUTCAR 末段：能量 / 力 / ionic step / SCF 是否收敛。job_id 反查或直接 remote_run_root。< 3 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "project_root": {"type": "string"}}, True), self._cluster_job_partial_outcar)
         self._register(ToolSpec("cluster_job_progress_estimate", "用 OSZICAR ionic step 轨迹判断能量趋势：是否单调下降 / 震荡 / 给收敛分数。< 5 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "project_root": {"type": "string"}}, True), self._cluster_job_progress_estimate)
+        self._register(ToolSpec("cluster_job_cancel", "精确取消单个 SLURM job_id，并回读 squeue 验证；不支持批量、通配符或 --me。只在用户明确要求取消/撤销测试任务时调用。", {"job_id": {"type": "string"}}, False, ("job_id",)), self._cluster_job_cancel)
         self._register(ToolSpec("research_workspace_diff", "按项目比较本地 research/<project>/ 与集群 ~/research/<project>/ 差异；project 为空则比较整个 research。", {"project": {"type": "string"}, "remote_research_dir": {"type": "string"}}, True), self._research_workspace_diff)
         self._register(ToolSpec("research_workspace_sync_to_cluster", "把本地 research/<project>/ 推到集群 ~/research/<project>/；默认 dry-run，apply=true 才修改远端。", {"project": {"type": "string"}, "remote_research_dir": {"type": "string"}, "apply": {"type": "boolean"}}, False), self._research_workspace_sync_to_cluster)
         self._register(ToolSpec("research_workspace_sync_from_cluster", "从集群 ~/research/<project>/ 拉回本地 research/<project>/；默认 dry-run，apply=true 才覆盖本地且先备份。", {"project": {"type": "string"}, "remote_research_dir": {"type": "string"}, "apply": {"type": "boolean"}}, False), self._research_workspace_sync_from_cluster)
@@ -589,8 +591,8 @@ class ToolRegistry:
             "capability_stages": [
                 {"category": "project_context", "tools": ["project_continuity_digest", "web_search", "literature_search", "evidence_claim_audit", "chemistry_compute", "image_understand", "discussion_state_snapshot", "research_cycle_checkpoint", "research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
                 {"category": "structure_modeling", "tools": ["structure_modeling_tool_status", "structure_modeling_intent_plan", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
-                {"category": "dft_execution", "tools": ["cluster_execution_intent_plan", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch"]},
-                {"category": "realtime_cluster_status", "tools": ["cluster_job_status_brief", "cluster_my_jobs", "cluster_job_tail_log", "cluster_job_partial_outcar", "cluster_job_progress_estimate"]},
+                {"category": "dft_execution", "tools": ["cluster_execution_intent_plan", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "cluster_job_cancel"]},
+                {"category": "realtime_cluster_status", "tools": ["cluster_job_status_brief", "cluster_my_jobs", "cluster_job_tail_log", "cluster_job_partial_outcar", "cluster_job_progress_estimate", "cluster_job_cancel"]},
                 {"category": "result_analysis", "tools": ["vasp_output_scan", "result_interpret", "next_experiment_propose", "candidate_outcome_record"]},
                 {"category": "writeback_learning", "tools": ["research_learning_capture", "research_cycle_checkpoint", "evidence_claim_audit", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show", "project_progress_append", "behavior_audit"]},
             ],
@@ -2033,7 +2035,7 @@ class ToolRegistry:
 
     def _cluster_my_jobs(self, payload: dict[str, Any]) -> dict[str, Any]:
         from dft_app.remote.realtime import my_jobs
-        return my_jobs(limit=int(payload.get("limit") or 20))
+        return my_jobs(limit=payload.get("limit") or 20)
 
     def _cluster_job_tail_log(self, payload: dict[str, Any]) -> dict[str, Any]:
         from dft_app.remote.realtime import job_tail_log
@@ -2041,9 +2043,13 @@ class ToolRegistry:
             job_id=str(payload.get("job_id") or "").strip() or None,
             remote_run_root=str(payload.get("remote_run_root") or "").strip() or None,
             log_name=str(payload.get("log_name") or "vasp.out"),
-            lines=int(payload.get("lines") or 50),
+            lines=payload.get("lines") or 50,
             project_root=str(payload.get("project_root") or "").strip() or None,
         )
+
+    def _cluster_job_cancel(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from dft_app.remote.realtime import job_cancel
+        return job_cancel(str(payload.get("job_id") or "").strip())
 
     def _cluster_job_partial_outcar(self, payload: dict[str, Any]) -> dict[str, Any]:
         from dft_app.remote.realtime import job_partial_outcar

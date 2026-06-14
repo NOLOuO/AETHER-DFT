@@ -128,6 +128,29 @@ def test_job_status_brief_rejects_unsafe_job_id(monkeypatch):
     assert fake.calls == []
 
 
+def test_job_cancel_calls_scancel_and_verifies_absent(monkeypatch):
+    fake = _FakeRunner(
+        {
+            "scancel 12345": _FakeCommandResult(0, "", ""),
+            "squeue -j 12345": _FakeCommandResult(0, "", ""),
+        }
+    )
+    _patch_runner(monkeypatch, fake)
+    result = realtime.job_cancel("12345")
+    assert result["status"] == "canceled"
+    assert result["verified_absent_from_squeue"] is True
+    assert any(call.startswith("scancel 12345") for call in fake.calls)
+    assert any(call.startswith("squeue -j 12345") for call in fake.calls)
+
+
+def test_job_cancel_rejects_unsafe_job_id(monkeypatch):
+    fake = _FakeRunner()
+    _patch_runner(monkeypatch, fake)
+    result = realtime.job_cancel("12345; scancel --me")
+    assert result["status"] == "error"
+    assert fake.calls == []
+
+
 def test_my_jobs_parses_squeue_me(monkeypatch):
     stdout = "\n".join(
         [
@@ -283,6 +306,24 @@ def test_job_tail_log_allows_tilde_under_current_user(monkeypatch):
     assert result["remote_run_root"] == "/home/tester/runs/x/y"
 
 
+def test_job_tail_log_allows_cluster_research_workspace(monkeypatch):
+    body = "__AETHER_LOG_PATH__=OUTCAR\nok"
+    fake = _FakeRunner({"tail -n 1": _FakeCommandResult(0, body, "")})
+    _patch_runner(monkeypatch, fake)
+    result = realtime.job_tail_log(remote_run_root="~/research/MCH-Pt-Br/calc", log_name="OUTCAR", lines=1)
+    assert result["status"] == "ok"
+    assert result["remote_run_root"] == "/home/tester/research/MCH-Pt-Br/calc"
+
+
+def test_job_tail_log_allows_unicode_research_workspace(monkeypatch):
+    body = "__AETHER_LOG_PATH__=OUTCAR\nok"
+    fake = _FakeRunner({"tail -n 1": _FakeCommandResult(0, body, "")})
+    _patch_runner(monkeypatch, fake)
+    result = realtime.job_tail_log(remote_run_root="~/research/MCH-Pt-Br/微观动力学/calc", log_name="OUTCAR", lines=1)
+    assert result["status"] == "ok"
+    assert result["remote_run_root"] == "/home/tester/research/MCH-Pt-Br/微观动力学/calc"
+
+
 def test_job_tail_log_rejects_tilde_outside_remote_base(monkeypatch):
     fake = _FakeRunner()
     _patch_runner(monkeypatch, fake)
@@ -352,7 +393,30 @@ def test_tools_registered_in_registry():
         "cluster_job_tail_log",
         "cluster_job_partial_outcar",
         "cluster_job_progress_estimate",
+        "cluster_job_cancel",
     }.issubset(names)
+
+    cancel_spec = next(tool for tool in registry.list_tools() if tool["name"] == "cluster_job_cancel")
+    assert cancel_spec["read_only"] is False
+
+
+def test_registry_realtime_handlers_return_errors_instead_of_raising(monkeypatch):
+    from aether_dft.runtime_harness.tool_registry import ToolRegistry
+
+    fake = _FakeRunner()
+    _patch_runner(monkeypatch, fake)
+    registry = ToolRegistry()
+
+    result = registry.run_tool("cluster_my_jobs", {"limit": "abc"})["result"]
+    assert result["status"] == "error"
+    assert "limit" in result["message"]
+
+    result = registry.run_tool(
+        "cluster_job_tail_log",
+        {"remote_run_root": "/home/tester/runs/x/y", "lines": "abc"},
+    )["result"]
+    assert result["status"] == "error"
+    assert "lines" in result["message"]
 
 
 def test_prompt_includes_cluster_realtime_section():

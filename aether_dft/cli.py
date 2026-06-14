@@ -1628,7 +1628,14 @@ def handle_tools_run(args: argparse.Namespace) -> int:
     from .agent_tools import parse_tool_arguments
     from .tool_registry import AetherToolRegistry
 
-    arguments = parse_tool_arguments(args.arguments)
+    raw_arguments = args.arguments
+    if getattr(args, "arguments_file", None):
+        try:
+            raw_arguments = Path(args.arguments_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            print_json({"status": "error", "message": f"无法读取 --arguments-file: {exc}"})
+            return 1
+    arguments = parse_tool_arguments(raw_arguments)
     registry = AetherToolRegistry(allow_cluster_submit=args.allow_cluster_submit)
     print_json(registry.run_tool(args.name, arguments))
     return 0
@@ -2182,6 +2189,7 @@ def build_parser() -> argparse.ArgumentParser:
     tools_run = tools_sub.add_parser("run", help="直接运行一个注册工具。")
     tools_run.add_argument("name")
     tools_run.add_argument("--arguments", default="{}", help="JSON 参数对象。")
+    tools_run.add_argument("--arguments-file", help="从 JSON 文件读取参数对象，避免 Windows/PowerShell 引号问题。")
     tools_run.add_argument("--allow-cluster-submit", action="store_true")
     tools_run.set_defaults(func=handle_tools_run)
 
