@@ -27,6 +27,37 @@ def test_session_store_persists_and_resumes(tmp_path: Path):
     assert payload["recent_turns"][0]["record"]["prompt"] == "计算 H2O 吸附"
 
 
+def test_session_store_mirrors_project_session_reference(tmp_path: Path, monkeypatch):
+    import aether_dft.research_workspace as research_workspace
+
+    research_root = tmp_path / "research"
+    project_root = research_root / "MCH-Pt-Br"
+    project_root.mkdir(parents=True)
+    (research_root / "Common").mkdir()
+    monkeypatch.setattr(research_workspace, "RESEARCH_ROOT", research_root)
+    monkeypatch.setattr(research_workspace, "COMMON_DIR", research_root / "Common")
+
+    store = AetherSessionStore(tmp_path / "sessions")
+    session_id = store.start_session(project="MCH-Pt-Br", first_prompt="first")
+    transcript_path = store.append_turn(
+        session_id,
+        {"project": "MCH-Pt-Br", "prompt": "分析 MCH/Pt", "response": "先查 OUTCAR。"},
+    )
+
+    ref_path = project_root / ".aether" / "sessions" / f"{session_id}.json"
+    index_path = project_root / ".aether" / "sessions" / "sessions.json"
+    assert ref_path.exists()
+    assert index_path.exists()
+    reference = json.loads(ref_path.read_text(encoding="utf-8"))
+    assert reference["session_id"] == session_id
+    assert reference["project"] == "MCH-Pt-Br"
+    assert reference["turn_count"] == 1
+    assert reference["canonical_transcript"] == str(transcript_path)
+    assert store.project_session_reference_path(session_id) == ref_path
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    assert index[0]["session_id"] == session_id
+
+
 def test_tool_registry_exposes_builtin_agent_tools():
     tools = list_registered_tools()
     names = {item["name"] for item in tools}

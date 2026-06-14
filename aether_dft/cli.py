@@ -264,6 +264,10 @@ def handle_chat_command_palette() -> str | None:
 
 def print_chat_status(*, session_store: Any, session_id: str, project: str | None, args: argparse.Namespace | None = None) -> None:
     state = session_store.load_state(session_id)
+    project_ref = None
+    if hasattr(session_store, "project_session_reference_path"):
+        ref_path = session_store.project_session_reference_path(session_id)
+        project_ref = str(ref_path) if ref_path else None
     print_json(
         {
             "program": PROGRAM_NAME,
@@ -276,6 +280,7 @@ def print_chat_status(*, session_store: Any, session_id: str, project: str | Non
                 "project": project or state.get("project"),
                 "turn_count": state.get("turn_count"),
                 "updated_at": state.get("updated_at"),
+                "project_session_ref": project_ref,
             },
         }
     )

@@ -75,6 +75,11 @@ resume session:
   1. session_xxx  project=MCH-Pt-Br turns=4
 ```
 
+完整对话 transcript 存在 `.aether/runtime/sessions/<session_id>/transcript.jsonl`。
+为了让课题目录也能看见对应关系，AETHER 会在
+`research/<project>/.aether/sessions/` 写入轻量索引；这里不是科研正文，
+不会污染 `研究进展.md`。
+
 ## 4. 真实模型工具调用 smoke test（可选）
 
 显式开启后才会访问外部模型 API：

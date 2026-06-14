@@ -72,6 +72,76 @@ class AetherSessionStore:
     def _transcript_path(self, session_id: str) -> Path:
         return self._session_dir(session_id) / "transcript.jsonl"
 
+    def _project_session_ref_dir(self, project: str | None) -> Path | None:
+        if not project:
+            return None
+        try:
+            from .research_workspace import resolve_research_project
+        except Exception:
+            return None
+        paths = resolve_research_project(project)
+        if paths is None:
+            return None
+        return paths.root / ".aether" / "sessions"
+
+    def _project_session_ref_path(self, state: dict[str, Any]) -> Path | None:
+        session_id = str(state.get("session_id") or "").strip()
+        if not session_id:
+            return None
+        ref_dir = self._project_session_ref_dir(state.get("project"))
+        if ref_dir is None:
+            return None
+        return ref_dir / f"{session_id}.json"
+
+    def _write_project_session_reference(self, state: dict[str, Any]) -> Path | None:
+        """Mirror lightweight session metadata into ``research/<project>``.
+
+        The canonical transcript stays under ``.aether/runtime/sessions`` so the
+        harness has one durable append-only store.  This reference makes the
+        project directory self-describing without copying full conversations
+        into human-maintained research notes.
+        """
+
+        ref_path = self._project_session_ref_path(state)
+        if ref_path is None:
+            return None
+        ref_path.parent.mkdir(parents=True, exist_ok=True)
+        session_id = str(state.get("session_id") or "")
+        reference = {
+            "session_id": session_id,
+            "project": state.get("project"),
+            "created_at": state.get("created_at"),
+            "updated_at": state.get("updated_at"),
+            "turn_count": int(state.get("turn_count") or 0),
+            "first_prompt": str(state.get("first_prompt") or ""),
+            "last_response": str(state.get("last_response") or ""),
+            "canonical_state": str(self._state_path(session_id)),
+            "canonical_transcript": str(self._transcript_path(session_id)),
+            "note": "Lightweight project-facing index; canonical transcript remains in .aether/runtime/sessions.",
+        }
+        ref_path.write_text(json.dumps(reference, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        index_path = ref_path.parent / "sessions.json"
+        try:
+            existing = json.loads(index_path.read_text(encoding="utf-8")) if index_path.exists() else []
+        except Exception:
+            existing = []
+        if not isinstance(existing, list):
+            existing = []
+        entries = [entry for entry in existing if isinstance(entry, dict) and entry.get("session_id") != session_id]
+        entries.insert(0, reference)
+        index_path.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+        return ref_path
+
+    def project_session_reference_path(self, session_id: str) -> Path | None:
+        """Return the ``research/<project>`` reference path for a session if any."""
+
+        try:
+            state = self.load_state(session_id)
+        except Exception:
+            return None
+        return self._project_session_ref_path(state)
+
     def _load_index(self) -> list[dict[str, Any]]:
         if not self.index_path.exists():
             return []
@@ -104,6 +174,7 @@ class AetherSessionStore:
         entries = [entry for entry in self._load_index() if entry.get("session_id") != session_id]
         entries.insert(0, state)
         self._save_index(entries)
+        self._write_project_session_reference(state)
         return session_id
 
     def ensure_session(self, *, session_id: str | None = None, project: str | None = None, first_prompt: str = "") -> str:
@@ -159,6 +230,7 @@ class AetherSessionStore:
         state["last_response"] = _clean_text(record.get("response"))
         state["project"] = record.get("project", state.get("project"))
         self._state_path(session_id).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._write_project_session_reference(state)
 
         transcript_record = {
             "type": "turn",
@@ -277,6 +349,7 @@ class AetherSessionStore:
         entries = [entry for entry in self._load_index() if entry.get("session_id") != session_id]
         entries.insert(0, state)
         self._save_index(entries)
+        self._write_project_session_reference(state)
 
     def build_session_context(self, session_id: str, *, limit: int | None = None, max_chars: int | None = None) -> str:
         """Summarize recent turns so a resumed session actually carries forward context."""

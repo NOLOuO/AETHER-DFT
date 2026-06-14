@@ -55,6 +55,7 @@ aether adsorption plan "计算 H2O 在 Pt(111) 上的吸附" --adsorbate H2O --m
 - 结构/执行能力：`dft_app/` + `dft_shared/`
 - 编排/提示/工具：`aether_dft/runtime_harness/`、`aether_dft/prompt_assets/`、`aether_dft/tool_specs/`
 - 项目状态：用户面对的是 `research/<project>/`；`.aether/` 保存会话、运行记录、索引和兼容元数据。
+- 对话存储：完整 transcript 在 `.aether/runtime/sessions/<session_id>/transcript.jsonl`；绑定 research 课题时，会同步写一个轻量索引到 `research/<project>/.aether/sessions/`，用于 `/resume` 和人工追踪对应关系。
 
 ## 当前开发版交付状态
 
