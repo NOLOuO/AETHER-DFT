@@ -35,6 +35,21 @@ def _clean_jsonable(value: Any) -> Any:
     return value
 
 
+def _derive_session_title(text: Any, *, limit: int = 42) -> str:
+    """Create a stable human-readable title without calling an external model."""
+
+    cleaned = " ".join(_clean_text(text).split()).strip()
+    if not cleaned:
+        return "New research chat"
+    for prefix in ("只做", "请", "帮我", "继续", "讨论一下", "分析一下"):
+        if cleaned.startswith(prefix) and len(cleaned) > len(prefix) + 2:
+            cleaned = cleaned[len(prefix) :].lstrip("：: ，,")
+            break
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 1].rstrip() + "…"
+
+
 @dataclass(frozen=True)
 class SessionSummary:
     session_id: str
@@ -42,6 +57,7 @@ class SessionSummary:
     created_at: str
     updated_at: str
     turn_count: int
+    title: str
     first_prompt: str
     last_response: str
 
@@ -113,6 +129,7 @@ class AetherSessionStore:
             "created_at": state.get("created_at"),
             "updated_at": state.get("updated_at"),
             "turn_count": int(state.get("turn_count") or 0),
+            "title": str(state.get("title") or _derive_session_title(state.get("first_prompt"))),
             "first_prompt": str(state.get("first_prompt") or ""),
             "last_response": str(state.get("last_response") or ""),
             "canonical_state": str(self._state_path(session_id)),
@@ -165,6 +182,7 @@ class AetherSessionStore:
             "created_at": now,
             "updated_at": now,
             "turn_count": 0,
+            "title": _derive_session_title(first_prompt),
             "first_prompt": first_prompt,
             "last_response": "",
             "compact_summary": "",
@@ -205,6 +223,7 @@ class AetherSessionStore:
                     created_at=str(entry.get("created_at") or ""),
                     updated_at=str(entry.get("updated_at") or ""),
                     turn_count=int(entry.get("turn_count") or 0),
+                    title=str(entry.get("title") or _derive_session_title(entry.get("first_prompt"))),
                     first_prompt=str(entry.get("first_prompt") or ""),
                     last_response=str(entry.get("last_response") or ""),
                 )
@@ -227,6 +246,8 @@ class AetherSessionStore:
         state["turn_count"] = int(state.get("turn_count") or 0) + 1
         if not state.get("first_prompt"):
             state["first_prompt"] = str(record.get("prompt") or "")
+        if not state.get("title") or state.get("title") == "New research chat":
+            state["title"] = _derive_session_title(state.get("first_prompt") or record.get("prompt"))
         state["last_response"] = _clean_text(record.get("response"))
         state["project"] = record.get("project", state.get("project"))
         self._state_path(session_id).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")

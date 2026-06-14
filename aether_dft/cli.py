@@ -278,6 +278,7 @@ def print_chat_status(*, session_store: Any, session_id: str, project: str | Non
             "session": {
                 "id": session_id,
                 "project": project or state.get("project"),
+                "title": state.get("title"),
                 "turn_count": state.get("turn_count"),
                 "updated_at": state.get("updated_at"),
                 "project_session_ref": project_ref,
@@ -294,8 +295,10 @@ def print_chat_sessions(*, session_store: Any, project: str | None, limit: int =
     print(f"{Colors.CYAN}recent sessions{Colors.RESET}:")
     for item in sessions:
         project_label = item.project or "none"
+        title = _shorten_inline(getattr(item, "title", "") or item.first_prompt, limit=64) or "New research chat"
         first = _shorten_inline(item.first_prompt, limit=56) or "empty"
-        print(f"- {item.session_id}  project={project_label} turns={item.turn_count} updated={item.updated_at}")
+        print(f"- {title}  {Colors.DIM}{item.session_id}{Colors.RESET}")
+        print(f"  project={project_label} turns={item.turn_count} updated={item.updated_at}")
         print(f"  {Colors.DIM}{first}{Colors.RESET}")
 
 
@@ -303,7 +306,8 @@ def print_resume_preview(payload: dict[str, Any]) -> None:
     state = payload.get("state") or {}
     print(
         f"{Colors.GREEN}resumed{Colors.RESET}: "
-        f"{payload.get('session_id')} project={state.get('project') or 'none'} turns={state.get('turn_count') or 0}"
+        f"{state.get('title') or payload.get('session_id')} "
+        f"({payload.get('session_id')}) project={state.get('project') or 'none'} turns={state.get('turn_count') or 0}"
     )
     recent_turns = payload.get("recent_turns") or []
     if recent_turns:
@@ -323,6 +327,7 @@ def _session_matches_query(item: Any, query: str) -> bool:
         [
             str(getattr(item, "session_id", "") or ""),
             str(getattr(item, "project", "") or ""),
+            str(getattr(item, "title", "") or ""),
             str(getattr(item, "first_prompt", "") or ""),
             str(getattr(item, "last_response", "") or ""),
         ]
@@ -340,8 +345,10 @@ def handle_chat_resume_command(line: str, args: argparse.Namespace, session_stor
             return current_session_id
         print(f"{Colors.CYAN}resume session{Colors.RESET}:")
         for index, item in enumerate(sessions, start=1):
+            title = _shorten_inline(getattr(item, "title", "") or item.first_prompt, limit=64) or "New research chat"
             first = _shorten_inline(item.first_prompt, limit=64) or "empty"
-            print(f"  {index}. {item.session_id}  project={item.project or 'none'} turns={item.turn_count}")
+            print(f"  {index}. {title}  {Colors.DIM}{item.session_id}{Colors.RESET}")
+            print(f"     project={item.project or 'none'} turns={item.turn_count}")
             print(f"     {Colors.DIM}{first}{Colors.RESET}")
         if not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty()):
             print("非交互 stdin：请使用 /resume latest 或 /resume <session_id>。")
@@ -371,8 +378,10 @@ def handle_chat_resume_command(line: str, args: argparse.Namespace, session_stor
         elif len(matches) > 1:
             print(f"{Colors.CYAN}resume matches for {raw!r}{Colors.RESET}:")
             for index, item in enumerate(matches[:10], start=1):
+                title = _shorten_inline(getattr(item, "title", "") or item.first_prompt, limit=64) or "New research chat"
                 first = _shorten_inline(item.first_prompt, limit=64) or "empty"
-                print(f"  {index}. {item.session_id}  project={item.project or 'none'} turns={item.turn_count}")
+                print(f"  {index}. {title}  {Colors.DIM}{item.session_id}{Colors.RESET}")
+                print(f"     project={item.project or 'none'} turns={item.turn_count}")
                 print(f"     {Colors.DIM}{first}{Colors.RESET}")
             if not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty()):
                 print("非交互 stdin：请使用 /resume <session_id>。")

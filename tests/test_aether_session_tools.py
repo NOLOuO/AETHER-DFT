@@ -24,7 +24,25 @@ def test_session_store_persists_and_resumes(tmp_path: Path):
     payload = store.resume_payload(session_id=session_id)
     assert payload["status"] == "ok"
     assert payload["state"]["turn_count"] == 1
+    assert payload["state"]["title"] == "first"
     assert payload["recent_turns"][0]["record"]["prompt"] == "计算 H2O 吸附"
+
+
+def test_session_title_uses_first_real_prompt_when_session_starts_empty(tmp_path: Path):
+    store = AetherSessionStore(tmp_path / "sessions")
+    session_id = store.start_session(project="demo")
+    store.append_turn(
+        session_id,
+        {
+            "project": "demo",
+            "prompt": "讨论一下 H2O 在 Pt(111) 上应该先算哪些吸附构型",
+            "response": "先比较 top/bridge/hollow。",
+        },
+    )
+
+    payload = store.resume_payload(session_id=session_id)
+    assert payload["state"]["title"].startswith("H2O 在 Pt(111)")
+    assert store.list_sessions(project="demo")[0].title.startswith("H2O 在 Pt(111)")
 
 
 def test_session_store_mirrors_project_session_reference(tmp_path: Path, monkeypatch):
@@ -51,6 +69,7 @@ def test_session_store_mirrors_project_session_reference(tmp_path: Path, monkeyp
     reference = json.loads(ref_path.read_text(encoding="utf-8"))
     assert reference["session_id"] == session_id
     assert reference["project"] == "MCH-Pt-Br"
+    assert reference["title"] == "first"
     assert reference["turn_count"] == 1
     assert reference["canonical_transcript"] == str(transcript_path)
     assert store.project_session_reference_path(session_id) == ref_path
