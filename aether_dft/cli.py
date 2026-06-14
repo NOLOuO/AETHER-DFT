@@ -498,12 +498,60 @@ def handle_chat_project_command(line: str, args: argparse.Namespace, session_sto
         session_id = session_store.start_session(project=None)
         print(f"{Colors.GREEN}project cleared{Colors.RESET}; new session: {session_id}")
         return session_id
+    project_slug = raw
     try:
-        project = load_project(raw)
+        project = load_project(project_slug)
     except Exception as exc:
-        print(f"{Colors.RED}project switch failed{Colors.RESET}: {exc}")
-        return current_session_id
-    slug = str(project.get("slug") or raw)
+        query = raw.lower()
+        matches = [
+            item
+            for item in list_projects()
+            if query
+            and query
+            in " ".join(
+                [
+                    str(item.get("slug") or ""),
+                    str(item.get("name") or ""),
+                    str(item.get("title") or ""),
+                    str(item.get("description") or ""),
+                    str(item.get("source") or ""),
+                ]
+            ).lower()
+        ]
+        if len(matches) == 1:
+            project_slug = str(matches[0].get("slug") or matches[0].get("name") or raw)
+            project = load_project(project_slug)
+        elif len(matches) > 1:
+            print(f"{Colors.CYAN}project matches for {raw!r}{Colors.RESET}:")
+            for index, item in enumerate(matches[:10], start=1):
+                slug = str(item.get("slug") or item.get("name") or "")
+                title = str(item.get("title") or item.get("name") or slug)
+                source = str(item.get("source") or "")
+                print(f"  {index}. {slug}  {Colors.DIM}{_shorten_inline(title, limit=56)} [{source}]{Colors.RESET}")
+            if not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty()):
+                print("非交互 stdin：请使用 /project <完整 slug>。")
+                return current_session_id
+            try:
+                choice = input("project> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return current_session_id
+            if not choice:
+                print("project unchanged")
+                return current_session_id
+            if choice.isdigit() and 1 <= int(choice) <= len(matches[:10]):
+                project_slug = str(matches[int(choice) - 1].get("slug") or matches[int(choice) - 1].get("name") or raw)
+            else:
+                project_slug = choice
+            try:
+                project = load_project(project_slug)
+            except Exception as nested_exc:
+                print(f"{Colors.RED}project switch failed{Colors.RESET}: {nested_exc}")
+                return current_session_id
+        else:
+            print(f"{Colors.RED}project switch failed{Colors.RESET}: {exc}")
+            return current_session_id
+    slug = str(project.get("slug") or project_slug)
     args.project = slug
     session_id = session_store.latest_session_id(project=slug) or session_store.start_session(project=slug)
     print(f"{Colors.GREEN}project switched{Colors.RESET}: {Colors.YELLOW}{slug}{Colors.RESET}")

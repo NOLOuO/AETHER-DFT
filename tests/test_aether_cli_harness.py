@@ -434,6 +434,28 @@ def test_cli_history_and_rename_commands(monkeypatch, tmp_path, capsys):
     assert '"title": "新的科研会话标题"' in out
 
 
+def test_cli_project_command_fuzzy_matches_research_workspace(monkeypatch, tmp_path, capsys):
+    import aether_dft.research_workspace as research_workspace
+    from aether_dft.session_store import AetherSessionStore
+
+    research_root = tmp_path / "research"
+    (research_root / "Common").mkdir(parents=True)
+    (research_root / "MCH-Pt-Br").mkdir()
+    monkeypatch.setattr(research_workspace, "RESEARCH_ROOT", research_root)
+    monkeypatch.setattr(research_workspace, "COMMON_DIR", research_root / "Common")
+
+    store = AetherSessionStore(tmp_path / "sessions")
+    current = store.start_session(project=None)
+    args = argparse.Namespace(project=None)
+
+    session_id = cli.handle_chat_project_command("/project mch", args, store, current)
+
+    out = capsys.readouterr().out
+    assert args.project == "MCH-Pt-Br"
+    assert session_id != current
+    assert "project switched" in out
+
+
 def test_cli_interactive_resume_is_scoped_to_current_project(monkeypatch, tmp_path, capsys):
     import aether_dft.paths as paths
     import aether_dft.session_store as session_store
