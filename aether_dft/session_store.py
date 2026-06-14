@@ -56,6 +56,8 @@ class SessionSummary:
     title: str
     first_prompt: str
     last_response: str
+    pending_turn_status: str = ""
+    pending_prompt: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -128,6 +130,7 @@ class AetherSessionStore:
             "title": str(state.get("title") or _derive_session_title(state.get("first_prompt"))),
             "first_prompt": str(state.get("first_prompt") or ""),
             "last_response": str(state.get("last_response") or ""),
+            "pending_turn": state.get("pending_turn") if isinstance(state.get("pending_turn"), dict) else None,
             "canonical_state": str(self._state_path(session_id)),
             "canonical_transcript": str(self._transcript_path(session_id)),
             "note": "Lightweight project-facing index; canonical transcript remains in .aether/runtime/sessions.",
@@ -167,6 +170,13 @@ class AetherSessionStore:
     def _save_index(self, entries: list[dict[str, Any]]) -> None:
         self.index_path.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _write_state(self, session_id: str, state: dict[str, Any]) -> None:
+        self._state_path(session_id).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        entries = [entry for entry in self._load_index() if entry.get("session_id") != session_id]
+        entries.insert(0, state)
+        self._save_index(entries)
+        self._write_project_session_reference(state)
+
     def start_session(self, *, project: str | None = None, first_prompt: str = "", session_id: str | None = None) -> str:
         session_id = session_id or f"session_{uuid4().hex[:12]}"
         now = _now_iso()
@@ -184,11 +194,7 @@ class AetherSessionStore:
             "compact_summary": "",
             "compacted_turn_count": 0,
         }
-        self._state_path(session_id).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        entries = [entry for entry in self._load_index() if entry.get("session_id") != session_id]
-        entries.insert(0, state)
-        self._save_index(entries)
-        self._write_project_session_reference(state)
+        self._write_state(session_id, state)
         return session_id
 
     def ensure_session(self, *, session_id: str | None = None, project: str | None = None, first_prompt: str = "") -> str:
@@ -197,6 +203,77 @@ class AetherSessionStore:
         if session_id:
             return self.start_session(project=project, first_prompt=first_prompt, session_id=session_id)
         return self.start_session(project=project, first_prompt=first_prompt)
+
+    def record_pending_turn(
+        self,
+        session_id: str,
+        *,
+        prompt: str,
+        project: str | None = None,
+        model_id: str | None = None,
+        status: str = "in_progress",
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        """Remember an in-flight user prompt without writing a fake transcript turn."""
+
+        state = self.load_state(session_id)
+        now = _now_iso()
+        pending = {
+            "prompt": str(prompt or ""),
+            "project": project if project is not None else state.get("project"),
+            "model_id": model_id,
+            "status": status,
+            "error": str(error or ""),
+            "created_at": now,
+            "updated_at": now,
+        }
+        state["pending_turn"] = pending
+        state["updated_at"] = now
+        if project is not None:
+            state["project"] = project
+        if not state.get("first_prompt"):
+            state["first_prompt"] = str(prompt or "")
+        if not state.get("title") or state.get("title") == "New research chat":
+            state["title"] = _derive_session_title(state.get("first_prompt") or prompt)
+        self._write_state(session_id, state)
+        return pending
+
+    def mark_pending_turn_failed(self, session_id: str, *, error: str) -> dict[str, Any] | None:
+        state = self.load_state(session_id)
+        pending = state.get("pending_turn")
+        if not isinstance(pending, dict) or not str(pending.get("prompt") or "").strip():
+            return None
+        pending["status"] = "failed"
+        pending["error"] = str(error or "")
+        pending["updated_at"] = _now_iso()
+        state["pending_turn"] = pending
+        state["updated_at"] = pending["updated_at"]
+        self._write_state(session_id, state)
+        return pending
+
+    def clear_pending_turn(self, session_id: str) -> None:
+        state = self.load_state(session_id)
+        if "pending_turn" not in state:
+            return
+        state.pop("pending_turn", None)
+        state["updated_at"] = _now_iso()
+        self._write_state(session_id, state)
+
+    def pending_turn(self, session_id: str) -> dict[str, Any] | None:
+        pending = self.load_state(session_id).get("pending_turn")
+        if isinstance(pending, dict) and str(pending.get("prompt") or "").strip():
+            return pending
+        return None
+
+    def rename_session(self, session_id: str, title: str) -> dict[str, Any]:
+        state = self.load_state(session_id)
+        cleaned = " ".join(str(title or "").split()).strip()
+        if not cleaned:
+            raise ValueError("session title 不能为空。")
+        state["title"] = _derive_session_title(cleaned, limit=80)
+        state["updated_at"] = _now_iso()
+        self._write_state(session_id, state)
+        return state
 
     def latest_session_id(self, *, project: str | None = None) -> str | None:
         for entry in self._load_index():
@@ -212,6 +289,7 @@ class AetherSessionStore:
         for entry in self._load_index():
             if project and entry.get("project") != project:
                 continue
+            pending = entry.get("pending_turn") if isinstance(entry.get("pending_turn"), dict) else {}
             summaries.append(
                 SessionSummary(
                     session_id=str(entry.get("session_id") or ""),
@@ -222,6 +300,8 @@ class AetherSessionStore:
                     title=str(entry.get("title") or _derive_session_title(entry.get("first_prompt"))),
                     first_prompt=str(entry.get("first_prompt") or ""),
                     last_response=str(entry.get("last_response") or ""),
+                    pending_turn_status=str(pending.get("status") or ""),
+                    pending_prompt=str(pending.get("prompt") or ""),
                 )
             )
             if len(summaries) >= limit:
@@ -246,6 +326,7 @@ class AetherSessionStore:
             state["title"] = _derive_session_title(state.get("first_prompt") or record.get("prompt"))
         state["last_response"] = _clean_text(record.get("response"))
         state["project"] = record.get("project", state.get("project"))
+        state.pop("pending_turn", None)
         self._state_path(session_id).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         self._write_project_session_reference(state)
 
@@ -282,6 +363,25 @@ class AetherSessionStore:
     def read_transcript(self, session_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
         rows = self._read_transcript_rows(session_id)
         return rows[-limit:]
+
+    def search_transcript(self, session_id: str, *, query: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        rows = self._read_transcript_rows(session_id)
+        needle = " ".join(str(query or "").lower().split())
+        matches: list[dict[str, Any]] = []
+        for row in reversed(rows):
+            record = row.get("record") or {}
+            haystack = " ".join(
+                [
+                    str(record.get("prompt") or ""),
+                    str(record.get("response") or ""),
+                    json.dumps(record.get("tool_executions") or [], ensure_ascii=False, default=str),
+                ]
+            ).lower()
+            if not needle or needle in haystack:
+                matches.append(row)
+            if len(matches) >= limit:
+                break
+        return list(reversed(matches))
 
     @staticmethod
     def _collapse_text(value: Any, *, limit: int = 220) -> str:
@@ -418,8 +518,6 @@ class AetherSessionStore:
         else:
             default_limit = 10_000
         recent_turns = self.read_transcript(session_id, limit=limit or default_limit)
-        if not recent_turns:
-            return ""
 
         start_turn = max(1, int(state.get("turn_count") or 0) - len(recent_turns) + 1)
         lines = [
@@ -441,16 +539,29 @@ class AetherSessionStore:
                     compact_summary,
                 ]
             )
-        lines.extend(["", "### Recent Turns"])
-        for offset, turn in enumerate(recent_turns, start=start_turn):
-            record = dict(turn.get("record") or {})
-            prompt = self._collapse_text(record.get("prompt"))
-            response = self._collapse_text(record.get("response"))
-            tool_trail = self._tool_trail(list(record.get("tool_executions") or []))
-            lines.append(f"- turn {offset} user: {prompt or 'n/a'}")
-            lines.append(f"  assistant: {response or 'n/a'}")
-            if tool_trail:
-                lines.append(f"  tool_trail: {'; '.join(tool_trail)}")
+        pending = state.get("pending_turn")
+        if isinstance(pending, dict) and str(pending.get("prompt") or "").strip():
+            lines.extend(
+                [
+                    "",
+                    "## Pending Turn",
+                    f"- status: {pending.get('status') or 'in_progress'}",
+                    f"- updated_at: {pending.get('updated_at') or ''}",
+                    f"- user_prompt: {self._collapse_text(pending.get('prompt'), limit=360)}",
+                    "- note: this prompt has not received a completed assistant answer; continue it only when the user asks to continue/retry",
+                ]
+            )
+        if recent_turns:
+            lines.extend(["", "### Recent Turns"])
+            for offset, turn in enumerate(recent_turns, start=start_turn):
+                record = dict(turn.get("record") or {})
+                prompt = self._collapse_text(record.get("prompt"))
+                response = self._collapse_text(record.get("response"))
+                tool_trail = self._tool_trail(list(record.get("tool_executions") or []))
+                lines.append(f"- turn {offset} user: {prompt or 'n/a'}")
+                lines.append(f"  assistant: {response or 'n/a'}")
+                if tool_trail:
+                    lines.append(f"  tool_trail: {'; '.join(tool_trail)}")
 
         text = "\n".join(lines).strip()
         if len(text) <= max_chars:

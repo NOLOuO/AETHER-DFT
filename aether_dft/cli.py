@@ -212,6 +212,9 @@ def print_chat_help() -> None:
     print(f"  {Colors.GREEN}/sessions{Colors.RESET}    最近会话列表")
     print(f"  {Colors.GREEN}/new{Colors.RESET}         新开当前项目的 session")
     print(f"  {Colors.GREEN}/resume{Colors.RESET}      打开会话续接选择器")
+    print(f"  {Colors.GREEN}/continue{Colors.RESET}    继续上次失败/未完成的用户输入")
+    print(f"  {Colors.GREEN}/history{Colors.RESET}     搜索/查看当前 session 对话历史")
+    print(f"  {Colors.GREEN}/rename{Colors.RESET}      重命名当前 session")
     print(f"  {Colors.GREEN}/preload{Colors.RESET}     模型本轮会预加载哪些设定")
     print(f"  {Colors.GREEN}/context{Colors.RESET}     当前 1M context budget 与压缩状态")
     print(f"  {Colors.GREEN}/compact{Colors.RESET}     手动压缩旧对话上下文，保留完整 transcript")
@@ -228,6 +231,9 @@ CHAT_COMMAND_PALETTE: list[tuple[str, str]] = [
     ("/model", "切换模型"),
     ("/project", "切换 research 课题项目"),
     ("/resume", "切换当前项目内的对话"),
+    ("/continue", "继续上次失败/未完成输入"),
+    ("/history", "搜索/查看当前 session 历史"),
+    ("/rename", "重命名当前 session"),
     ("/new", "新开当前项目会话"),
     ("/status", "查看当前 session/model/project/permission"),
     ("/sessions", "列出当前 scope 的最近会话"),
@@ -283,6 +289,7 @@ def print_chat_status(*, session_store: Any, session_id: str, project: str | Non
                 "title": state.get("title"),
                 "turn_count": state.get("turn_count"),
                 "updated_at": state.get("updated_at"),
+                "pending_turn": state.get("pending_turn") if isinstance(state.get("pending_turn"), dict) else None,
                 "project_session_ref": project_ref,
             },
         }
@@ -302,6 +309,11 @@ def print_chat_sessions(*, session_store: Any, project: str | None, limit: int =
         print(f"- {title}  {Colors.DIM}{item.session_id}{Colors.RESET}")
         print(f"  project={project_label} turns={item.turn_count} updated={item.updated_at}")
         print(f"  {Colors.DIM}{first}{Colors.RESET}")
+        if getattr(item, "pending_turn_status", ""):
+            print(
+                f"  {Colors.YELLOW}pending={item.pending_turn_status}{Colors.RESET}: "
+                f"{_shorten_inline(getattr(item, 'pending_prompt', ''), limit=72)}"
+            )
 
 
 def print_resume_preview(payload: dict[str, Any]) -> None:
@@ -318,6 +330,13 @@ def print_resume_preview(payload: dict[str, Any]) -> None:
             record = turn.get("record", {})
             print(f"- user: {_shorten_inline(record.get('prompt'), limit=90)}")
             print(f"  assistant: {_shorten_inline(record.get('response'), limit=90)}")
+    pending = state.get("pending_turn")
+    if isinstance(pending, dict) and str(pending.get("prompt") or "").strip():
+        print(
+            f"{Colors.YELLOW}未完成输入{Colors.RESET} ({pending.get('status') or 'pending'}): "
+            f"{_shorten_inline(pending.get('prompt'), limit=100)}"
+        )
+        print(f"{Colors.DIM}输入 /continue 可继续这条输入。{Colors.RESET}")
 
 
 def _resumable_sessions(session_store: Any, *, project: str | None, current_session_id: str, limit: int = 20) -> list[Any]:
@@ -337,23 +356,50 @@ def _session_matches_query(item: Any, query: str) -> bool:
     return query.lower() in text
 
 
+def _print_resume_options(sessions: list[Any], *, heading: str) -> None:
+    print(f"{Colors.CYAN}{heading}{Colors.RESET}:")
+    for index, item in enumerate(sessions, start=1):
+        title = _shorten_inline(getattr(item, "title", "") or item.first_prompt, limit=64) or "New research chat"
+        first = _shorten_inline(item.first_prompt, limit=64) or "empty"
+        last = _shorten_inline(getattr(item, "last_response", "") or "", limit=76)
+        print(f"  {index}. {title}  {Colors.DIM}{item.session_id}{Colors.RESET}")
+        print(f"     project={item.project or 'none'} turns={item.turn_count} updated={getattr(item, 'updated_at', '')}")
+        print(f"     {Colors.DIM}{first}{Colors.RESET}")
+        if last:
+            print(f"     last: {Colors.DIM}{last}{Colors.RESET}")
+        if getattr(item, "pending_turn_status", ""):
+            print(
+                f"     {Colors.YELLOW}pending={item.pending_turn_status}{Colors.RESET}: "
+                f"{_shorten_inline(getattr(item, 'pending_prompt', ''), limit=72)}"
+            )
+
+
 def handle_chat_resume_command(line: str, args: argparse.Namespace, session_store: Any, current_session_id: str) -> str:
     raw = line[len("/resume") :].strip()
-    scoped_sessions = _resumable_sessions(session_store, project=args.project, current_session_id=current_session_id, limit=20)
+    all_scope = False
+    if raw in {"all", "--all"}:
+        all_scope = True
+        raw = ""
+    elif raw.startswith("all "):
+        all_scope = True
+        raw = raw[len("all ") :].strip()
+    elif raw.startswith("--all "):
+        all_scope = True
+        raw = raw[len("--all ") :].strip()
+    scope_project = None if all_scope else args.project
+    scoped_sessions = _resumable_sessions(session_store, project=scope_project, current_session_id=current_session_id, limit=50)
     if raw == "":
         sessions = scoped_sessions[:10]
         if not sessions:
-            print("没有可续接的 session。")
+            scope = "全部项目" if all_scope or not args.project else f"当前项目 {args.project}"
+            print(f"{scope} 没有可续接的 session。")
+            if args.project and not all_scope:
+                print(f"{Colors.DIM}需要跨项目查找时输入 /resume all。{Colors.RESET}")
             return current_session_id
-        print(f"{Colors.CYAN}resume session{Colors.RESET}:")
-        for index, item in enumerate(sessions, start=1):
-            title = _shorten_inline(getattr(item, "title", "") or item.first_prompt, limit=64) or "New research chat"
-            first = _shorten_inline(item.first_prompt, limit=64) or "empty"
-            print(f"  {index}. {title}  {Colors.DIM}{item.session_id}{Colors.RESET}")
-            print(f"     project={item.project or 'none'} turns={item.turn_count}")
-            print(f"     {Colors.DIM}{first}{Colors.RESET}")
+        heading = "resume session (all projects)" if all_scope else "resume session"
+        _print_resume_options(sessions, heading=heading)
         if not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty()):
-            print("非交互 stdin：请使用 /resume latest 或 /resume <session_id>。")
+            print("非交互 stdin：请使用 /resume latest、/resume all latest 或 /resume <session_id>。")
             return current_session_id
         try:
             choice = input("resume> ").strip()
@@ -378,13 +424,7 @@ def handle_chat_resume_command(line: str, args: argparse.Namespace, session_stor
         if len(matches) == 1:
             raw = matches[0].session_id
         elif len(matches) > 1:
-            print(f"{Colors.CYAN}resume matches for {raw!r}{Colors.RESET}:")
-            for index, item in enumerate(matches[:10], start=1):
-                title = _shorten_inline(getattr(item, "title", "") or item.first_prompt, limit=64) or "New research chat"
-                first = _shorten_inline(item.first_prompt, limit=64) or "empty"
-                print(f"  {index}. {title}  {Colors.DIM}{item.session_id}{Colors.RESET}")
-                print(f"     project={item.project or 'none'} turns={item.turn_count}")
-                print(f"     {Colors.DIM}{first}{Colors.RESET}")
+            _print_resume_options(matches[:10], heading=f"resume matches for {raw!r}")
             if not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty()):
                 print("非交互 stdin：请使用 /resume <session_id>。")
                 return current_session_id
@@ -401,7 +441,8 @@ def handle_chat_resume_command(line: str, args: argparse.Namespace, session_stor
             else:
                 raw = choice
         else:
-            print(f"没有找到匹配 {raw!r} 的 session。用 /resume 打开选择器。")
+            suffix = "；跨项目查找可用 /resume all <query>" if args.project and not all_scope else ""
+            print(f"没有找到匹配 {raw!r} 的 session。用 /resume 打开选择器{suffix}。")
             return current_session_id
     try:
         payload = session_store.resume_payload(session_id=raw)
@@ -620,6 +661,129 @@ def print_turn_footer(record: dict[str, Any]) -> None:
     if tool_executions:
         footer += f" | tools={len(tool_executions)}"
     print(f"{Colors.DIM}{footer}{Colors.RESET}")
+
+
+def run_chat_model_turn(
+    prompt: str,
+    *,
+    args: argparse.Namespace,
+    session_store: Any,
+    session_id: str | None,
+    failure_hint: str,
+) -> tuple[bool, str]:
+    session_id = session_store.ensure_session(session_id=session_id, project=args.project, first_prompt=prompt)
+    if hasattr(session_store, "record_pending_turn"):
+        session_store.record_pending_turn(
+            session_id,
+            prompt=prompt,
+            project=args.project,
+            model_id=active_model_id(args),
+            status="in_progress",
+        )
+    stream_printer, stream_state = make_stream_printer()
+    try:
+        record = ask_once(
+            prompt,
+            project=args.project,
+            model_id=args.model,
+            max_tokens=args.max_tokens,
+            max_steps=args.max_steps,
+            session_id=session_id,
+            permission_mode=get_permission_mode(),
+            progress_callback=make_chat_progress_printer(),
+            permission_prompt_callback=make_permission_prompt_callback(),
+            stream_callback=stream_printer,
+        )
+    except Exception as exc:
+        if hasattr(session_store, "mark_pending_turn_failed"):
+            session_store.mark_pending_turn_failed(session_id, error=str(exc))
+        print(f"{Colors.RED}模型调用失败{Colors.RESET}: {_shorten_inline(str(exc), limit=360)}")
+        print(f"{Colors.DIM}{failure_hint}；这条输入已保存在当前 session，修复后可输入 /continue 重试。{Colors.RESET}")
+        return False, session_id
+    if hasattr(session_store, "clear_pending_turn"):
+        session_store.clear_pending_turn(session_id)
+    print_streamed_or_final_response(record, stream_state)
+    print_turn_footer(record)
+    next_steps = (record.get("progress") or {}).get("next_steps") or []
+    if next_steps:
+        print(f"[next] {next_steps[0]}")
+    return True, session_id
+
+
+def handle_chat_continue_command(args: argparse.Namespace, session_store: Any, session_id: str) -> tuple[bool, str]:
+    if not hasattr(session_store, "pending_turn"):
+        print("当前 session 没有可继续的未完成输入。")
+        return True, session_id
+    pending = session_store.pending_turn(session_id)
+    if not pending:
+        print("当前 session 没有可继续的未完成输入。")
+        return True, session_id
+    pending_project = pending.get("project")
+    if pending_project:
+        args.project = str(pending_project)
+    prompt = str(pending.get("prompt") or "").strip()
+    print(f"{Colors.CYAN}continue>{Colors.RESET} {_shorten_inline(prompt, limit=140)}")
+    return run_chat_model_turn(
+        prompt,
+        args=args,
+        session_store=session_store,
+        session_id=session_id,
+        failure_hint="本 session 仍然保留",
+    )
+
+
+def handle_chat_history_command(line: str, *, session_store: Any, session_id: str) -> None:
+    raw = line[len("/history") :].strip()
+    limit = 12
+    query = raw
+    match = re.search(r"(?:^|\s)--limit\s+(\d+)(?:\s|$)", raw)
+    if match:
+        limit = max(1, min(int(match.group(1)), 100))
+        query = (raw[: match.start()] + " " + raw[match.end() :]).strip()
+    if hasattr(session_store, "search_transcript"):
+        turns = session_store.search_transcript(session_id, query=query, limit=limit)
+    else:
+        turns = session_store.read_transcript(session_id, limit=limit)
+    if not turns:
+        print("当前 session 没有匹配的历史。")
+        return
+    heading = "history" if not query else f"history matches for {query!r}"
+    print(f"{Colors.CYAN}{heading}{Colors.RESET}:")
+    for turn in turns:
+        record = turn.get("record") or {}
+        timestamp = str(turn.get("timestamp") or "")
+        print(f"- {Colors.DIM}{timestamp}{Colors.RESET} user: {_shorten_inline(record.get('prompt'), limit=110)}")
+        response = _shorten_inline(record.get("response"), limit=120)
+        if response:
+            print(f"  assistant: {response}")
+        tool_names = [str(item.get("name") or "") for item in record.get("tool_executions") or [] if item.get("name")]
+        if tool_names:
+            print(f"  tools: {', '.join(tool_names[:8])}")
+
+
+def handle_chat_rename_command(line: str, *, session_store: Any, session_id: str) -> None:
+    title = line[len("/rename") :].strip()
+    if not title:
+        if not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty()):
+            print("用法：/rename <新标题>")
+            return
+        try:
+            title = input("title> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+    if not title:
+        print("rename cancelled")
+        return
+    if not hasattr(session_store, "rename_session"):
+        print("当前 session store 不支持 rename。")
+        return
+    try:
+        state = session_store.rename_session(session_id, title)
+    except Exception as exc:
+        print(f"{Colors.RED}rename failed{Colors.RESET}: {exc}")
+        return
+    print(f"{Colors.GREEN}renamed{Colors.RESET}: {state.get('title')}")
 
 
 def handle_chat_model_command(line: str, args: argparse.Namespace) -> None:
@@ -1228,31 +1392,14 @@ def handle_chat(args: argparse.Namespace) -> int:
         return 0
 
     if prompt:
-        stream_printer, stream_state = make_stream_printer()
-        try:
-            record = ask_once(
-                prompt,
-                project=args.project,
-                model_id=args.model,
-                max_tokens=args.max_tokens,
-                max_steps=args.max_steps,
-                session_id=session_id,
-                permission_mode=get_permission_mode(),
-                progress_callback=make_chat_progress_printer(),
-                permission_prompt_callback=make_permission_prompt_callback(),
-                stream_callback=stream_printer,
-            )
-        except Exception as exc:
-            print(f"{Colors.RED}模型调用失败{Colors.RESET}: {_shorten_inline(str(exc), limit=360)}")
-            print(f"{Colors.DIM}可以稍后重试，或临时切换同类 OpenAI-compatible 后端：aether chat --model qwen <你的问题>{Colors.RESET}")
-            return 1
-        print_streamed_or_final_response(record, stream_state)
-        print()
-        print_turn_footer(record)
-        next_steps = (record.get("progress") or {}).get("next_steps") or []
-        if next_steps:
-            print(f"[next] {next_steps[0]}")
-        return 0
+        ok, session_id = run_chat_model_turn(
+            prompt,
+            args=args,
+            session_store=session_store,
+            session_id=session_id,
+            failure_hint="可以稍后重试，或用 /model 切换同类 OpenAI-compatible 后端",
+        )
+        return 0 if ok else 1
 
     if not session_id:
         session_id = session_store.start_session(project=args.project)
@@ -1302,6 +1449,15 @@ def handle_chat(args: argparse.Namespace) -> int:
             continue
         if line.startswith("/resume"):
             session_id = handle_chat_resume_command(line, args, session_store, session_id)
+            continue
+        if line == "/continue":
+            _, session_id = handle_chat_continue_command(args, session_store, session_id)
+            continue
+        if line.startswith("/history"):
+            handle_chat_history_command(line, session_store=session_store, session_id=session_id)
+            continue
+        if line.startswith("/rename"):
+            handle_chat_rename_command(line, session_store=session_store, session_id=session_id)
             continue
         if line == "/preload":
             handle_preload(argparse.Namespace(project=args.project, probe_cluster=False, json=False))
@@ -1378,29 +1534,13 @@ def handle_chat(args: argparse.Namespace) -> int:
             focus = line[len("/recommend") :].strip() or None
             print_json({"recommendations": recommend_next_tasks(args.project, focus=focus)})
             continue
-        stream_printer, stream_state = make_stream_printer()
-        try:
-            record = ask_once(
-                line,
-                project=args.project,
-                model_id=args.model,
-                max_tokens=args.max_tokens,
-                max_steps=args.max_steps,
-                session_id=session_id,
-                permission_mode=get_permission_mode(),
-                progress_callback=make_chat_progress_printer(),
-                permission_prompt_callback=make_permission_prompt_callback(),
-                stream_callback=stream_printer,
-            )
-        except Exception as exc:
-            print(f"{Colors.RED}模型调用失败{Colors.RESET}: {_shorten_inline(str(exc), limit=360)}")
-            print(f"{Colors.DIM}本 session 仍然保留；输入 /model 打开模型选择器后继续，或稍后重试。{Colors.RESET}")
-            continue
-        print_streamed_or_final_response(record, stream_state)
-        print_turn_footer(record)
-        next_steps = (record.get("progress") or {}).get("next_steps") or []
-        if next_steps:
-            print(f"[next] {next_steps[0]}")
+        _, session_id = run_chat_model_turn(
+            line,
+            args=args,
+            session_store=session_store,
+            session_id=session_id,
+            failure_hint="本 session 仍然保留；输入 /model 打开模型选择器后继续，或稍后重试",
+        )
 
 
 def handle_session_list(args: argparse.Namespace) -> int:

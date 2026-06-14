@@ -133,6 +133,40 @@ def test_session_manual_compact_keeps_recent_turns_without_deleting_transcript(t
     assert "turn 3 user: prompt 2" not in context
 
 
+def test_session_pending_turn_is_resume_metadata_not_transcript(tmp_path: Path):
+    store = AetherSessionStore(tmp_path / "sessions")
+    session_id = store.start_session(project="demo")
+
+    pending = store.record_pending_turn(session_id, prompt="继续分析最新 OUTCAR", project="demo", model_id="bailian:qwen")
+    context = store.build_session_context(session_id)
+
+    assert pending["status"] == "in_progress"
+    assert store.read_transcript(session_id, limit=10) == []
+    assert "## Pending Turn" in context
+    assert "继续分析最新 OUTCAR" in context
+
+    store.append_turn(session_id, {"project": "demo", "prompt": "继续分析最新 OUTCAR", "response": "已经完成。"})
+
+    assert store.pending_turn(session_id) is None
+    assert "Pending Turn" not in store.build_session_context(session_id)
+    assert len(store.read_transcript(session_id, limit=10)) == 1
+
+
+def test_session_search_and_rename(tmp_path: Path):
+    store = AetherSessionStore(tmp_path / "sessions")
+    session_id = store.start_session(project="demo", first_prompt="初始讨论")
+    store.append_turn(session_id, {"project": "demo", "prompt": "讨论 Pt slab", "response": "需要检查表面。"})
+    store.append_turn(session_id, {"project": "demo", "prompt": "分析 OUTCAR 收敛", "response": "电子步已收敛。"})
+
+    matches = store.search_transcript(session_id, query="OUTCAR", limit=5)
+    renamed = store.rename_session(session_id, "Pt slab OUTCAR follow-up")
+
+    assert len(matches) == 1
+    assert matches[0]["record"]["prompt"] == "分析 OUTCAR 收敛"
+    assert renamed["title"] == "Pt slab OUTCAR follow-up"
+    assert store.list_sessions(project="demo")[0].title == "Pt slab OUTCAR follow-up"
+
+
 def test_session_context_includes_compact_tool_trail_without_large_results(tmp_path: Path):
     store = AetherSessionStore(tmp_path / "sessions")
     session_id = store.start_session(project="demo")

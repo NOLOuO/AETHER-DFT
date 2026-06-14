@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import sys
@@ -334,6 +335,23 @@ def test_cli_interactive_sessions_and_resume_command(monkeypatch, tmp_path, caps
     assert '"project": "MCH-Pt-Br"' in out
 
 
+def test_cli_resume_all_search_can_cross_project(tmp_path, capsys):
+    from aether_dft.session_store import AetherSessionStore
+
+    store = AetherSessionStore(tmp_path / "sessions")
+    current = store.start_session(project="MCH-Pt-Br", first_prompt="current")
+    other = store.start_session(project="Other", first_prompt="other surface discussion")
+    store.append_turn(other, {"project": "Other", "prompt": "other surface discussion", "response": "other response"})
+    args = argparse.Namespace(project="MCH-Pt-Br")
+
+    resumed = cli.handle_chat_resume_command("/resume all surface", args, store, current)
+
+    out = capsys.readouterr().out
+    assert resumed == other
+    assert "resumed" in out
+    assert args.project == "Other"
+
+
 def test_cli_interactive_resume_command_opens_selector(monkeypatch, tmp_path, capsys):
     import aether_dft.paths as paths
     import aether_dft.session_store as session_store
@@ -358,6 +376,62 @@ def test_cli_interactive_resume_command_opens_selector(monkeypatch, tmp_path, ca
     assert newer in out
     assert f'"id": "{older}"' in out
     assert '"project": "MCH-Pt-Br"' in out
+
+
+def test_cli_failed_turn_can_continue_from_pending(monkeypatch, tmp_path, capsys):
+    import aether_dft.paths as paths
+
+    monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    inputs = iter(["继续处理这个体系", "/status", "/continue", "/status", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+    calls = {"count": 0}
+
+    def fake_ask_once(prompt, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("temporary provider timeout")
+        return {
+            "prompt": prompt,
+            "response": "继续完成了。",
+            "record_path": str(tmp_path / "record.jsonl"),
+            "elapsed_seconds": 0.1,
+            "tool_executions": [],
+            "progress": {"next_steps": []},
+        }
+
+    monkeypatch.setattr(cli, "ask_once", fake_ask_once)
+
+    assert cli.main(["chat"]) == 0
+    out = capsys.readouterr().out
+    assert "模型调用失败" in out
+    assert '"pending_turn"' in out
+    assert "continue>" in out
+    assert "继续完成了。" in out
+    assert calls["count"] == 2
+
+
+def test_cli_history_and_rename_commands(monkeypatch, tmp_path, capsys):
+    import aether_dft.paths as paths
+    import aether_dft.session_store as session_store
+
+    runtime_dir = tmp_path / "runtime"
+    monkeypatch.setattr(paths, "RUNTIME_DIR", runtime_dir)
+
+    store = session_store.AetherSessionStore()
+    session_id = store.start_session(project="demo", first_prompt="old title")
+    store.append_turn(session_id, {"project": "demo", "prompt": "分析 OUTCAR", "response": "收敛正常。"})
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    inputs = iter([f"/resume {session_id}", "/history OUTCAR", "/rename 新的科研会话标题", "/status", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    assert cli.main(["chat", "--project", "demo"]) == 0
+    out = capsys.readouterr().out
+    assert "history matches for 'OUTCAR'" in out
+    assert "分析 OUTCAR" in out
+    assert "renamed" in out
+    assert '"title": "新的科研会话标题"' in out
 
 
 def test_cli_interactive_resume_is_scoped_to_current_project(monkeypatch, tmp_path, capsys):
