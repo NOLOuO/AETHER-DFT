@@ -49,6 +49,13 @@ def test_cli_model_current_smoke(capsys):
     assert payload["model_id"] in {"deepseek:deepseek-v4-pro", "bailian:qwen3.7-max"}
 
 
+def test_cli_model_list_alias(capsys):
+    assert cli.main(["model", "list", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["current_model_id"]
+    assert any(item["provider_id"] in {"deepseek", "bailian"} for item in payload["models"])
+
+
 def test_key_store_does_not_read_personal_workspace_fallbacks(tmp_path, monkeypatch):
     from dft_app.llm.key_store import load_api_keys
 
