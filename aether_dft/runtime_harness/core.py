@@ -46,6 +46,28 @@ def _clean_text(value: Any) -> str:
     return str(value or "").encode("utf-8", errors="replace").decode("utf-8", errors="replace")
 
 
+def _contains_tool_markup(value: str) -> bool:
+    text = str(value or "")
+    return any(
+        marker in text
+        for marker in (
+            "<｜｜DSML｜｜tool_calls>",
+            "<|tool_calls|>",
+            "<tool_call",
+            "<invoke name=",
+            "</invoke>",
+        )
+    )
+
+
+def _tool_markup_fallback() -> str:
+    return (
+        "本轮已经拿到工具证据，但模型在最终回复阶段仍尝试输出工具调用标记。"
+        "为避免把未执行的工具调用误当成结果，我已拦截这些标记；请继续追问，"
+        "我会基于已保存的 trace 用自然语言总结证据和下一步。"
+    )
+
+
 def _clean_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return json.loads(json.dumps(messages, ensure_ascii=False, default=str).encode("utf-8", errors="replace").decode("utf-8", errors="replace"))
 
@@ -230,7 +252,7 @@ class AgentHarness:
                     "tool_choice": tool_choice_for_step,
                     "max_tokens": max_tokens,
                 }
-                if stream_callback is not None and not tools_for_step:
+                if stream_callback is not None and not tools_for_step and not force_final_reply_after_audit:
                     chat_kwargs["stream_callback"] = stream_callback
                 reply = self.adapter.chat(messages, **chat_kwargs)
                 finish_reason = str(reply.get("finish_reason") or "stop")
@@ -381,6 +403,30 @@ class AgentHarness:
                             force_final_reply_after_audit = True
                     continue
                 response = _clean_text(content)
+                if _contains_tool_markup(response):
+                    messages.append(
+                        {
+                            "role": "system",
+                            "content": (
+                                "上一条内容包含未执行的工具调用标记。现在工具调用已关闭；"
+                                "不要输出 DSML、invoke、JSON 工具参数或任何工具标记。"
+                                "只用自然语言总结已经完成的证据、未完成的动作和最小下一步。"
+                            ),
+                        }
+                    )
+                    messages = _clean_messages(messages)
+                    try:
+                        retry_reply = self.adapter.chat(
+                            messages,
+                            tools=[],
+                            tool_choice="none",
+                            max_tokens=max(int(max_tokens or 0), 1000),
+                        )
+                        retry_content = _clean_text(str(retry_reply.get("content") or ""))
+                        response = _tool_markup_fallback() if _contains_tool_markup(retry_content) else (retry_content or _tool_markup_fallback())
+                        finish_reason = "tool_markup_finalized"
+                    except Exception:
+                        response = _tool_markup_fallback()
                 messages.append({"role": "assistant", "content": response})
                 messages = _clean_messages(messages)
                 if finish_reason == "length":
@@ -402,7 +448,6 @@ class AgentHarness:
                             tools=[],
                             tool_choice="none",
                             max_tokens=max(int(max_tokens or 0), 1200),
-                            **({"stream_callback": stream_callback} if stream_callback is not None else {}),
                         )
                         retry_content = _clean_text(str(retry_reply.get("content") or ""))
                         if retry_content:
@@ -433,11 +478,29 @@ class AgentHarness:
                         "tool_choice": "none",
                         "max_tokens": max_tokens,
                     }
-                    if stream_callback is not None:
-                        final_kwargs["stream_callback"] = stream_callback
                     final_reply = self.adapter.chat(messages, **final_kwargs)
                     final_content = _clean_text(str(final_reply.get("content") or ""))
                     if final_content:
+                        if _contains_tool_markup(final_content):
+                            messages.append(
+                                {
+                                    "role": "system",
+                                    "content": (
+                                        "刚才仍然输出了未执行的工具调用标记。最终回复禁止工具标记；"
+                                        "不要写 DSML、invoke、JSON 参数。只用自然语言说明："
+                                        "已验证的证据、没有执行的写回/提交动作、下一步。"
+                                    ),
+                                }
+                            )
+                            messages = _clean_messages(messages)
+                            retry_reply = self.adapter.chat(
+                                messages,
+                                tools=[],
+                                tool_choice="none",
+                                max_tokens=max(int(max_tokens or 0), 1000),
+                            )
+                            retry_content = _clean_text(str(retry_reply.get("content") or ""))
+                            final_content = _tool_markup_fallback() if _contains_tool_markup(retry_content) else (retry_content or _tool_markup_fallback())
                         response = final_content
                         finish_reason = "tool_loop_limit_finalized"
                         messages.append({"role": "assistant", "content": response})

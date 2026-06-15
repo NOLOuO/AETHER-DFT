@@ -24,8 +24,30 @@ def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def _clean_list(values: list[Any] | None) -> list[str]:
-    return [str(item).strip() for item in (values or []) if str(item).strip()]
+def _clean_list(values: Any) -> list[str]:
+    """Coerce model-authored list-ish payloads into a clean string list.
+
+    Real tool calls sometimes send semicolon/newline separated strings for
+    fields declared as arrays. Treat that as recoverable input instead of
+    failing or iterating over characters.
+    """
+
+    if values is None:
+        items: list[Any] = []
+    elif isinstance(values, str):
+        items = re.split(r"[\n;；]+", values)
+    elif isinstance(values, (list, tuple, set)):
+        items = list(values)
+    else:
+        items = [values]
+
+    cleaned: list[str] = []
+    for item in items:
+        text = str(item).strip()
+        text = re.sub(r"^\s*(?:[-*•]|\d+[.)、])\s*", "", text).strip()
+        if text:
+            cleaned.append(text)
+    return cleaned
 
 
 def _slug(value: str) -> str:

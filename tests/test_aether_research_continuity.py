@@ -99,6 +99,35 @@ def test_research_cycle_checkpoint_updates_project_state_and_progress(tmp_path: 
     assert "No converged OUTCAR yet." in project_state.project_paths("cycle-demo").progress.read_text(encoding="utf-8")
 
 
+def test_research_cycle_checkpoint_accepts_model_authored_string_lists(tmp_path: Path, monkeypatch):
+    _patch_project_dirs(tmp_path, monkeypatch)
+    project_state.init_project("cycle-demo", description="demo", overwrite=True)
+
+    result = ToolRegistry(permission_mode="dev").run_tool(
+        "research_cycle_checkpoint",
+        {
+            "project": "cycle-demo",
+            "goal": "Analyze MCH-Pt-Br dimer OUTCAR",
+            "current_decision": "Dimer force criterion is met; TS validity still needs frequency evidence.",
+            "evidence_refs": "/remote/OUTCAR; /remote/OSZICAR",
+            "open_questions": "1. Is there exactly one imaginary mode?\n2. Does CONTCAR preserve the intended TS motif?",
+            "blockers": "",
+            "next_steps": "- fetch frequency OUTCAR\n- inspect CONTCAR displacement",
+            "run_ids": "16_TS6",
+        },
+    )["result"]
+
+    assert result["status"] == "ok"
+    payload = json.loads(Path(result["checkpoint_path"]).read_text(encoding="utf-8"))
+    assert payload["evidence_refs"] == ["/remote/OUTCAR", "/remote/OSZICAR"]
+    assert payload["open_questions"] == [
+        "Is there exactly one imaginary mode?",
+        "Does CONTCAR preserve the intended TS motif?",
+    ]
+    assert payload["next_steps"] == ["fetch frequency OUTCAR", "inspect CONTCAR displacement"]
+    assert payload["run_ids"] == ["16_TS6"]
+
+
 def test_evidence_claim_audit_demotes_unsupported_claims():
     result = ToolRegistry().run_tool(
         "evidence_claim_audit",

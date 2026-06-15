@@ -514,8 +514,9 @@ def job_progress_estimate(
     text = result["stdout"]
     # 解析 ionic step 摘要行（带 F= / E0= 的行）
     energies: list[float] = []
+    energy_pattern = re.compile(r"F=\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?)")
     for line in text.splitlines():
-        match = re.search(r"F=\s*(-?\d+\.\d+E?[+-]?\d*)", line)
+        match = energy_pattern.search(line)
         if match:
             try:
                 energies.append(float(match.group(1)))

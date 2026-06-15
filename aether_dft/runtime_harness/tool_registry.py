@@ -117,6 +117,60 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        items: list[Any] = []
+    elif isinstance(value, str):
+        items = re.split(r"[\n;；]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        items = list(value)
+    else:
+        items = [value]
+    cleaned: list[str] = []
+    for item in items:
+        text = re.sub(r"^\s*(?:[-*•]|\d+[.)、])\s*", "", str(item).strip()).strip()
+        if text:
+            cleaned.append(text)
+    return cleaned
+
+
+def _escape_control_chars_inside_json_strings(value: str) -> str:
+    repaired: list[str] = []
+    in_string = False
+    escaped = False
+    for char in str(value or ""):
+        if escaped:
+            repaired.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            repaired.append(char)
+            escaped = True
+            continue
+        if char == '"':
+            repaired.append(char)
+            in_string = not in_string
+            continue
+        if in_string and char in {"\n", "\r", "\t"}:
+            repaired.append({"\n": "\\n", "\r": "\\r", "\t": "\\t"}[char])
+            continue
+        repaired.append(char)
+    return "".join(repaired)
+
+
+def _loads_tool_arguments(arguments: str) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        payload = json.loads(arguments)
+    except Exception as first_exc:
+        try:
+            payload = json.loads(_escape_control_chars_inside_json_strings(arguments))
+        except Exception as second_exc:
+            return None, f"{first_exc}; lenient repair failed: {second_exc}"
+    if not isinstance(payload, dict):
+        return None, "tool arguments must decode to a JSON object"
+    return payload, None
+
+
 DISCOVERY_TOOL_NAMES = {"aether_capability_map", "aether_discover_tools"}
 
 
@@ -317,7 +371,7 @@ class ToolRegistry:
         self._register(ToolSpec("discussion_state_snapshot", "把当前讨论目标、共识、开放问题、下一步压缩成结构化快照；可选写 markdown/json 或项目进展，用作长对话 anchor。", {"project": {"type": "string"}, "goal": {"type": "string"}, "title": {"type": "string"}, "summary": {"type": "string"}, "consensus": {"type": "array", "items": {"type": "string"}}, "known_facts": {"type": "array", "items": {"type": "string"}}, "open_questions": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}, "tags": {"type": "array", "items": {"type": "string"}}, "persist_path": {"type": "string"}, "write_to_project_state": {"type": "boolean"}}, False), self._discussion_state_snapshot)
         self._register(ToolSpec("project_state_read", "读取项目 state 与 progress。", {"project": {"type": "string"}, "max_chars": {"type": "integer"}}, True, ("project",)), self._project_state_read)
         self._register(ToolSpec("project_progress_append", "追加研究进展。", {"project": {"type": "string"}, "completed": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}}, False, ("project",)), self._project_progress_append)
-        self._register(ToolSpec("knowledge_note_add", "把重要结论/参数经验写入项目知识库。", {"project": {"type": "string"}, "title": {"type": "string"}, "content": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, False, ("project", "title", "content")), self._knowledge_note_add)
+        self._register(ToolSpec("knowledge_note_add", "把重要结论/参数经验写入 AETHER 内部项目知识库；若结论应随 research/<project>/ 同步/发布，优先用 research_learning_capture。content 用短证据化摘要，避免长 Markdown 参数被截断。", {"project": {"type": "string"}, "title": {"type": "string"}, "content": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, False, ("project", "title", "content")), self._knowledge_note_add)
         self._register(ToolSpec("knowledge_note_list", "列出项目知识库笔记。", {"project": {"type": "string"}}, True, ("project",)), self._knowledge_note_list)
         self._register(ToolSpec("knowledge_note_search", "在项目知识库中搜索笔记。", {"project": {"type": "string"}, "query": {"type": "string"}}, True, ("project", "query")), self._knowledge_note_search)
         self._register(ToolSpec("knowledge_note_show", "读取单条知识笔记。", {"note": {"type": "string"}, "project": {"type": "string"}}, True, ("note",)), self._knowledge_note_show)
@@ -367,7 +421,7 @@ class ToolRegistry:
         self._register(ToolSpec("dft_run_task", "创建并执行真实 DFT 任务；可接收 Step 2 model_spec/manifest/candidate_id 作为 lineage 证据，提交仍由证据 gate 自适应核对。", {"prompt": {"type": "string"}, "project": {"type": "string"}, "material": {"type": "string"}, "structure_path": {"type": "string"}, "task_type": {"type": "string"}, "submit_profile": {"type": "string"}, "model_spec_path": {"type": "string"}, "step2_manifest_path": {"type": "string"}, "candidate_id": {"type": "string"}, "execution_mode": {"type": "string"}}, False, ("prompt",)), self._dft_run_task)
         self._register(ToolSpec("dft_run_report", "读取 run 报告。", {"run_id": {"type": "string"}, "run_root": {"type": "string"}}, True), self._dft_run_report)
         self._register(ToolSpec("dft_run_list", "列出 run。", {"limit": {"type": "integer"}}, True), self._dft_run_list)
-        self._register(ToolSpec("vasp_output_scan", "扫描 VASP 输出。", {"run_root": {"type": "string"}}, True), self._vasp_output_scan)
+        self._register(ToolSpec("vasp_output_scan", "扫描本地 run_root 的 VASP 输出；不要把 /home/... 远端路径传给本工具。远端结果请用 cluster_job_partial_outcar / cluster_job_tail_log。", {"run_root": {"type": "string"}}, True), self._vasp_output_scan)
         self._register(ToolSpec("vasp_input_summary", "总结 VASP 输入。", {"run_root": {"type": "string"}}, True), self._vasp_input_summary)
         self._register(ToolSpec("cluster_profile_list", "读取项目内 .secrets/ssh_config 可进入的集群 Host 列表；模型应先用它根据用户自然语言选择 cluster_alias，不要求用户手动切换。", {}, True), self._cluster_profile_list)
         self._register(ToolSpec("cluster_probe", "探测 SSH/SLURM 集群；可传 cluster_alias（例如 szhang/rxqin/fghe）直接连接对应 Host，不改变 active cluster。", {"cluster_alias": {"type": "string"}}, True), self._cluster_probe)
@@ -382,13 +436,13 @@ class ToolRegistry:
         self._register(ToolSpec("research_workspace_sync_to_cluster", "把本地 research/<project>/ 推到集群 ~/research/<project>/；默认 dry-run，apply=true 才修改远端。", {"project": {"type": "string"}, "remote_research_dir": {"type": "string"}, "apply": {"type": "boolean"}}, False), self._research_workspace_sync_to_cluster)
         self._register(ToolSpec("research_workspace_sync_from_cluster", "从集群 ~/research/<project>/ 拉回本地 research/<project>/；默认 dry-run，apply=true 才覆盖本地且先备份。", {"project": {"type": "string"}, "remote_research_dir": {"type": "string"}, "apply": {"type": "boolean"}}, False), self._research_workspace_sync_from_cluster)
         self._register(ToolSpec("research_workspace_pull_logs", "按本地 run 记录从集群回拉 VASP 输出/日志。", {"project": {"type": "string"}, "run_id": {"type": "string"}}, False), self._research_workspace_pull_logs)
-        self._register(ToolSpec("research_learning_capture", "把重要科研判断、失败经验或参数结论写入 research/<project>/Learning/<title>.md。", {"project": {"type": "string"}, "title": {"type": "string"}, "content": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, False, ("project", "title", "content")), self._research_learning_capture)
+        self._register(ToolSpec("research_learning_capture", "优先用于科研复盘：把重要科研判断、失败经验或参数结论写入 research/<project>/Learning/<title>.md，便于与集群 ~/research/<project>/ 同步。content 写短证据化 Learning（建议 800-1200 字以内）；太长时先沉淀核心规则，细节引用 evidence/path。", {"project": {"type": "string"}, "title": {"type": "string"}, "content": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, False, ("project", "title", "content")), self._research_learning_capture)
         self._register(ToolSpec("cluster_remote_submit", "通过 SSH/SLURM 远程提交已建好的 run；可传 cluster_alias 指定账号/集群，不改变 active cluster。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}, "cluster_alias": {"type": "string"}}, False), self._cluster_remote_submit)
         self._register(ToolSpec("cluster_remote_monitor", "轮询远程 run 状态并在完成时同步输出；可传 cluster_alias。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}, "sync_outputs": {"type": "boolean"}, "cluster_alias": {"type": "string"}}, False), self._cluster_remote_monitor)
         self._register(ToolSpec("cluster_remote_fetch", "同步远程 run 输出到本地；可传 cluster_alias。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}, "cluster_alias": {"type": "string"}}, False), self._cluster_remote_fetch)
         self._register(ToolSpec("adsorption_workflow_status", "读取 adsorption workflow 状态。", {"run_root": {"type": "string"}}, True), self._adsorption_workflow_status)
         self._register(ToolSpec("recommend_next_tasks", "推荐下一步科研任务。", {"project": {"type": "string"}, "focus": {"type": "string"}}, True), self._recommend_next_tasks)
-        self._register(ToolSpec("result_interpret", "解释 VASP 输出证据：是否收敛、能量/OSZICAR 趋势、下一步要做的结构/键连/记录动作。", {"run_root": {"type": "string"}}, True, ("run_root",)), self._result_interpret)
+        self._register(ToolSpec("result_interpret", "解释本地 run_root 的 VASP 输出证据；不要把 /home/... 远端路径传给本工具。远端结果请先用 cluster_job_partial_outcar / cluster_job_progress_estimate / cluster_job_tail_log 取证。", {"run_root": {"type": "string"}}, True, ("run_root",)), self._result_interpret)
         self._register(ToolSpec("next_experiment_propose", "根据项目上下文和最近结果，给 3 个下一步科研动作候选。", {"project": {"type": "string"}, "recent_results": {"type": "array", "items": {"type": "object"}}}, True), self._next_experiment_propose)
         self._register(ToolSpec("behavior_audit", "自我行为审计：检查当前响应/工具链是否过度固定流程、是否缺证据、是否该写回 research。", {"goal": {"type": "string"}, "proposed_actions": {"type": "array", "items": {"type": "string"}}, "tool_results": {"type": "array", "items": {"type": "object"}}, "proposed_reply": {"type": "string"}}, True), self._behavior_audit)
 
@@ -421,6 +475,7 @@ class ToolRegistry:
             "research_onboarding_context",
             "research_proposal_plan",
             "research_progress_append",
+            "research_learning_capture",
             "recommend_next_tasks",
             "knowledge_note_add",
             "knowledge_note_list",
@@ -558,10 +613,19 @@ class ToolRegistry:
 
     def run_tool(self, name: str, arguments: dict[str, Any] | str | None = None) -> dict[str, Any]:
         if isinstance(arguments, str):
-            try:
-                arguments = json.loads(arguments)
-            except Exception:
-                arguments = {}
+            raw_arguments = arguments
+            arguments, parse_error = _loads_tool_arguments(raw_arguments)
+            if parse_error:
+                return {
+                    "name": name,
+                    "arguments": {},
+                    "result": {
+                        "status": "error",
+                        "message": "工具参数不是合法 JSON 对象；请按工具 schema 重新生成参数，不要丢弃必填字段。",
+                        "parse_error": parse_error,
+                        "raw_arguments_preview": raw_arguments[:800],
+                    },
+                }
         payload = arguments or {}
         if name not in self._tools:
             result = {"status": "error", "message": f"未知工具: {name}"}
@@ -845,12 +909,12 @@ class ToolRegistry:
             project=str(payload.get("project") or "").strip(),
             goal=str(payload.get("goal") or "").strip(),
             current_decision=str(payload.get("current_decision") or "").strip(),
-            evidence_refs=[str(item) for item in payload.get("evidence_refs") or []],
-            open_questions=[str(item) for item in payload.get("open_questions") or []],
-            blockers=[str(item) for item in payload.get("blockers") or []],
-            next_steps=[str(item) for item in payload.get("next_steps") or []],
-            run_ids=[str(item) for item in payload.get("run_ids") or []],
-            candidate_ids=[str(item) for item in payload.get("candidate_ids") or []],
+            evidence_refs=payload.get("evidence_refs"),
+            open_questions=payload.get("open_questions"),
+            blockers=payload.get("blockers"),
+            next_steps=payload.get("next_steps"),
+            run_ids=payload.get("run_ids"),
+            candidate_ids=payload.get("candidate_ids"),
             update_project_state=payload.get("update_project_state") is not False,
         )
 
@@ -863,9 +927,9 @@ class ToolRegistry:
     def _research_progress_append(self, payload: dict[str, Any]) -> dict[str, Any]:
         return append_research_progress(
             str(payload.get("project") or "").strip(),
-            completed=[str(item) for item in payload.get("completed") or []],
-            blockers=[str(item) for item in payload.get("blockers") or []],
-            next_steps=[str(item) for item in payload.get("next_steps") or []],
+            completed=_string_list(payload.get("completed")),
+            blockers=_string_list(payload.get("blockers")),
+            next_steps=_string_list(payload.get("next_steps")),
         )
 
     def _web_search(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -896,11 +960,11 @@ class ToolRegistry:
             goal=str(payload.get("goal") or ""),
             title=str(payload.get("title") or ""),
             summary=str(payload.get("summary") or ""),
-            consensus=[str(item) for item in payload.get("consensus") or []],
-            known_facts=[str(item) for item in payload.get("known_facts") or []],
-            open_questions=[str(item) for item in payload.get("open_questions") or []],
-            next_steps=[str(item) for item in payload.get("next_steps") or []],
-            tags=[str(item) for item in payload.get("tags") or []],
+            consensus=_string_list(payload.get("consensus")),
+            known_facts=_string_list(payload.get("known_facts")),
+            open_questions=_string_list(payload.get("open_questions")),
+            next_steps=_string_list(payload.get("next_steps")),
+            tags=_string_list(payload.get("tags")),
             persist_path=str(payload.get("persist_path") or "").strip() or None,
             write_to_project_state=bool(payload.get("write_to_project_state")),
         )
@@ -939,9 +1003,9 @@ class ToolRegistry:
             return {"status": "error", "message": "缺少 project。"}
         path = append_progress(
             project,
-            completed=[str(item) for item in payload.get("completed") or []],
-            blockers=[str(item) for item in payload.get("blockers") or []],
-            next_steps=[str(item) for item in payload.get("next_steps") or []],
+            completed=_string_list(payload.get("completed")),
+            blockers=_string_list(payload.get("blockers")),
+            next_steps=_string_list(payload.get("next_steps")),
         )
         return {"status": "ok", "project": project, "progress_path": str(path), "state_md_path": str(project_paths(project).state_md)}
 
@@ -953,7 +1017,7 @@ class ToolRegistry:
             project,
             str(payload.get("title") or "").strip(),
             str(payload.get("content") or "").strip(),
-            tags=[str(item) for item in payload.get("tags") or []],
+            tags=_string_list(payload.get("tags")),
         )
         return {"status": "ok", "note": note.to_dict()}
 
@@ -2133,7 +2197,7 @@ class ToolRegistry:
             str(payload.get("project") or "").strip(),
             str(payload.get("title") or "").strip(),
             str(payload.get("content") or "").strip(),
-            tags=[str(item) for item in payload.get("tags") or []],
+            tags=_string_list(payload.get("tags")),
         )
 
     def _cluster_remote_submit(self, payload: dict[str, Any]) -> dict[str, Any]:

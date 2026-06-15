@@ -199,7 +199,18 @@ def append_research_progress(
         lines.append(f"- ⬜ {item}")
     if len(lines) == 2:
         lines.append("- ✅ 已记录一次 AETHER 对话推进。")
-    paths.progress.write_text(header + "\n".join(lines).rstrip() + "\n\n" + body, encoding="utf-8")
+    entry = "\n".join(lines).rstrip()
+    if old.startswith(header):
+        new_text = header + entry + "\n\n" + body
+    elif old.lstrip().startswith("#"):
+        match = re.search(r"(?m)^---\s*$", old)
+        if match:
+            new_text = old[: match.end()].rstrip() + "\n\n" + entry + "\n\n" + old[match.end() :].lstrip()
+        else:
+            new_text = entry + "\n\n" + old
+    else:
+        new_text = header + entry + "\n\n" + old
+    paths.progress.write_text(new_text, encoding="utf-8")
     return {"status": "ok", "project": paths.slug, "progress_path": str(paths.progress)}
 
 

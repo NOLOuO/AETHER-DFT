@@ -42,6 +42,7 @@ def test_discussion_mode_uses_lazy_schema_unlock_for_heavy_tools():
     assert "project_state_read" in initial_names
     assert "cluster_profile_list" in initial_names
     assert "cluster_config" in initial_names
+    assert "research_learning_capture" in initial_names
     assert "structure_add_adsorbate" not in initial_names
 
     unlocked = registry.openai_tool_schemas(
@@ -138,6 +139,57 @@ def test_agent_harness_finalizes_natural_reply_after_tool_limit(tmp_path: Path):
     assert "已发现结构建模能力" in record["response"]
     assert adapter.final_tools == []
     assert adapter.final_tool_choice == "none"
+
+
+class ToolLimitMarkupThenPlainAdapter:
+    runtime = type("Runtime", (), {"model_id": "fake:tool-markup"})()
+
+    def __init__(self):
+        self.calls = 0
+
+    def chat(self, messages, *, tools=None, tool_choice="auto", max_tokens=None):
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "content": "",
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": "call_discover",
+                        "type": "function",
+                        "function": {
+                            "name": "aether_discover_tools",
+                            "arguments": '{"category":"writeback_learning","max_tools":5}',
+                        },
+                    }
+                ],
+            }
+        if self.calls == 2:
+            assert tools == []
+            assert tool_choice == "none"
+            return {
+                "content": '<｜｜DSML｜｜tool_calls><invoke name="research_cycle_checkpoint"></invoke>',
+                "finish_reason": "stop",
+                "tool_calls": [],
+            }
+        assert any("最终回复禁止工具标记" in str(message.get("content")) for message in messages if message.get("role") == "system")
+        return {
+            "content": "已读取到可写回工具，但本轮步数到顶；未执行 checkpoint，下一步应基于 OUTCAR 证据写回。",
+            "finish_reason": "stop",
+            "tool_calls": [],
+        }
+
+
+def test_agent_harness_retries_when_final_reply_contains_tool_markup(tmp_path: Path):
+    adapter = ToolLimitMarkupThenPlainAdapter()
+    harness = AgentHarness(adapter=adapter, registry=ToolRegistry(), sessions=HarnessSessionStore(tmp_path / "sessions"))
+
+    record = harness.run_turn("[discussion-mode] 只测试工具标记拦截", project="demo", max_steps=1)
+
+    assert record["finish_reason"] == "tool_loop_limit_finalized"
+    assert "<invoke" not in record["response"]
+    assert "未执行 checkpoint" in record["response"]
+    assert adapter.calls == 3
 
 
 class LengthThenFinalAdapter:

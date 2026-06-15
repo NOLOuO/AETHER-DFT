@@ -246,6 +246,22 @@ def test_job_progress_estimate_detects_monotonic_descent(monkeypatch):
     assert result["oscillating"] is False
 
 
+def test_job_progress_estimate_parses_vasp_scientific_notation_without_leading_digit(monkeypatch):
+    oszicar = "\n".join(
+        [
+            "  10 F= -.72808730E+03 E0= -.72808730E+03  d E =-.303067E-03",
+            "  11 F= -.72808752E+03 E0= -.72808752E+03  d E =-.219838E-03",
+        ]
+    )
+    fake = _FakeRunner({"OSZICAR": _FakeCommandResult(0, oszicar, "")})
+    _patch_runner(monkeypatch, fake)
+    result = realtime.job_progress_estimate(remote_run_root="/home/tester/runs/x/y")
+    assert result["status"] == "ok"
+    assert result["ionic_steps_seen"] == 2
+    assert result["last_energy_ev"] == -728.08752
+    assert result["last_delta_ev"] == pytest.approx(-0.00022)
+
+
 def test_job_progress_estimate_detects_oscillation(monkeypatch):
     # 震荡序列
     oszicar = "\n".join(

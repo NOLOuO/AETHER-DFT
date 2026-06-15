@@ -131,12 +131,55 @@ def test_research_learning_capture_writes_project_learning(tmp_path: Path, monke
     registry = ToolRegistry()
     result = registry.run_tool(
         "research_learning_capture",
-        {"project": "DemoProject", "title": "Pt water prior", "content": "ontop is a diagnostic baseline", "tags": ["adsorption"]},
+        {"project": "DemoProject", "title": "Pt water prior", "content": "ontop is a diagnostic baseline", "tags": "adsorption;baseline"},
     )["result"]
     assert result["status"] == "ok"
     path = Path(result["learning_path"])
     assert path.exists()
-    assert "ontop is a diagnostic baseline" in path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8")
+    assert "ontop is a diagnostic baseline" in text
+    assert "#adsorption #baseline" in text
+
+
+def test_tool_arguments_leniently_accept_markdown_content_with_literal_newlines(tmp_path: Path, monkeypatch):
+    root = tmp_path / "research"
+    project = root / "DemoProject"
+    project.mkdir(parents=True)
+    (project / "研究进展.md").write_text("# 研究进展\n", encoding="utf-8")
+    monkeypatch.setattr("aether_dft.research_workspace.RESEARCH_ROOT", root)
+    monkeypatch.setattr("aether_dft.research_sync.RESEARCH_ROOT", root)
+
+    raw_args = '{"project":"DemoProject","title":"Dimer note","content":"# Title\nline two","tags":"dimer;freq"}'
+    result = ToolRegistry().run_tool("research_learning_capture", raw_args)["result"]
+
+    assert result["status"] == "ok"
+    text = Path(result["learning_path"]).read_text(encoding="utf-8")
+    assert "# Title\nline two" in text
+    assert "#dimer #freq" in text
+
+
+def test_research_progress_append_preserves_project_heading(tmp_path: Path, monkeypatch):
+    root = tmp_path / "research"
+    project = root / "DemoProject"
+    project.mkdir(parents=True)
+    progress = project / "研究进展.md"
+    progress.write_text(
+        "# DemoProject 研究进展\n\n> existing rules\n\n---\n\n### 2026-01-01\n\n- ✅ old item\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("aether_dft.research_workspace.RESEARCH_ROOT", root)
+    monkeypatch.setattr("aether_dft.research_sync.RESEARCH_ROOT", root)
+
+    result = ToolRegistry().run_tool(
+        "research_progress_append",
+        {"project": "DemoProject", "completed": "new item"},
+    )["result"]
+
+    assert result["status"] == "ok"
+    text = progress.read_text(encoding="utf-8")
+    assert text.count("# DemoProject 研究进展") == 1
+    assert "# 研究进展" not in text
+    assert text.index("- ✅ new item") < text.index("- ✅ old item")
 
 
 def test_result_interpret_and_next_experiment_tools(tmp_path: Path):
