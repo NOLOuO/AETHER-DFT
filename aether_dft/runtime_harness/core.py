@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from aether_dft.context_budget import usable_context_chars
 from aether_dft.session_store import AetherSessionStore
 from aether_dft.prompt_engine import render_compiled_system_prompt
 from aether_dft.permissions import get_permission_mode, permission_mode_label, should_allow_tool
@@ -17,6 +21,10 @@ DISCUSSION_MAX_STEPS = 8
 EXECUTION_MAX_STEPS = 15
 MAX_TOOL_CALLS_PER_STEP = 8
 MAX_MUTATING_TOOL_CALLS_PER_STEP = 3
+TOOL_HEARTBEAT_SECONDS = 1.5
+TOOL_VISIBLE_RESULT_LIMIT = 8_000
+TOKEN_GUARD_USAGE_RATIO = 0.88
+TOKEN_GUARD_MIN_STEPS = 2
 
 
 def _runtime_log_path() -> Path:
@@ -81,19 +89,89 @@ def _persist_tool_output(*, tool_name: str, tool_call_id: str, payload: Any) -> 
     return output_path
 
 
-def _render_tool_visible_result(*, tool_name: str, tool_call_id: str, payload: Any, limit: int = 12000) -> tuple[str, Path | None]:
+def _microcompact_tool_result(payload: Any, *, output_path: Path | None = None, preview_limit: int = 900) -> Any:
+    if not isinstance(payload, dict):
+        text = _clean_text(payload)
+        if len(text) <= preview_limit:
+            return payload
+        compacted: dict[str, Any] = {
+            "status": None,
+            "microcompacted": True,
+            "preview": text[:preview_limit].rstrip(),
+            "note": "large scalar tool result compacted; full output persisted when path is present",
+        }
+        if output_path is not None:
+            compacted["persisted_output_path"] = str(output_path)
+        return compacted
+
+    compact: dict[str, Any] = {
+        "status": payload.get("status"),
+        "microcompacted": True,
+    }
+    for key in (
+        "message",
+        "project",
+        "run_id",
+        "remote_run_root",
+        "checkpoint_path",
+        "learning_path",
+        "progress_path",
+        "state_path",
+        "persisted_output_path",
+        "guidance",
+        "verdict",
+        "last_toten_ev",
+        "last_free_energy_ev",
+        "max_force_ev_a",
+        "rms_force_ev_a",
+        "accuracy_reached",
+        "ionic_steps_seen",
+        "last_energy_ev",
+    ):
+        if key in payload:
+            compact[key] = payload.get(key)
+    if output_path is not None:
+        compact["persisted_output_path"] = str(output_path)
+
+    rendered = json.dumps(payload, ensure_ascii=False, default=str)
+    compact["preview"] = rendered[:preview_limit].rstrip()
+    compact["note"] = "full tool output is persisted outside prompt context"
+    return compact
+
+
+def _messages_char_count(messages: list[dict[str, Any]]) -> int:
+    return sum(len(json.dumps(message, ensure_ascii=False, default=str)) for message in messages)
+
+
+def _token_guard_status(messages: list[dict[str, Any]], *, model_id: str | None = None) -> dict[str, Any]:
+    try:
+        budget = usable_context_chars(model_id)
+    except Exception:
+        budget = usable_context_chars(None)
+    used = _messages_char_count(messages)
+    ratio = used / budget if budget else 0.0
+    return {
+        "used_chars": used,
+        "budget_chars": budget,
+        "usage_ratio": ratio,
+        "should_finalize": ratio >= TOKEN_GUARD_USAGE_RATIO,
+    }
+
+
+def _render_tool_visible_result(*, tool_name: str, tool_call_id: str, payload: Any, limit: int = TOOL_VISIBLE_RESULT_LIMIT) -> tuple[str, Path | None]:
     rendered = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
     if len(rendered) <= limit:
         return rendered, None
     output_path = _persist_tool_output(tool_name=tool_name, tool_call_id=tool_call_id, payload=payload)
-    preview_limit = max(1200, limit - 800)
+    preview_limit = max(900, limit // 5)
     preview = rendered[:preview_limit].rstrip()
     visible = json.dumps(
         {
             "status": getattr(payload, "get", lambda *_: None)("status") if isinstance(payload, dict) else None,
+            "microcompacted": True,
             "persisted_output_path": str(output_path),
             "preview": preview,
-            "note": "full tool output persisted locally",
+            "note": "full tool output persisted locally; prompt context receives only this compact preview",
         },
         ensure_ascii=False,
         indent=2,
@@ -148,6 +226,44 @@ def require_permission(action: str, *, destructive: bool = False) -> dict[str, A
     }
     log_event("permission_check", payload)
     return payload
+
+
+def _run_registry_tool_with_heartbeat(
+    registry: ToolRegistry,
+    name: str,
+    raw_args: Any,
+    *,
+    step: int,
+    progress_callback: Any | None,
+) -> dict[str, Any]:
+    if progress_callback is None:
+        return registry.run_tool(name, raw_args)
+
+    stop = threading.Event()
+
+    def heartbeat() -> None:
+        started = time.perf_counter()
+        tick = 0
+        while not stop.wait(TOOL_HEARTBEAT_SECONDS):
+            tick += 1
+            progress_callback(
+                {
+                    "event": "tool_progress",
+                    "step": step,
+                    "name": name,
+                    "elapsed_seconds": round(time.perf_counter() - started, 1),
+                    "tick": tick,
+                    "message": "工具仍在运行；这不是卡死，正在等待外部 I/O 或计算返回。",
+                }
+            )
+
+    thread = threading.Thread(target=heartbeat, daemon=True)
+    thread.start()
+    try:
+        return registry.run_tool(name, raw_args)
+    finally:
+        stop.set()
+        thread.join(timeout=0.2)
 
 
 def infer_turn_mode(prompt: str) -> str:
@@ -228,6 +344,34 @@ class AgentHarness:
         tools = refresh_tool_schemas()
         started_at = datetime.now().astimezone()
         force_final_reply_after_audit = False
+        force_final_reply_message = ""
+
+        def append_tool_result(call: dict[str, Any], name: str, result: dict[str, Any], step_number: int) -> dict[str, Any]:
+            persisted_output_path = None
+            visible, persisted_output_path = _render_tool_visible_result(
+                tool_name=name,
+                tool_call_id=str(call.get("id") or ""),
+                payload=result["result"],
+            )
+            result_record = dict(result)
+            if persisted_output_path is not None:
+                result_record["persisted_output_path"] = str(persisted_output_path)
+                result_record["result"] = _microcompact_tool_result(result["result"], output_path=persisted_output_path)
+            tool_executions.append(result_record)
+            if progress_callback:
+                progress_callback(
+                    {
+                        "event": "tool_finish",
+                        "step": step_number,
+                        "name": name,
+                        "status": result.get("result", {}).get("status") if isinstance(result.get("result"), dict) else None,
+                        "persisted_output_path": str(persisted_output_path) if persisted_output_path is not None else "",
+                        "microcompacted": persisted_output_path is not None,
+                    }
+                )
+            messages.append({"role": "tool", "name": name, "tool_call_id": call.get("id"), "content": visible})
+            return result_record
+
         if progress_callback:
             progress_callback({"event": "turn_start", "session_id": session_id, "model_id": getattr(getattr(self.adapter, "runtime", None), "model_id", "")})
         try:
@@ -240,7 +384,7 @@ class AgentHarness:
                     messages.append(
                         {
                             "role": "system",
-                            "content": (
+                            "content": force_final_reply_message or (
                                 "behavior_audit 已完成。现在必须给用户一个简短、证据化的自然语言结论；"
                                 "不要再调用工具。若仍有后续动作，只把它列为下一步。"
                             ),
@@ -252,9 +396,15 @@ class AgentHarness:
                     "tool_choice": tool_choice_for_step,
                     "max_tokens": max_tokens,
                 }
-                if stream_callback is not None and not tools_for_step and not force_final_reply_after_audit:
+                if stream_callback is not None:
                     chat_kwargs["stream_callback"] = stream_callback
-                reply = self.adapter.chat(messages, **chat_kwargs)
+                try:
+                    reply = self.adapter.chat(messages, **chat_kwargs)
+                except TypeError as exc:
+                    if "stream_callback" not in chat_kwargs or "stream_callback" not in str(exc):
+                        raise
+                    chat_kwargs.pop("stream_callback", None)
+                    reply = self.adapter.chat(messages, **chat_kwargs)
                 finish_reason = str(reply.get("finish_reason") or "stop")
                 tool_calls = reply.get("tool_calls") or []
                 content = str(reply.get("content") or "")
@@ -265,6 +415,101 @@ class AgentHarness:
                         assistant_message["reasoning_content"] = reasoning_content
                     messages.append(assistant_message)
                     messages = _clean_messages(messages)
+                    read_only_checker = getattr(self.registry, "is_read_only_tool", lambda _name: True)
+                    parsed_calls: list[tuple[int, dict[str, Any], str, Any, bool]] = []
+                    for call_index, call in enumerate(tool_calls):
+                        func = call.get("function") or {}
+                        name = str(func.get("name") or "")
+                        raw_args = func.get("arguments") or "{}"
+                        parsed_calls.append((call_index, call, name, raw_args, bool(read_only_checker(name))))
+                    executable_count = min(len(parsed_calls), MAX_TOOL_CALLS_PER_STEP)
+                    parallel_read_only = (
+                        executable_count > 1
+                        and all(item[4] for item in parsed_calls[:executable_count])
+                    )
+                    if parallel_read_only:
+                        step_number = step_index + 1
+                        if progress_callback:
+                            progress_callback(
+                                {
+                                    "event": "tool_parallel_start",
+                                    "step": step_number,
+                                    "count": executable_count,
+                                    "names": [item[2] for item in parsed_calls[:executable_count]],
+                                }
+                            )
+                        parallel_results: dict[int, dict[str, Any]] = {}
+                        with ThreadPoolExecutor(max_workers=min(executable_count, 6)) as executor:
+                            futures = {}
+                            for call_index, call, name, raw_args, _read_only in parsed_calls[:executable_count]:
+                                if progress_callback:
+                                    progress_callback({"event": "tool_start", "step": step_number, "name": name, "arguments": raw_args, "parallel": True})
+                                futures[
+                                    executor.submit(
+                                        _run_registry_tool_with_heartbeat,
+                                        self.registry,
+                                        name,
+                                        raw_args,
+                                        step=step_number,
+                                        progress_callback=progress_callback,
+                                    )
+                                ] = (call_index, call, name)
+                            for future in as_completed(futures):
+                                call_index, _call, name = futures[future]
+                                try:
+                                    parallel_results[call_index] = future.result()
+                                except Exception as exc:
+                                    parallel_results[call_index] = {"name": name, "arguments": {}, "result": {"status": "error", "message": str(exc)}}
+                        for call_index, call, name, _raw_args, _read_only in parsed_calls[:executable_count]:
+                            result_record = append_tool_result(call, name, parallel_results[call_index], step_number)
+                            if name == "aether_discover_tools" and isinstance(result_record.get("result"), dict):
+                                newly_discovered = {
+                                    str(item)
+                                    for item in parallel_results[call_index]["result"].get("tool_names", [])
+                                    if str(item).strip()
+                                }
+                                if newly_discovered:
+                                    before_count = len(discovered_tool_names)
+                                    discovered_tool_names.update(newly_discovered)
+                                    if len(discovered_tool_names) != before_count:
+                                        tools = refresh_tool_schemas()
+                                        if progress_callback:
+                                            progress_callback(
+                                                {
+                                                    "event": "tool_schema_unlocked",
+                                                    "step": step_number,
+                                                    "tool_names": sorted(newly_discovered),
+                                                    "available_tool_count": len(tools),
+                                                }
+                                            )
+                        for call_index, call, name, raw_args, _read_only in parsed_calls[executable_count:]:
+                            append_tool_result(
+                                call,
+                                name,
+                                {
+                                    "name": name,
+                                    "arguments": raw_args,
+                                    "result": {
+                                        "status": "blocked",
+                                        "message": (
+                                            f"单轮已执行 {MAX_TOOL_CALLS_PER_STEP} 个工具调用（你刚才一次请求了 {len(tool_calls)} 个）；"
+                                            "余下调用本轮不会执行。请先用自然语言总结已拿到的证据，或把剩余调用拆到下一轮。"
+                                        ),
+                                    },
+                                },
+                                step_number,
+                            )
+                        messages = _clean_messages(messages)
+                        guard = _token_guard_status(messages, model_id=getattr(getattr(self.adapter, "runtime", None), "model_id", None))
+                        if step_index + 1 >= TOKEN_GUARD_MIN_STEPS and guard["should_finalize"]:
+                            force_final_reply_after_audit = True
+                            force_final_reply_message = (
+                                "上下文预算接近上限，harness 已自动停止继续调用工具。"
+                                "现在必须用自然语言总结已取得证据、已写入/未写入内容和最小下一步；不要再调用工具。"
+                            )
+                            if progress_callback:
+                                progress_callback({"event": "token_guard_finalize", "step": step_index + 1, **guard})
+                        continue
                     mutating_calls_seen = 0
                     for call_index, call in enumerate(tool_calls):
                         func = call.get("function") or {}
@@ -272,7 +517,6 @@ class AgentHarness:
                         raw_args = func.get("arguments") or "{}"
                         if progress_callback:
                             progress_callback({"event": "tool_start", "step": step_index + 1, "name": name, "arguments": raw_args})
-                        read_only_checker = getattr(self.registry, "is_read_only_tool", lambda _name: True)
                         read_only = bool(read_only_checker(name))
                         if not read_only:
                             mutating_calls_seen += 1
@@ -303,7 +547,13 @@ class AgentHarness:
                                 },
                             }
                         else:
-                            result = self.registry.run_tool(name, raw_args)
+                            result = _run_registry_tool_with_heartbeat(
+                                self.registry,
+                                name,
+                                raw_args,
+                                step=step_index + 1,
+                                progress_callback=progress_callback,
+                            )
                         if (
                             isinstance(result.get("result"), dict)
                             and result["result"].get("status") == "permission_required"
@@ -357,27 +607,7 @@ class AgentHarness:
                                         "permission_label": permission_payload.get("permission_label"),
                                     }
                                 )
-                        persisted_output_path = None
-                        visible, persisted_output_path = _render_tool_visible_result(
-                            tool_name=name,
-                            tool_call_id=str(call.get("id") or ""),
-                            payload=result["result"],
-                        )
-                        result_record = dict(result)
-                        if persisted_output_path is not None:
-                            result_record["persisted_output_path"] = str(persisted_output_path)
-                        tool_executions.append(result_record)
-                        if progress_callback:
-                            progress_callback(
-                                {
-                                    "event": "tool_finish",
-                                    "step": step_index + 1,
-                                    "name": name,
-                                    "status": result.get("result", {}).get("status") if isinstance(result.get("result"), dict) else None,
-                                    "persisted_output_path": str(persisted_output_path) if persisted_output_path is not None else "",
-                                }
-                            )
-                        messages.append({"role": "tool", "name": name, "tool_call_id": call.get("id"), "content": visible})
+                        result_record = append_tool_result(call, name, result, step_index + 1)
                         messages = _clean_messages(messages)
                         if name == "aether_discover_tools" and isinstance(result.get("result"), dict):
                             newly_discovered = {
@@ -401,6 +631,19 @@ class AgentHarness:
                                         )
                         if name == "behavior_audit":
                             force_final_reply_after_audit = True
+                            force_final_reply_message = (
+                                "behavior_audit 已完成。现在必须给用户一个简短、证据化的自然语言结论；"
+                                "不要再调用工具。若仍有后续动作，只把它列为下一步。"
+                            )
+                    guard = _token_guard_status(messages, model_id=getattr(getattr(self.adapter, "runtime", None), "model_id", None))
+                    if step_index + 1 >= TOKEN_GUARD_MIN_STEPS and guard["should_finalize"]:
+                        force_final_reply_after_audit = True
+                        force_final_reply_message = (
+                            "上下文预算接近上限，harness 已自动停止继续调用工具。"
+                            "现在必须用自然语言总结已取得证据、已写入/未写入内容和最小下一步；不要再调用工具。"
+                        )
+                        if progress_callback:
+                            progress_callback({"event": "token_guard_finalize", "step": step_index + 1, **guard})
                     continue
                 response = _clean_text(content)
                 if _contains_tool_markup(response):

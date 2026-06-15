@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from pymatgen.io.ase import AseAtomsAdaptor
 
 from aether_dft import paths, project_state
 from aether_dft.prompt_engine import load_base_system_prompt
+import aether_dft.runtime_harness.core as harness_core
 from aether_dft.runtime_harness.core import AgentHarness, infer_turn_mode
 from aether_dft.runtime_harness.session import HarnessSessionStore
 from aether_dft.runtime_harness.tool_registry import ToolRegistry
@@ -203,6 +205,31 @@ def test_agent_harness_forwards_stream_callback_when_no_tools(tmp_path: Path):
     harness = AgentHarness(adapter=StreamAwareAdapter(), registry=EmptyRegistry(), sessions=sessions)
 
     record = harness.run_turn("直接回答", max_steps=1, stream_callback=events.append)
+
+    assert record["response"] == "流式"
+    assert [event["delta"] for event in events] == ["流", "式"]
+
+
+class OneToolRegistry:
+    def openai_tool_schemas(self, interaction_mode=None):
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_context",
+                    "description": "read context",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+
+
+def test_agent_harness_streams_even_when_tools_are_available(tmp_path: Path):
+    sessions = HarnessSessionStore(tmp_path / "sessions")
+    events: list[dict[str, Any]] = []
+    harness = AgentHarness(adapter=StreamAwareAdapter(), registry=OneToolRegistry(), sessions=sessions)
+
+    record = harness.run_turn("直接回答但工具可用", max_steps=1, stream_callback=events.append)
 
     assert record["response"] == "流式"
     assert [event["delta"] for event in events] == ["流", "式"]
@@ -515,10 +542,116 @@ def test_agent_harness_truncates_model_visible_tool_result(tmp_path: Path):
 
     assert record["response"] == "工具结果已压缩给模型，但完整结果仍在记录中。"
     assert record["tool_executions"][0]["name"] == "huge_result"
-    assert len(record["tool_executions"][0]["result"]["payload"]) == 50000
+    assert record["tool_executions"][0]["result"]["microcompacted"] is True
+    assert "payload" not in record["tool_executions"][0]["result"]
     persisted = Path(record["tool_executions"][0]["persisted_output_path"])
     assert persisted.exists()
-    assert persisted.read_text(encoding="utf-8")
+    persisted_payload = json.loads(persisted.read_text(encoding="utf-8"))
+    assert len(persisted_payload["payload"]) == 50000
+
+
+class ParallelReadOnlyAdapter:
+    runtime = type("Runtime", (), {"model_id": "fake:qwen3.7-max"})()
+
+    def __init__(self):
+        self.calls = 0
+
+    def chat(self, messages, *, tools=None, tool_choice="auto", max_tokens=None):
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "content": "",
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {"id": "call_a", "type": "function", "function": {"name": "slow_read_a", "arguments": "{}"}},
+                    {"id": "call_b", "type": "function", "function": {"name": "slow_read_b", "arguments": "{}"}},
+                ],
+            }
+        return {"content": "两个只读检查已并发完成。", "finish_reason": "stop", "tool_calls": []}
+
+
+class ParallelReadOnlyRegistry:
+    def openai_tool_schemas(self):
+        return [
+            {"type": "function", "function": {"name": "slow_read_a", "description": "read A", "parameters": {"type": "object", "properties": {}}}},
+            {"type": "function", "function": {"name": "slow_read_b", "description": "read B", "parameters": {"type": "object", "properties": {}}}},
+        ]
+
+    def list_tools(self):
+        return [{"name": "slow_read_a", "read_only": True}, {"name": "slow_read_b", "read_only": True}]
+
+    def is_read_only_tool(self, name):
+        return True
+
+    def run_tool(self, name, arguments):
+        time.sleep(0.35)
+        return {"name": name, "arguments": {}, "result": {"status": "ok", "name": name}}
+
+
+def test_agent_harness_runs_multiple_read_only_tools_in_parallel(tmp_path: Path):
+    sessions = HarnessSessionStore(tmp_path / "sessions")
+    events: list[dict[str, Any]] = []
+    harness = AgentHarness(adapter=ParallelReadOnlyAdapter(), registry=ParallelReadOnlyRegistry(), sessions=sessions)
+
+    started = time.perf_counter()
+    record = harness.run_turn("并发读取两个只读证据", max_steps=3, progress_callback=events.append)
+    elapsed = time.perf_counter() - started
+
+    assert record["response"] == "两个只读检查已并发完成。"
+    assert [item["name"] for item in record["tool_executions"]] == ["slow_read_a", "slow_read_b"]
+    assert any(event.get("event") == "tool_parallel_start" for event in events)
+    assert elapsed < 0.65
+
+
+class HeartbeatAdapter:
+    runtime = type("Runtime", (), {"model_id": "fake:qwen3.7-max"})()
+
+    def __init__(self):
+        self.calls = 0
+
+    def chat(self, messages, *, tools=None, tool_choice="auto", max_tokens=None):
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "content": "",
+                "finish_reason": "tool_calls",
+                "tool_calls": [{"id": "call_slow", "type": "function", "function": {"name": "slow_read", "arguments": "{}"}}],
+            }
+        return {"content": "慢工具执行期间已给出心跳。", "finish_reason": "stop", "tool_calls": []}
+
+
+class HeartbeatRegistry:
+    def openai_tool_schemas(self):
+        return [{"type": "function", "function": {"name": "slow_read", "description": "slow read", "parameters": {"type": "object", "properties": {}}}}]
+
+    def list_tools(self):
+        return [{"name": "slow_read", "read_only": True}]
+
+    def run_tool(self, name, arguments):
+        time.sleep(0.12)
+        return {"name": name, "arguments": {}, "result": {"status": "ok"}}
+
+
+def test_agent_harness_emits_tool_progress_heartbeat(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(harness_core, "TOOL_HEARTBEAT_SECONDS", 0.04)
+    sessions = HarnessSessionStore(tmp_path / "sessions")
+    events: list[dict[str, Any]] = []
+    harness = AgentHarness(adapter=HeartbeatAdapter(), registry=HeartbeatRegistry(), sessions=sessions)
+
+    record = harness.run_turn("读一个较慢的外部证据", max_steps=3, progress_callback=events.append)
+
+    assert record["response"] == "慢工具执行期间已给出心跳。"
+    assert any(event.get("event") == "tool_progress" and event.get("name") == "slow_read" for event in events)
+
+
+def test_token_guard_marks_context_for_finalization(monkeypatch):
+    monkeypatch.setenv("AETHER_DFT_CONTEXT_MAX_CHARS", "12000")
+    messages = [{"role": "user", "content": "x" * 11500}]
+
+    guard = harness_core._token_guard_status(messages, model_id="fake:qwen3.7-max")
+
+    assert guard["should_finalize"] is True
+    assert guard["usage_ratio"] >= 0.88
 
 
 def test_agent_harness_replays_recent_session_context(tmp_path: Path):

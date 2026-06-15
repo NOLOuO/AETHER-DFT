@@ -661,15 +661,36 @@ def make_chat_progress_printer() -> Any:
             tool_started[(step, name)] = time.perf_counter()
             step_elapsed = elapsed_since(model_step_started.get(step))
             args = _shorten_inline(event.get("arguments"), limit=180)
-            print(f"{Colors.BLUE}↳ tool{Colors.RESET} {event.get('name')}{Colors.DIM}{step_elapsed} {args}{Colors.RESET}")
+            parallel = " ⇉" if event.get("parallel") else ""
+            print(f"{Colors.BLUE}↳ tool{parallel}{Colors.RESET} {event.get('name')}{Colors.DIM}{step_elapsed} {args}{Colors.RESET}")
+        elif kind == "tool_parallel_start":
+            names = ", ".join(str(item) for item in (event.get("names") or []))
+            if len(names) > 120:
+                names = names[:117] + "..."
+            print(f"{Colors.BLUE}⇉ parallel tools{Colors.RESET} x{event.get('count') or 0} {Colors.DIM}{names}{Colors.RESET}")
+        elif kind == "tool_progress":
+            elapsed = event.get("elapsed_seconds")
+            print(
+                f"{Colors.DIM}… tool {event.get('name')} still running"
+                f" ({elapsed}s): {_shorten_inline(event.get('message'), limit=110)}{Colors.RESET}"
+            )
         elif kind == "tool_finish":
             status = event.get("status") or "done"
             step = int(event.get("step") or 0)
             name = str(event.get("name") or "")
             tool_elapsed = elapsed_since(tool_started.get((step, name)))
             persisted = event.get("persisted_output_path")
+            compact = " compact" if event.get("microcompacted") else ""
             suffix = f" {Colors.DIM}{persisted}{Colors.RESET}" if persisted else ""
             print(f"{Colors.GREEN}✓ tool{Colors.RESET} {event.get('name')} status={status}{Colors.DIM}{tool_elapsed}{Colors.RESET}{suffix}")
+            if compact:
+                print(f"{Colors.DIM}  ↳ large tool output was microcompacted for the model; full payload is persisted above{Colors.RESET}")
+        elif kind == "token_guard_finalize":
+            ratio = float(event.get("usage_ratio") or 0.0) * 100
+            print(
+                f"{Colors.YELLOW}context guard{Colors.RESET}: {ratio:.1f}% budget used; "
+                "stopping further tool calls and asking the model to summarize"
+            )
         elif kind == "tool_permission_required":
             label = event.get("permission_label") or "需要用户同意"
             print(

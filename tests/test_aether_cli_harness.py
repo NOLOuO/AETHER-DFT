@@ -33,6 +33,24 @@ def test_permission_guard_blocks_destructive_operations():
     assert payload["allowed"] is False
 
 
+def test_cli_progress_printer_renders_parallel_heartbeat_and_context_guard(capsys):
+    printer = cli.make_chat_progress_printer()
+
+    printer({"event": "turn_start", "model_id": "deepseek:deepseek-v4-pro"})
+    printer({"event": "model_request", "step": 1, "max_steps": 4})
+    printer({"event": "tool_parallel_start", "step": 1, "count": 2, "names": ["cluster_my_jobs", "cluster_job_status_brief"]})
+    printer({"event": "tool_start", "step": 1, "name": "cluster_my_jobs", "arguments": "{}", "parallel": True})
+    printer({"event": "tool_progress", "step": 1, "name": "cluster_my_jobs", "elapsed_seconds": 2.1, "message": "仍在等待 SSH"})
+    printer({"event": "tool_finish", "step": 1, "name": "cluster_my_jobs", "status": "ok", "microcompacted": True, "persisted_output_path": "trace.json"})
+    printer({"event": "token_guard_finalize", "step": 2, "usage_ratio": 0.91})
+
+    out = capsys.readouterr().out
+    assert "parallel tools" in out
+    assert "still running" in out
+    assert "microcompacted" in out
+    assert "context guard" in out
+
+
 def test_structure_tool_registry_has_ten_project_relevant_tools():
     tools = list_structure_tools()
     assert len(tools) >= 10
