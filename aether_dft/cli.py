@@ -1745,6 +1745,40 @@ def handle_harness_preflight(args: argparse.Namespace) -> int:
     return 0 if payload.get("ok") else 1
 
 
+def handle_harness_real_case(args: argparse.Namespace) -> int:
+    from .real_case_validation import run_real_case_validation
+
+    stream_printer, stream_state = make_stream_printer()
+    payload = run_real_case_validation(
+        project=args.project,
+        model_id=args.model,
+        cluster_alias=args.cluster_alias,
+        include_outcar=args.include_outcar,
+        max_steps=args.max_steps,
+        max_tokens=args.max_tokens,
+        progress_callback=None if args.json else make_chat_progress_printer(),
+        stream_callback=None if args.json else stream_printer,
+    )
+    if args.json:
+        print_json(payload)
+    else:
+        if stream_state.get("printed"):
+            print()
+        status = payload.get("status")
+        color = Colors.GREEN if status == "ok" else (Colors.YELLOW if status == "incomplete" else Colors.RED)
+        print(f"{color}real-case validation: {status}{Colors.RESET}")
+        print(f"project: {payload.get('project')} | model: {payload.get('model_id') or '(current)'}")
+        print(f"tools: {', '.join(payload.get('tool_names') or []) or '(none)'}")
+        if payload.get("missing_evidence"):
+            print(f"{Colors.YELLOW}missing evidence{Colors.RESET}: {', '.join(payload['missing_evidence'])}")
+        print(f"record: {payload.get('record_path') or '(none)'}")
+        print(f"report: {payload.get('report_path')}")
+        if payload.get("response"):
+            print()
+            print(payload["response"])
+    return 0 if payload.get("status") == "ok" else 1
+
+
 def handle_cluster_import(args: argparse.Namespace) -> int:
     from dft_app.remote.config import write_local_cluster_profile
 
@@ -2357,6 +2391,18 @@ def build_parser() -> argparse.ArgumentParser:
     harness_sub = harness_parser.add_subparsers(dest="harness_command")
     harness_preflight = harness_sub.add_parser("preflight", help="检查 prompt/config/依赖/主线入口。")
     harness_preflight.set_defaults(func=handle_harness_preflight)
+    harness_real_case = harness_sub.add_parser(
+        "real-case",
+        help="真实模型主导的只读课题验收：检查项目上下文、集群配置/队列，可选 OUTCAR 证据。",
+    )
+    harness_real_case.add_argument("--project", required=True, help="research/project slug，例如 MCH-Pt-Br。")
+    harness_real_case.add_argument("--model", help="临时使用模型；支持 qwen/deepseek 或完整模型 ID。")
+    harness_real_case.add_argument("--cluster-alias", help="优先让模型使用的项目内 SSH Host alias，例如 szhang。")
+    harness_real_case.add_argument("--include-outcar", action="store_true", help="要求模型尝试只读 OUTCAR/结果证据。")
+    harness_real_case.add_argument("--max-steps", type=int, default=6)
+    harness_real_case.add_argument("--max-tokens", type=int, default=1400)
+    harness_real_case.add_argument("--json", action="store_true")
+    harness_real_case.set_defaults(func=handle_harness_real_case)
 
     cluster_parser = sub.add_parser("cluster", help="SSH/SLURM 集群配置、探测与导入。")
     cluster_sub = cluster_parser.add_subparsers(dest="cluster_command")

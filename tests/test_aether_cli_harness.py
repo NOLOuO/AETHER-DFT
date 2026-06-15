@@ -28,6 +28,34 @@ def test_harness_preflight_has_required_surface():
     assert payload["checks"]["dft_shared"] is True
 
 
+def test_cli_harness_real_case_uses_validation_runner(monkeypatch, capsys):
+    captured = {}
+
+    def fake_validation(**kwargs):
+        captured.update(kwargs)
+        return {
+            "status": "ok",
+            "project": kwargs["project"],
+            "model_id": kwargs["model_id"],
+            "tool_names": ["project_state_read", "cluster_profile_list", "cluster_probe"],
+            "missing_evidence": [],
+            "record_path": "transcript.jsonl",
+            "report_path": "report.json",
+            "response": "真实验收完成。",
+        }
+
+    monkeypatch.setattr("aether_dft.real_case_validation.run_real_case_validation", fake_validation)
+
+    assert cli.main(["harness", "real-case", "--project", "MCH-Pt-Br", "--model", "deepseek", "--cluster-alias", "szhang"]) == 0
+
+    out = capsys.readouterr().out
+    assert "real-case validation: ok" in out
+    assert "project_state_read" in out
+    assert captured["project"] == "MCH-Pt-Br"
+    assert captured["cluster_alias"] == "szhang"
+    assert captured["include_outcar"] is False
+
+
 def test_permission_guard_blocks_destructive_operations():
     payload = require_permission("delete-test", destructive=True)
     assert payload["allowed"] is False

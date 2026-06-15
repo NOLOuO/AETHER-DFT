@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from aether_dft import paths
+from aether_dft.chemistry_compute import KB_EV_PER_K
 from aether_dft.prompt_sections import PromptSectionCompiler
 from aether_dft.runtime_harness.core import AgentHarness
 from aether_dft.runtime_harness.tool_registry import ToolRegistry
@@ -30,7 +32,7 @@ def test_m14_chemistry_compute_supports_enhanced_modes_and_legacy_operation():
 
     kbt = registry.run_tool("chemistry_compute", {"mode": "kBT", "temperature_k": 300, "unit": "eV"})["result"]
     assert kbt["status"] == "ok"
-    assert 0.025 < kbt["result"] < 0.027
+    assert math.isclose(kbt["result"], KB_EV_PER_K * 300, rel_tol=0.0, abs_tol=1e-12)
 
     rate = registry.run_tool(
         "chemistry_compute",
