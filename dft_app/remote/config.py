@@ -25,6 +25,7 @@ class RemoteClusterConfig:
     winscp_path: str | None = None
     winscp_private_key_path: str | None = None
     winscp_ini_path: str = "nul"
+    remote_potcar_roots: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls) -> "RemoteClusterConfig":
@@ -80,6 +81,7 @@ class RemoteClusterConfig:
                         winscp_path=os.getenv("SEMI_DFT_REMOTE_WINSCP_PATH"),
                         winscp_private_key_path=os.getenv("SEMI_DFT_REMOTE_WINSCP_PRIVATE_KEY"),
                         winscp_ini_path=os.getenv("SEMI_DFT_REMOTE_WINSCP_INI_PATH", "nul"),
+                        remote_potcar_roots=cls._remote_potcar_roots(local_profile),
                     )
 
         missing = [
@@ -120,6 +122,7 @@ class RemoteClusterConfig:
             winscp_path=os.getenv("SEMI_DFT_REMOTE_WINSCP_PATH"),
             winscp_private_key_path=os.getenv("SEMI_DFT_REMOTE_WINSCP_PRIVATE_KEY"),
             winscp_ini_path=os.getenv("SEMI_DFT_REMOTE_WINSCP_INI_PATH", "nul"),
+            remote_potcar_roots=cls._remote_potcar_roots(local_profile),
         )
 
     def ssh_target(self) -> str:
@@ -142,7 +145,27 @@ class RemoteClusterConfig:
             "ssh_key_path_configured": bool(self.ssh_key_path),
             "strict_host_key_checking": self.strict_host_key_checking,
             "ignore_local_ssh_config": self.ignore_local_ssh_config,
+            "remote_potcar_roots": list(self.remote_potcar_roots),
         }
+
+
+    @classmethod
+    def _remote_potcar_roots(cls, local_profile: dict[str, Any]) -> tuple[str, ...]:
+        raw_env = os.getenv("SEMI_DFT_REMOTE_POTCAR_ROOTS") or os.getenv("AETHER_DFT_REMOTE_POTCAR_ROOTS")
+        raw_profile = local_profile.get("remote_potcar_roots")
+        items: list[str] = []
+        if raw_env:
+            items.extend(part.strip() for part in str(raw_env).replace(";", ":").split(":"))
+        if isinstance(raw_profile, list):
+            items.extend(str(item).strip() for item in raw_profile)
+        elif isinstance(raw_profile, str):
+            items.extend(part.strip() for part in raw_profile.replace(";", ":").split(":"))
+        cleaned: list[str] = []
+        for item in items:
+            if not item or item in cleaned:
+                continue
+            cleaned.append(item)
+        return tuple(cleaned)
 
     @staticmethod
     def _app_root() -> Path:

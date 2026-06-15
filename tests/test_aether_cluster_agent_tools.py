@@ -347,3 +347,74 @@ def test_agent_loop_respects_explicit_read_only_even_with_tool_use(monkeypatch, 
     assert record["progress"]["next_steps"] == []
     assert "project_progress_path" not in record
     assert after == before
+
+
+def test_remote_cluster_config_loads_remote_potcar_roots(tmp_path, monkeypatch):
+    config_path = tmp_path / "ssh_config"
+    profile_path = tmp_path / "cluster.local.json"
+    config_path.write_text(
+        "\n".join(
+            [
+                "Host szhang",
+                "    HostName 59.77.33.28",
+                "    User szhang",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    profile_path.write_text(
+        json.dumps(
+            {
+                "ssh_host_alias": "szhang",
+                "ssh_config_path": str(config_path),
+                "remote_base_dir": "/home/szhang/aether-dft-runs",
+                "remote_potcar_roots": ["/share/paw/pbe", "/home/szhang/potcars"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(RemoteClusterConfig, "_default_ssh_config_path", classmethod(lambda cls: config_path))
+    monkeypatch.setattr(RemoteClusterConfig, "_local_profile_path", classmethod(lambda cls: profile_path))
+
+    config = RemoteClusterConfig.from_env()
+
+    assert config.remote_potcar_roots == ("/share/paw/pbe", "/home/szhang/potcars")
+    assert config.public_dict()["remote_potcar_roots"] == ["/share/paw/pbe", "/home/szhang/potcars"]
+
+
+def test_remote_potcar_script_uses_mapping_without_single_root_potcar_for_multi_element():
+    runner = SSHRemoteRunner()
+
+    script = runner._build_remote_potcar_script(
+        ["/share/paw/pbe"], ["Pt", "Br"], "/home/szhang/aether-dft-runs/task/run/inputs/POTCAR"
+    )
+
+    assert "POTCAR.Pt" not in script  # symbol expands on the remote side rather than hardcoding one element
+    assert '"$root/POTCAR"' not in script
+    assert "missing POTCAR for $sym" in script
+    assert "/home/szhang/aether-dft-runs/task/run/inputs/POTCAR" in script
+
+
+def test_remote_potcar_root_rejects_lateral_paths():
+    runner = SSHRemoteRunner()
+    config = RemoteClusterConfig(host="fake", user="szhang", remote_base_dir="/home/szhang/aether-dft-runs")
+
+    assert runner._safe_remote_potcar_root("/share/paw", config) == "/share/paw"
+    for bad in ["/etc/paw", "/home/other/paw", "/share/../etc", "/share/paw;rm -rf"]:
+        try:
+            runner._safe_remote_potcar_root(bad, config)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"unsafe root unexpectedly accepted: {bad}")
+
+
+def test_remote_submit_command_runs_inside_inputs_dir():
+    runner = SSHRemoteRunner()
+
+    command = runner._build_remote_submit_command("/home/szhang/aether-dft-runs/task/run")
+
+    assert "cd '/home/szhang/aether-dft-runs/task/run/inputs'" in command
+    assert "mkdir -p logs" in command
+    assert "sbatch job.slurm" in command
+    assert "sbatch inputs/job.slurm" not in command

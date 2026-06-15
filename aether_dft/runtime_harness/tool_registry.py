@@ -2034,8 +2034,6 @@ class ToolRegistry:
 
     def _vasp_output_scan(self, payload: dict[str, Any]) -> dict[str, Any]:
         run_root = Path(payload["run_root"])
-        outcar = run_root / "OUTCAR"
-        oszicar = run_root / "OSZICAR"
         if not run_root.exists():
             return {
                 "status": "missing",
@@ -2044,12 +2042,33 @@ class ToolRegistry:
                 "oszicar_exists": False,
                 "message": "run_root 不存在，无法判断 VASP 输出状态。",
             }
-        text = outcar.read_text(encoding="utf-8", errors="replace") if outcar.exists() else ""
+
+        def locate(name: str) -> Path | None:
+            candidates = [
+                run_root / name,
+                run_root / "outputs" / name,
+                run_root / "outputs" / "inputs" / name,
+                run_root / "inputs" / name,
+            ]
+            for candidate in candidates:
+                if candidate.exists():
+                    return candidate
+            outputs = run_root / "outputs"
+            if outputs.exists():
+                matches = sorted(outputs.rglob(name))
+                if matches:
+                    return matches[0]
+            matches = sorted(run_root.rglob(name))
+            return matches[0] if matches else None
+
+        outcar = locate("OUTCAR")
+        oszicar = locate("OSZICAR")
+        text = outcar.read_text(encoding="utf-8", errors="replace") if outcar else ""
         toten_matches = re.findall(r"TOTEN\s*=\s*([-0-9.]+)", text)
         last_toten = float(toten_matches[-1]) if toten_matches else None
         has_required_accuracy = "reached required accuracy" in text.lower()
         has_energy = last_toten is not None
-        if not outcar.exists():
+        if outcar is None:
             status = "missing"
         elif has_required_accuracy and has_energy:
             status = "completed"
@@ -2059,12 +2078,14 @@ class ToolRegistry:
             "status": status,
             "run_root": str(run_root),
             "outcar": {
-                "exists": outcar.exists(),
+                "path": str(outcar) if outcar else None,
+                "exists": outcar is not None,
                 "last_toten": last_toten,
                 "has_required_accuracy": has_required_accuracy,
                 "has_energy": has_energy,
             },
-            "oszicar_exists": oszicar.exists(),
+            "oszicar_exists": oszicar is not None,
+            "oszicar_path": str(oszicar) if oszicar else None,
         }
 
     def _vasp_input_summary(self, payload: dict[str, Any]) -> dict[str, Any]:

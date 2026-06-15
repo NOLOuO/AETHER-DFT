@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -174,6 +175,11 @@ class SSHRemoteRunner:
         try:
             self._prepare_remote_directories(config, remote_run_root, backend)
             uploaded_files = self._upload_run_artifacts(config, run_root, remote_run_root, backend)
+            remote_potcar = self._materialize_remote_potcar_if_needed(
+                config, run_root, remote_run_root, backend
+            )
+            if remote_potcar:
+                uploaded_files.append(remote_potcar)
         except Exception as exc:
             message = f"远程目录准备或文件上传失败: {exc}"
             run_record.fail_phase(PipelinePhase.SUBMIT, message)
@@ -188,11 +194,7 @@ class SSHRemoteRunner:
             PipelinePhase.SUBMIT,
             message=f"正在通过 {backend} 远程提交 Slurm 作业",
         )
-        submit_command = (
-            f"cd {self._quote(remote_run_root)} && "
-            "(sed -i 's/\\r$//' inputs/job.slurm 2>/dev/null || true) && "
-            "sbatch inputs/job.slurm"
-        )
+        submit_command = self._build_remote_submit_command(remote_run_root)
         process = self._run_remote_command(config, submit_command, timeout=60, backend=backend)
 
         stdout = process.stdout.strip()
@@ -451,6 +453,102 @@ class SSHRemoteRunner:
             f"已同步 {len(synced_files)} 个远程输出文件。",
             {"backend": backend, "remote_run_root": remote_run_root, "synced_files": synced_files},
         )
+
+
+    def _build_remote_submit_command(self, remote_run_root: str) -> str:
+        remote_inputs_dir = f"{remote_run_root}/inputs"
+        return (
+            f"cd {self._quote(remote_inputs_dir)} && "
+            "mkdir -p logs && "
+            "(sed -i 's/\\r$//' job.slurm 2>/dev/null || true) && "
+            "sbatch job.slurm"
+        )
+
+    def _materialize_remote_potcar_if_needed(
+        self,
+        config: RemoteClusterConfig,
+        run_root: Path,
+        remote_run_root: str,
+        backend: str,
+    ) -> str | None:
+        """Create remote inputs/POTCAR from cluster-side POTCAR roots when absent locally.
+
+        VASP POTCAR files are usually licensed and should not be copied into the
+        repository just to make submission work.  If the local bundle only has a
+        POTCAR.mapping.json, the remote runner can assemble POTCAR on the cluster
+        from configured read-only roots before sbatch.  This keeps submission
+        evidence honest while avoiding hard-coded personal paths in code.
+        """
+
+        local_potcar = run_root / "inputs" / "POTCAR"
+        mapping_path = run_root / "inputs" / "POTCAR.mapping.json"
+        if local_potcar.exists() or not mapping_path.exists():
+            return None
+        if not config.remote_potcar_roots:
+            return None
+        try:
+            mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"POTCAR.mapping.json 不可读取: {exc}") from exc
+        if not isinstance(mapping, dict) or not mapping:
+            raise RuntimeError("POTCAR.mapping.json 为空或格式不是 object。")
+
+        roots = [self._safe_remote_potcar_root(str(root), config) for root in config.remote_potcar_roots]
+        symbols = [str(value).strip() for value in mapping.values() if str(value).strip()]
+        if len(symbols) != len(mapping):
+            raise RuntimeError("POTCAR.mapping.json 包含空赝势符号。")
+        script = self._build_remote_potcar_script(roots, symbols, f"{remote_run_root}/inputs/POTCAR")
+        process = self._run_remote_command(config, script, timeout=120, backend=backend)
+        stdout = process.stdout.strip()
+        stderr = process.stderr.strip()
+        if process.returncode != 0:
+            raise RuntimeError(
+                "远端 POTCAR 补齐失败: " + (stderr or stdout or "unknown error")
+            )
+        return f"{remote_run_root}/inputs/POTCAR"
+
+    def _build_remote_potcar_script(self, roots: list[str], symbols: list[str], output_path: str) -> str:
+        roots_literal = " ".join(self._quote(root) for root in roots)
+        symbols_literal = " ".join(self._quote(symbol) for symbol in symbols)
+        output = self._quote(output_path)
+        candidate_templates = [
+            '"$root/POTCAR.$sym"',
+            '"$root/$sym/POTCAR"',
+            '"$root/$sym/POTCAR.$sym"',
+        ]
+        if len(symbols) == 1:
+            candidate_templates.append('"$root/POTCAR"')
+        candidates = " ".join(candidate_templates)
+        return (
+            "set -e; tmp=$(mktemp); trap 'rm -f \"$tmp\"' EXIT; "
+            f"for sym in {symbols_literal}; do found=''; "
+            f"for root in {roots_literal}; do "
+            f"for candidate in {candidates}; do "
+            "if [ -f \"$candidate\" ]; then found=\"$candidate\"; break 2; fi; "
+            "done; done; "
+            "if [ -z \"$found\" ]; then echo \"missing POTCAR for $sym\" >&2; exit 7; fi; "
+            "cat \"$found\" >> \"$tmp\"; printf '\\n' >> \"$tmp\"; done; "
+            f"mkdir -p $(dirname {output}); mv \"$tmp\" {output}; chmod 600 {output}; echo {output}"
+        )
+
+    def _safe_remote_potcar_root(self, root: str, config: RemoteClusterConfig) -> str:
+        cleaned = str(root).strip().rstrip("/")
+        if not cleaned:
+            raise ValueError("remote POTCAR root 不能为空。")
+        forbidden = ["..", "`", ";", "&", "|", "\n", "\r"]
+        if any(item in cleaned for item in forbidden):
+            raise ValueError(f"remote POTCAR root 包含不安全片段: {root!r}")
+        allowed_prefixes = (
+            f"/home/{config.user}/",
+            "/share/",
+            "/opt/",
+            "/public/",
+        )
+        if not cleaned.startswith(allowed_prefixes):
+            raise ValueError(
+                "remote POTCAR root 必须位于用户 home、/share、/opt 或 /public 下。"
+            )
+        return cleaned
 
     @staticmethod
     def _normalize_project_prefix(project: str | None) -> str | None:

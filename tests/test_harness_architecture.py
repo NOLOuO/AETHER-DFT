@@ -1698,3 +1698,23 @@ def test_architecture_live_doc_update_tool_appends_block(tmp_path: Path, monkeyp
     assert "测试块" in updated
     assert "Step 1" in updated
     assert "Step 2" in updated
+
+
+def test_vasp_output_scan_finds_fetched_inputs_subdir_outputs(tmp_path: Path):
+    from aether_dft.runtime_harness.tool_registry import ToolRegistry
+
+    run_root = tmp_path / "run"
+    output_inputs = run_root / "outputs" / "inputs"
+    output_inputs.mkdir(parents=True)
+    (output_inputs / "OUTCAR").write_text(
+        "free  energy   TOTEN  =      -6.123456 eV\n reached required accuracy\n",
+        encoding="utf-8",
+    )
+    (output_inputs / "OSZICAR").write_text("  1 F= -.6123456E+01 E0= -.6123456E+01\n", encoding="utf-8")
+
+    result = ToolRegistry().run_tool("vasp_output_scan", {"run_root": str(run_root)})["result"]
+
+    assert result["status"] == "completed"
+    assert result["outcar"]["last_toten"] == -6.123456
+    assert result["outcar"]["path"].endswith("outputs\\inputs\\OUTCAR") or result["outcar"]["path"].endswith("outputs/inputs/OUTCAR")
+    assert result["oszicar_exists"] is True
