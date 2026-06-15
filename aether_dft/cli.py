@@ -566,16 +566,47 @@ def print_chat_context_status(*, session_store: Any, session_id: str) -> None:
 
     state = session_store.load_state(session_id)
     session_context = session_store.build_session_context(session_id)
+    used_chars = len(session_context)
+    usable_chars = usable_context_chars()
+    usage_ratio = used_chars / usable_chars if usable_chars else 0.0
     print_json(
         {
             "model": program_model_id(),
             "model_context_window_tokens": current_context_window_tokens(),
             "usable_context_tokens": usable_context_tokens(),
-            "usable_context_chars": usable_context_chars(),
-            "current_session_context_chars": len(session_context),
+            "usable_context_chars": usable_chars,
+            "current_session_context_chars": used_chars,
+            "context_usage_percent": round(usage_ratio * 100, 2),
             "compacted_turn_count": state.get("compacted_turn_count", 0),
             "has_compact_summary": bool(str(state.get("compact_summary") or "").strip()),
+            "suggestions": _context_suggestions(
+                usage_ratio=usage_ratio,
+                has_compact_summary=bool(str(state.get("compact_summary") or "").strip()),
+            ),
         }
+    )
+
+
+def _context_suggestions(*, usage_ratio: float, has_compact_summary: bool) -> list[str]:
+    suggestions: list[str] = []
+    if usage_ratio >= 0.80:
+        suggestions.append("上下文接近上限：建议先执行 /compact，再继续长对话。")
+    elif usage_ratio >= 0.55:
+        suggestions.append("上下文已过半：如果接下来要做长工具链，可考虑 /compact 预先整理。")
+    if has_compact_summary:
+        suggestions.append("当前 session 已有 compact summary；/resume 会继续带入该摘要。")
+    if not suggestions:
+        suggestions.append("上下文充足；可以继续自然语言对话。")
+    return suggestions
+
+
+def print_chat_resume_hint(*, session_id: str | None, project: str | None) -> None:
+    if not session_id:
+        return
+    project_arg = f" --project {project}" if project else ""
+    print(
+        f"{Colors.DIM}Resume this session with:{Colors.RESET}\n"
+        f"  {Colors.GREEN}aether chat --resume --session-id {session_id}{project_arg}{Colors.RESET}"
     )
 
 
@@ -1464,8 +1495,10 @@ def handle_chat(args: argparse.Namespace) -> int:
             line = input(f"aether[{project_short}|{model_short}]> ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
+            print_chat_resume_hint(session_id=session_id, project=args.project)
             return 0
         if line in {"/exit", "exit", "quit", ":q"}:
+            print_chat_resume_hint(session_id=session_id, project=args.project)
             return 0
         if not line:
             continue

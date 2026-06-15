@@ -203,6 +203,8 @@ def test_cli_no_args_enters_interactive_when_tty(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Session Info" in out
     assert "Program: " in out
+    assert "Resume this session with:" in out
+    assert "aether chat --resume --session-id" in out
 
 
 def test_cli_natural_language_resume_inherits_session_project(monkeypatch, tmp_path, capsys):
@@ -258,6 +260,8 @@ def test_cli_interactive_status_and_context_shortcuts(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert '"program": "AETHER-DFT"' in out
     assert '"usable_context_tokens": 936000' in out
+    assert '"context_usage_percent"' in out
+    assert "上下文充足" in out
     assert "AETHER interactive chat" in out
 
 
