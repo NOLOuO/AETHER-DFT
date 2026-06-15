@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from aether_dft.agent import run_agent_once
 from aether_dft.agent_tools import AetherToolRunner
 from dft_app.remote.config import (
     RemoteClusterConfig,
+    config_for_local_cluster_alias,
     list_local_cluster_profiles,
     parse_ssh_config_host,
     parse_ssh_config_hosts,
@@ -113,6 +115,59 @@ def test_use_local_cluster_profile_selects_active_alias(tmp_path, monkeypatch):
     listed = list_local_cluster_profiles()
     assert listed["active_alias"] == "rxqin"
     assert listed["clusters"][0]["alias"] == "rxqin"
+
+
+def test_config_for_local_cluster_alias_does_not_mutate_active_alias(tmp_path, monkeypatch):
+    config_path = tmp_path / "ssh_config"
+    profile_path = tmp_path / "cluster.local.json"
+    config_path.write_text(
+        "\n".join(
+            [
+                "Host szhang",
+                "    HostName 59.77.33.28",
+                "    User szhang",
+                "Host rxqin",
+                "    HostName 59.77.33.28",
+                "    User rxqin",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(RemoteClusterConfig, "_default_ssh_config_path", classmethod(lambda cls: config_path))
+    monkeypatch.setattr(RemoteClusterConfig, "_local_profile_path", classmethod(lambda cls: profile_path))
+    use_local_cluster_profile("szhang")
+
+    config = config_for_local_cluster_alias("rxqin")
+
+    assert config.ssh_host_alias == "rxqin"
+    assert config.user == "rxqin"
+    assert json.loads(profile_path.read_text(encoding="utf-8"))["ssh_host_alias"] == "szhang"
+
+
+def test_registry_cluster_config_accepts_cluster_alias(tmp_path, monkeypatch):
+    from aether_dft.runtime_harness.tool_registry import ToolRegistry
+
+    config_path = tmp_path / "ssh_config"
+    profile_path = tmp_path / "cluster.local.json"
+    config_path.write_text(
+        "\n".join(
+            [
+                "Host rxqin",
+                "    HostName 59.77.33.28",
+                "    User rxqin",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(RemoteClusterConfig, "_default_ssh_config_path", classmethod(lambda cls: config_path))
+    monkeypatch.setattr(RemoteClusterConfig, "_local_profile_path", classmethod(lambda cls: profile_path))
+    use_local_cluster_profile("rxqin")
+
+    result = ToolRegistry().run_tool("cluster_config", {"cluster_alias": "rxqin"})["result"]
+
+    assert result["status"] == "ok"
+    assert result["config"]["ssh_host_alias"] == "rxqin"
+    assert result["config"]["user"] == "rxqin"
 
 
 def test_openssh_commands_use_project_ssh_config_alias():

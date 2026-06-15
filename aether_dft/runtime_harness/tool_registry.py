@@ -221,6 +221,7 @@ CAPABILITY_CATEGORIES: dict[str, dict[str, Any]] = {
         "when_to_use": "需要 SSH/SLURM 探测、research 同步、提交、查询 job、tail 日志、取消测试任务或拉回结果时。",
         "tools": [
             "cluster_config",
+            "cluster_profile_list",
             "cluster_probe",
             "cluster_my_jobs",
             "cluster_job_status_brief",
@@ -368,22 +369,23 @@ class ToolRegistry:
         self._register(ToolSpec("dft_run_list", "列出 run。", {"limit": {"type": "integer"}}, True), self._dft_run_list)
         self._register(ToolSpec("vasp_output_scan", "扫描 VASP 输出。", {"run_root": {"type": "string"}}, True), self._vasp_output_scan)
         self._register(ToolSpec("vasp_input_summary", "总结 VASP 输入。", {"run_root": {"type": "string"}}, True), self._vasp_input_summary)
-        self._register(ToolSpec("cluster_probe", "探测 SSH/SLURM 集群。", {}, True), self._cluster_probe)
-        self._register(ToolSpec("cluster_config", "读取集群配置。", {}, True), self._cluster_config)
-        self._register(ToolSpec("cluster_job_status_brief", "轻量单 job 查询：squeue/sacct 状态 + elapsed + 节点。适合模型判断用户在问具体作业状态时调用。< 2 秒。", {"job_id": {"type": "string"}}, True, ("job_id",)), self._cluster_job_status_brief)
-        self._register(ToolSpec("cluster_my_jobs", "squeue --me 简化版：列当前所有 running/pending job。< 2 秒。", {"limit": {"type": "integer"}}, True), self._cluster_my_jobs)
-        self._register(ToolSpec("cluster_job_tail_log", "tail -n <lines> 集群上某 job 的日志（默认 vasp.out，找不到自动回落 logs/*、slurm.out、OSZICAR）。job_id 可用本地 run 记录反查 remote_run_root；也可直接传 remote_run_root。< 2 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "log_name": {"type": "string"}, "lines": {"type": "integer"}, "project_root": {"type": "string"}}, True), self._cluster_job_tail_log)
-        self._register(ToolSpec("cluster_job_partial_outcar", "解析当前 OUTCAR 末段：能量 / 力 / ionic step / SCF 是否收敛。job_id 反查或直接 remote_run_root。< 3 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "project_root": {"type": "string"}}, True), self._cluster_job_partial_outcar)
-        self._register(ToolSpec("cluster_job_progress_estimate", "用 OSZICAR ionic step 轨迹判断能量趋势：是否单调下降 / 震荡 / 给收敛分数。< 5 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "project_root": {"type": "string"}}, True), self._cluster_job_progress_estimate)
-        self._register(ToolSpec("cluster_job_cancel", "精确取消单个 SLURM job_id，并回读 squeue 验证；不支持批量、通配符或 --me。只在用户明确要求取消/撤销测试任务时调用。", {"job_id": {"type": "string"}}, False, ("job_id",)), self._cluster_job_cancel)
+        self._register(ToolSpec("cluster_profile_list", "读取项目内 .secrets/ssh_config 可进入的集群 Host 列表；模型应先用它根据用户自然语言选择 cluster_alias，不要求用户手动切换。", {}, True), self._cluster_profile_list)
+        self._register(ToolSpec("cluster_probe", "探测 SSH/SLURM 集群；可传 cluster_alias（例如 szhang/rxqin/fghe）直接连接对应 Host，不改变 active cluster。", {"cluster_alias": {"type": "string"}}, True), self._cluster_probe)
+        self._register(ToolSpec("cluster_config", "读取集群配置；可传 cluster_alias 查看指定 Host 配置，不改变 active cluster。", {"cluster_alias": {"type": "string"}}, True), self._cluster_config)
+        self._register(ToolSpec("cluster_job_status_brief", "轻量单 job 查询：squeue/sacct 状态 + elapsed + 节点。可传 cluster_alias 指定账号/集群。< 2 秒。", {"job_id": {"type": "string"}, "cluster_alias": {"type": "string"}}, True, ("job_id",)), self._cluster_job_status_brief)
+        self._register(ToolSpec("cluster_my_jobs", "squeue --me 简化版：列当前或指定 cluster_alias 的 running/pending job。< 2 秒。", {"limit": {"type": "integer"}, "cluster_alias": {"type": "string"}}, True), self._cluster_my_jobs)
+        self._register(ToolSpec("cluster_job_tail_log", "tail -n <lines> 集群上某 job 的日志（默认 vasp.out，找不到自动回落 logs/*、slurm.out、OSZICAR）。可传 cluster_alias。< 2 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "log_name": {"type": "string"}, "lines": {"type": "integer"}, "project_root": {"type": "string"}, "cluster_alias": {"type": "string"}}, True), self._cluster_job_tail_log)
+        self._register(ToolSpec("cluster_job_partial_outcar", "解析当前 OUTCAR 末段：能量 / 力 / ionic step / SCF 是否收敛。可传 cluster_alias。< 3 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "project_root": {"type": "string"}, "cluster_alias": {"type": "string"}}, True), self._cluster_job_partial_outcar)
+        self._register(ToolSpec("cluster_job_progress_estimate", "用 OSZICAR ionic step 轨迹判断能量趋势：是否单调下降 / 震荡 / 给收敛分数。可传 cluster_alias。< 5 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "project_root": {"type": "string"}, "cluster_alias": {"type": "string"}}, True), self._cluster_job_progress_estimate)
+        self._register(ToolSpec("cluster_job_cancel", "精确取消单个 SLURM job_id，并回读 squeue 验证；可传 cluster_alias；不支持批量、通配符或 --me。只在用户明确要求取消/撤销测试任务时调用。", {"job_id": {"type": "string"}, "cluster_alias": {"type": "string"}}, False, ("job_id",)), self._cluster_job_cancel)
         self._register(ToolSpec("research_workspace_diff", "按项目比较本地 research/<project>/ 与集群 ~/research/<project>/ 差异；project 为空则比较整个 research。", {"project": {"type": "string"}, "remote_research_dir": {"type": "string"}}, True), self._research_workspace_diff)
         self._register(ToolSpec("research_workspace_sync_to_cluster", "把本地 research/<project>/ 推到集群 ~/research/<project>/；默认 dry-run，apply=true 才修改远端。", {"project": {"type": "string"}, "remote_research_dir": {"type": "string"}, "apply": {"type": "boolean"}}, False), self._research_workspace_sync_to_cluster)
         self._register(ToolSpec("research_workspace_sync_from_cluster", "从集群 ~/research/<project>/ 拉回本地 research/<project>/；默认 dry-run，apply=true 才覆盖本地且先备份。", {"project": {"type": "string"}, "remote_research_dir": {"type": "string"}, "apply": {"type": "boolean"}}, False), self._research_workspace_sync_from_cluster)
         self._register(ToolSpec("research_workspace_pull_logs", "按本地 run 记录从集群回拉 VASP 输出/日志。", {"project": {"type": "string"}, "run_id": {"type": "string"}}, False), self._research_workspace_pull_logs)
         self._register(ToolSpec("research_learning_capture", "把重要科研判断、失败经验或参数结论写入 research/<project>/Learning/<title>.md。", {"project": {"type": "string"}, "title": {"type": "string"}, "content": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, False, ("project", "title", "content")), self._research_learning_capture)
-        self._register(ToolSpec("cluster_remote_submit", "通过 SSH/SLURM 远程提交已建好的 run。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}}, False), self._cluster_remote_submit)
-        self._register(ToolSpec("cluster_remote_monitor", "轮询远程 run 状态并在完成时同步输出。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}, "sync_outputs": {"type": "boolean"}}, False), self._cluster_remote_monitor)
-        self._register(ToolSpec("cluster_remote_fetch", "同步远程 run 输出到本地。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}}, False), self._cluster_remote_fetch)
+        self._register(ToolSpec("cluster_remote_submit", "通过 SSH/SLURM 远程提交已建好的 run；可传 cluster_alias 指定账号/集群，不改变 active cluster。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}, "cluster_alias": {"type": "string"}}, False), self._cluster_remote_submit)
+        self._register(ToolSpec("cluster_remote_monitor", "轮询远程 run 状态并在完成时同步输出；可传 cluster_alias。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}, "sync_outputs": {"type": "boolean"}, "cluster_alias": {"type": "string"}}, False), self._cluster_remote_monitor)
+        self._register(ToolSpec("cluster_remote_fetch", "同步远程 run 输出到本地；可传 cluster_alias。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}, "cluster_alias": {"type": "string"}}, False), self._cluster_remote_fetch)
         self._register(ToolSpec("adsorption_workflow_status", "读取 adsorption workflow 状态。", {"run_root": {"type": "string"}}, True), self._adsorption_workflow_status)
         self._register(ToolSpec("recommend_next_tasks", "推荐下一步科研任务。", {"project": {"type": "string"}, "focus": {"type": "string"}}, True), self._recommend_next_tasks)
         self._register(ToolSpec("result_interpret", "解释 VASP 输出证据：是否收敛、能量/OSZICAR 趋势、下一步要做的结构/键连/记录动作。", {"run_root": {"type": "string"}}, True, ("run_root",)), self._result_interpret)
@@ -431,6 +433,9 @@ class ToolRegistry:
             "cluster_execution_intent_plan",
             "research_vasp_template_resolve",
             "research_workspace_diff",
+            "cluster_profile_list",
+            "cluster_config",
+            "cluster_probe",
             "cluster_my_jobs",
             "cluster_job_status_brief",
             "cluster_job_tail_log",
@@ -591,7 +596,7 @@ class ToolRegistry:
             "capability_stages": [
                 {"category": "project_context", "tools": ["project_continuity_digest", "web_search", "literature_search", "evidence_claim_audit", "chemistry_compute", "image_understand", "discussion_state_snapshot", "research_cycle_checkpoint", "research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
                 {"category": "structure_modeling", "tools": ["structure_modeling_tool_status", "structure_modeling_intent_plan", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
-                {"category": "dft_execution", "tools": ["cluster_execution_intent_plan", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_probe", "cluster_config", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "cluster_job_cancel"]},
+                {"category": "dft_execution", "tools": ["cluster_execution_intent_plan", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_profile_list", "cluster_probe", "cluster_config", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "cluster_job_cancel"]},
                 {"category": "realtime_cluster_status", "tools": ["cluster_job_status_brief", "cluster_my_jobs", "cluster_job_tail_log", "cluster_job_partial_outcar", "cluster_job_progress_estimate", "cluster_job_cancel"]},
                 {"category": "result_analysis", "tools": ["vasp_output_scan", "result_interpret", "next_experiment_propose", "candidate_outcome_record"]},
                 {"category": "writeback_learning", "tools": ["research_learning_capture", "research_cycle_checkpoint", "evidence_claim_audit", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show", "project_progress_append", "behavior_audit"]},
@@ -1554,10 +1559,10 @@ class ToolRegistry:
             },
             {
                 "purpose": "连接并探测集群",
-                "candidate_tools": ["cluster_config", "cluster_probe", "research_workspace_diff"],
+                "candidate_tools": ["cluster_profile_list", "cluster_config", "cluster_probe", "research_workspace_diff"],
                 "call_when": "preflight ready 且用户目标包含提交/监控/回收时调用；只做连通性证据。",
                 "skip_when": "用户只要生成输入包，或 preflight blocked。",
-                "model_decision": "probe 成功只是允许进入提交候选，不等于已经提交；若任务依赖 research 规则，先确认集群 ~/research 与本地 research 一致或解释差异。",
+                "model_decision": "若用户提到账号/别名（如 rxqin/fghe/szhang），先用 cluster_profile_list 识别 cluster_alias，再把 cluster_alias 传给 cluster_config/cluster_probe/submit；probe 成功只是允许进入提交候选，不等于已经提交。",
             },
             {
                 "purpose": "统一本地 research 与集群 ~/research",
@@ -2031,11 +2036,17 @@ class ToolRegistry:
 
     def _cluster_job_status_brief(self, payload: dict[str, Any]) -> dict[str, Any]:
         from dft_app.remote.realtime import job_status_brief
-        return job_status_brief(str(payload.get("job_id") or "").strip())
+        return job_status_brief(
+            str(payload.get("job_id") or "").strip(),
+            cluster_alias=str(payload.get("cluster_alias") or "").strip() or None,
+        )
 
     def _cluster_my_jobs(self, payload: dict[str, Any]) -> dict[str, Any]:
         from dft_app.remote.realtime import my_jobs
-        return my_jobs(limit=payload.get("limit") or 20)
+        return my_jobs(
+            limit=payload.get("limit") or 20,
+            cluster_alias=str(payload.get("cluster_alias") or "").strip() or None,
+        )
 
     def _cluster_job_tail_log(self, payload: dict[str, Any]) -> dict[str, Any]:
         from dft_app.remote.realtime import job_tail_log
@@ -2045,11 +2056,15 @@ class ToolRegistry:
             log_name=str(payload.get("log_name") or "vasp.out"),
             lines=payload.get("lines") or 50,
             project_root=str(payload.get("project_root") or "").strip() or None,
+            cluster_alias=str(payload.get("cluster_alias") or "").strip() or None,
         )
 
     def _cluster_job_cancel(self, payload: dict[str, Any]) -> dict[str, Any]:
         from dft_app.remote.realtime import job_cancel
-        return job_cancel(str(payload.get("job_id") or "").strip())
+        return job_cancel(
+            str(payload.get("job_id") or "").strip(),
+            cluster_alias=str(payload.get("cluster_alias") or "").strip() or None,
+        )
 
     def _cluster_job_partial_outcar(self, payload: dict[str, Any]) -> dict[str, Any]:
         from dft_app.remote.realtime import job_partial_outcar
@@ -2057,6 +2072,7 @@ class ToolRegistry:
             job_id=str(payload.get("job_id") or "").strip() or None,
             remote_run_root=str(payload.get("remote_run_root") or "").strip() or None,
             project_root=str(payload.get("project_root") or "").strip() or None,
+            cluster_alias=str(payload.get("cluster_alias") or "").strip() or None,
         )
 
     def _cluster_job_progress_estimate(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2065,14 +2081,26 @@ class ToolRegistry:
             job_id=str(payload.get("job_id") or "").strip() or None,
             remote_run_root=str(payload.get("remote_run_root") or "").strip() or None,
             project_root=str(payload.get("project_root") or "").strip() or None,
+            cluster_alias=str(payload.get("cluster_alias") or "").strip() or None,
         )
 
-    def _cluster_probe(self, _: dict[str, Any]) -> dict[str, Any]:
-        result = SSHRemoteRunner().probe()
+    def _cluster_runner_for_alias(self, payload: dict[str, Any]) -> SSHRemoteRunner:
+        alias = str(payload.get("cluster_alias") or "").strip()
+        if not alias:
+            return SSHRemoteRunner()
+        from dft_app.remote.config import config_for_local_cluster_alias
+        return SSHRemoteRunner(config=config_for_local_cluster_alias(alias))
+
+    def _cluster_profile_list(self, _: dict[str, Any]) -> dict[str, Any]:
+        from dft_app.remote.config import list_local_cluster_profiles
+        return list_local_cluster_profiles()
+
+    def _cluster_probe(self, payload: dict[str, Any]) -> dict[str, Any]:
+        result = self._cluster_runner_for_alias(payload).probe()
         return {"status": result.status, "message": result.message, "details": result.details}
 
-    def _cluster_config(self, _: dict[str, Any]) -> dict[str, Any]:
-        return {"status": "ok", "config": SSHRemoteRunner().describe_config()}
+    def _cluster_config(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {"status": "ok", "config": self._cluster_runner_for_alias(payload).describe_config()}
 
     def _research_workspace_diff(self, payload: dict[str, Any]) -> dict[str, Any]:
         return research_workspace_diff(
@@ -2115,7 +2143,7 @@ class ToolRegistry:
         if isinstance(bundle, dict):
             return bundle
         store, spec, record, _run_root = bundle
-        result = SSHRemoteRunner().submit(spec, record)
+        result = self._cluster_runner_for_alias(payload).submit(spec, record)
         store.save_run_record(record)
         return {"status": result.status, "message": result.message, "details": result.details}
 
@@ -2125,7 +2153,7 @@ class ToolRegistry:
             return bundle
         store, _spec, record, _run_root = bundle
         sync_outputs = bool(payload.get("sync_outputs", True))
-        result = SSHRemoteRunner().monitor(record, sync_outputs=sync_outputs)
+        result = self._cluster_runner_for_alias(payload).monitor(record, sync_outputs=sync_outputs)
         store.save_run_record(record)
         return {"status": result.status, "message": result.message, "details": result.details}
 
@@ -2134,7 +2162,7 @@ class ToolRegistry:
         if isinstance(bundle, dict):
             return bundle
         store, _spec, record, _run_root = bundle
-        result = SSHRemoteRunner().fetch_outputs(record)
+        result = self._cluster_runner_for_alias(payload).fetch_outputs(record)
         store.save_run_record(record)
         return {"status": result.status, "message": result.message, "details": result.details}
 

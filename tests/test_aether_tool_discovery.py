@@ -40,6 +40,8 @@ def test_discussion_mode_uses_lazy_schema_unlock_for_heavy_tools():
     assert "aether_capability_map" in initial_names
     assert "aether_discover_tools" in initial_names
     assert "project_state_read" in initial_names
+    assert "cluster_profile_list" in initial_names
+    assert "cluster_config" in initial_names
     assert "structure_add_adsorbate" not in initial_names
 
     unlocked = registry.openai_tool_schemas(

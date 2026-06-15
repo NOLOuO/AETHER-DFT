@@ -321,6 +321,37 @@ def use_local_cluster_profile(alias: str, *, remote_base_dir: str | None = None)
     }
 
 
+def config_for_local_cluster_alias(alias: str) -> RemoteClusterConfig:
+    """Build a RemoteClusterConfig for a project-local SSH Host alias.
+
+    Unlike ``use_local_cluster_profile()``, this does not mutate the active
+    cluster.  Model-facing tools use it to honor natural language such as
+    "用 rxqin 看队列" without requiring the user to switch global state first.
+    """
+    alias = str(alias or "").strip()
+    if not alias:
+        return RemoteClusterConfig.from_env()
+    ssh_config_path = RemoteClusterConfig._default_ssh_config_path()
+    if not ssh_config_path.exists():
+        raise ValueError("项目内尚未导入 SSH config；请先运行 cluster import-ssh-config。")
+    parsed = parse_ssh_config_host(ssh_config_path, alias)
+    if not parsed:
+        raise ValueError(f"项目 SSH config 中未找到 Host {alias}")
+    user = str(parsed.get("user") or alias)
+    return RemoteClusterConfig(
+        host=str(parsed.get("hostname") or alias),
+        user=user,
+        remote_base_dir=f"/home/{user}/aether-dft-runs",
+        port=int(str(parsed.get("port") or "22")),
+        backend="openssh",
+        ssh_key_path=str(parsed.get("identityfile") or "") or None,
+        strict_host_key_checking=True,
+        ignore_local_ssh_config=False,
+        ssh_config_path=str(ssh_config_path),
+        ssh_host_alias=alias,
+    )
+
+
 def write_local_cluster_profile(
     *,
     source_ssh_config: Path,

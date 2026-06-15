@@ -13,7 +13,7 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from dft_app.remote.config import RemoteClusterConfig
+from dft_app.remote.config import RemoteClusterConfig, config_for_local_cluster_alias
 from dft_app.remote.ssh_remote_runner import SSHRemoteRunner
 
 
@@ -153,7 +153,12 @@ def _resolve_remote_run_root(job_id: str | None, project_root: Path | None) -> s
     return None
 
 
-def job_status_brief(job_id: str) -> dict[str, Any]:
+def _config_for_alias(cluster_alias: str | None) -> RemoteClusterConfig | None:
+    alias = str(cluster_alias or "").strip()
+    return config_for_local_cluster_alias(alias) if alias else None
+
+
+def job_status_brief(job_id: str, *, cluster_alias: str | None = None) -> dict[str, Any]:
     """单 job 状态 / 已运行时长 / 节点；< 2s。"""
     try:
         job_id = _safe_job_id(job_id)
@@ -161,7 +166,10 @@ def job_status_brief(job_id: str) -> dict[str, Any]:
         return {"status": "error", "message": str(exc)}
     if not job_id:
         return {"status": "error", "message": "job_id 不能为空。"}
-    runner = _runner()
+    try:
+        runner = _runner(_config_for_alias(cluster_alias))
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc), "cluster_alias": cluster_alias}
     squeue_cmd = f"squeue -j {job_id} -h -o '%T|%M|%N|%R'"
     result = _exec(runner, squeue_cmd, timeout=20)
     if not result["ok"] and "Invalid job id" not in result["stderr"]:
@@ -218,7 +226,7 @@ def job_status_brief(job_id: str) -> dict[str, Any]:
     }
 
 
-def job_cancel(job_id: str) -> dict[str, Any]:
+def job_cancel(job_id: str, *, cluster_alias: str | None = None) -> dict[str, Any]:
     """精确取消单个 SLURM job，并回读同一 job_id 验证。
 
     这是一个有副作用的操作，但安全边界必须窄：只接受一个经过 allow-list
@@ -230,7 +238,10 @@ def job_cancel(job_id: str) -> dict[str, Any]:
         return {"status": "error", "message": str(exc)}
     if not job_id:
         return {"status": "error", "message": "job_id 不能为空。"}
-    runner = _runner()
+    try:
+        runner = _runner(_config_for_alias(cluster_alias))
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc), "cluster_alias": cluster_alias}
     cancel = _exec(runner, f"scancel {job_id}", timeout=20)
     if not cancel["ok"]:
         return {
@@ -264,13 +275,16 @@ def job_cancel(job_id: str) -> dict[str, Any]:
     }
 
 
-def my_jobs(*, limit: int = 20) -> dict[str, Any]:
+def my_jobs(*, limit: int = 20, cluster_alias: str | None = None) -> dict[str, Any]:
     """squeue --me 简化；< 2s。"""
     try:
         safe_limit = _safe_positive_int(limit, default=20, lo=1, hi=200, name="limit")
     except ValueError as exc:
         return {"status": "error", "message": str(exc)}
-    runner = _runner()
+    try:
+        runner = _runner(_config_for_alias(cluster_alias))
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc), "cluster_alias": cluster_alias}
     cmd = f"squeue --me -h -o '%i|%j|%T|%M|%N|%R' | head -n {safe_limit}"
     result = _exec(runner, cmd, timeout=20)
     if not result["ok"]:
@@ -309,6 +323,7 @@ def job_tail_log(
     log_name: str = "vasp.out",
     lines: int = 50,
     project_root: str | None = None,
+    cluster_alias: str | None = None,
 ) -> dict[str, Any]:
     """tail -n <lines> 某个 job 的指定日志（默认 vasp.out）；< 2s。"""
     try:
@@ -326,7 +341,10 @@ def job_tail_log(
             "message": "找不到 remote_run_root；请提供 remote_run_root，或确认 job_id 对应的本地 run 记录里有 notes.remote.remote_run_root。",
             "job_id": safe_job_id or job_id,
         }
-    runner = _runner()
+    try:
+        runner = _runner(_config_for_alias(cluster_alias))
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc), "cluster_alias": cluster_alias}
     config = runner._load_config()
     try:
         resolved_root = _safe_remote_path(resolved_root_raw, config)
@@ -380,6 +398,7 @@ def job_partial_outcar(
     *,
     remote_run_root: str | None = None,
     project_root: str | None = None,
+    cluster_alias: str | None = None,
 ) -> dict[str, Any]:
     """解析当前 OUTCAR 的最后一步：能量 / 力 / ionic step / SCF iter；< 3s。"""
     try:
@@ -395,7 +414,10 @@ def job_partial_outcar(
             "message": "找不到 remote_run_root；请提供。",
             "job_id": safe_job_id or job_id,
         }
-    runner = _runner()
+    try:
+        runner = _runner(_config_for_alias(cluster_alias))
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc), "cluster_alias": cluster_alias}
     config = runner._load_config()
     try:
         resolved_root = _safe_remote_path(resolved_root_raw, config)
@@ -449,6 +471,7 @@ def job_progress_estimate(
     *,
     remote_run_root: str | None = None,
     project_root: str | None = None,
+    cluster_alias: str | None = None,
 ) -> dict[str, Any]:
     """收敛轨迹分析：能量是否震荡？力是否在下降？给"剩余步数估计"。< 5s。"""
     try:
@@ -464,7 +487,10 @@ def job_progress_estimate(
             "message": "找不到 remote_run_root；请提供。",
             "job_id": safe_job_id or job_id,
         }
-    runner = _runner()
+    try:
+        runner = _runner(_config_for_alias(cluster_alias))
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc), "cluster_alias": cluster_alias}
     config = runner._load_config()
     try:
         resolved_root = _safe_remote_path(resolved_root_raw, config)
