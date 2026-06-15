@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -571,6 +572,9 @@ class ParallelReadOnlyAdapter:
 
 
 class ParallelReadOnlyRegistry:
+    def __init__(self):
+        self.barrier = threading.Barrier(2)
+
     def openai_tool_schemas(self):
         return [
             {"type": "function", "function": {"name": "slow_read_a", "description": "read A", "parameters": {"type": "object", "properties": {}}}},
@@ -584,23 +588,27 @@ class ParallelReadOnlyRegistry:
         return True
 
     def run_tool(self, name, arguments):
-        time.sleep(0.35)
-        return {"name": name, "arguments": {}, "result": {"status": "ok", "name": name}}
+        try:
+            self.barrier.wait(timeout=1.0)
+            barrier_passed = True
+        except threading.BrokenBarrierError:
+            barrier_passed = False
+        time.sleep(0.05)
+        return {"name": name, "arguments": {}, "result": {"status": "ok", "name": name, "barrier_passed": barrier_passed}}
 
 
 def test_agent_harness_runs_multiple_read_only_tools_in_parallel(tmp_path: Path):
     sessions = HarnessSessionStore(tmp_path / "sessions")
     events: list[dict[str, Any]] = []
-    harness = AgentHarness(adapter=ParallelReadOnlyAdapter(), registry=ParallelReadOnlyRegistry(), sessions=sessions)
+    registry = ParallelReadOnlyRegistry()
+    harness = AgentHarness(adapter=ParallelReadOnlyAdapter(), registry=registry, sessions=sessions)
 
-    started = time.perf_counter()
     record = harness.run_turn("并发读取两个只读证据", max_steps=3, progress_callback=events.append)
-    elapsed = time.perf_counter() - started
 
     assert record["response"] == "两个只读检查已并发完成。"
     assert [item["name"] for item in record["tool_executions"]] == ["slow_read_a", "slow_read_b"]
     assert any(event.get("event") == "tool_parallel_start" for event in events)
-    assert elapsed < 0.65
+    assert [item["result"]["barrier_passed"] for item in record["tool_executions"]] == [True, True]
 
 
 class HeartbeatAdapter:
