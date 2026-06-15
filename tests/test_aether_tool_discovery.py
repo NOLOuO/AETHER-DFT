@@ -192,6 +192,51 @@ def test_agent_harness_retries_when_final_reply_contains_tool_markup(tmp_path: P
     assert adapter.calls == 3
 
 
+class ToolLimitMarkupTwiceAdapter:
+    runtime = type("Runtime", (), {"model_id": "fake:tool-markup-twice"})()
+
+    def __init__(self):
+        self.calls = 0
+
+    def chat(self, messages, *, tools=None, tool_choice="auto", max_tokens=None):
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "content": "",
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": "call_discover",
+                        "type": "function",
+                        "function": {
+                            "name": "aether_discover_tools",
+                            "arguments": '{"category":"realtime_cluster_status","max_tools":5}',
+                        },
+                    }
+                ],
+            }
+        return {
+            "content": '<｜｜DSML｜｜tool_calls><invoke name="cluster_my_jobs"></invoke>',
+            "finish_reason": "stop",
+            "tool_calls": [],
+        }
+
+
+def test_agent_harness_summarizes_tool_evidence_when_markup_retry_also_fails(tmp_path: Path):
+    adapter = ToolLimitMarkupTwiceAdapter()
+    harness = AgentHarness(adapter=adapter, registry=ToolRegistry(), sessions=HarnessSessionStore(tmp_path / "sessions"))
+
+    record = harness.run_turn("[discussion-mode] 只测试工具标记双失败", project="demo", max_steps=1)
+
+    assert record["finish_reason"] == "tool_loop_limit_finalized"
+    assert "<invoke" not in record["response"]
+    assert "请继续追问" not in record["response"]
+    assert "已执行工具证据" in record["response"]
+    assert "aether_discover_tools" in record["response"]
+    assert "realtime_cluster_status" in record["response"]
+    assert adapter.calls == 3
+
+
 class LengthThenFinalAdapter:
     runtime = type("Runtime", (), {"model_id": "fake:length"})()
 

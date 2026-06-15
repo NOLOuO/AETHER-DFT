@@ -19,8 +19,44 @@ def _tool_names(record: dict[str, Any]) -> list[str]:
     return [str(item.get("name") or "") for item in record.get("tool_executions") or []]
 
 
-def _contains_any(names: list[str], candidates: set[str]) -> bool:
-    return bool(set(names) & candidates)
+def _tool_results(record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    out: list[tuple[str, dict[str, Any]]] = []
+    for item in record.get("tool_executions") or []:
+        name = str(item.get("name") or "")
+        result = item.get("result") if isinstance(item.get("result"), dict) else {}
+        out.append((name, result))
+    return out
+
+
+def _has_ok_result(results: list[tuple[str, dict[str, Any]]], candidates: set[str]) -> bool:
+    return any(name in candidates and str(result.get("status") or "").lower() == "ok" for name, result in results)
+
+
+def _has_outcar_metric(result: dict[str, Any]) -> bool:
+    if str(result.get("status") or "").lower() != "ok":
+        return False
+    for key in (
+        "last_toten_ev",
+        "last_free_energy_ev",
+        "max_force_ev_a",
+        "rms_force_ev_a",
+        "accuracy_reached",
+        "ionic_steps_seen",
+        "last_energy_ev",
+    ):
+        if result.get(key) is not None:
+            return True
+    outcar = result.get("outcar")
+    return isinstance(outcar, dict) and bool(outcar.get("has_energy") or outcar.get("last_toten"))
+
+
+def _has_outcar_evidence(results: list[tuple[str, dict[str, Any]]]) -> bool:
+    outcar_tools = {"cluster_job_partial_outcar", "cluster_job_progress_estimate", "vasp_output_scan", "result_interpret"}
+    return any(name in outcar_tools and _has_outcar_metric(result) for name, result in results)
+
+
+def _attempted_outcar_read(names: list[str]) -> bool:
+    return bool(set(names) & {"cluster_job_partial_outcar", "cluster_job_progress_estimate", "vasp_output_scan", "result_interpret"})
 
 
 def _default_readonly_permission(details: dict[str, Any]) -> bool:
@@ -39,7 +75,9 @@ def _validation_prompt(*, project: str, cluster_alias: str | None, include_outca
         "如果需要连接集群，先读取项目内 cluster profiles，再自己选择最合适的 alias。"
     )
     outcar_clause = (
-        "还要尝试只读查找/解析一个已有 OUTCAR 或当前作业 OUTCAR 片段；如果没有可用路径，说明缺口，不要编造。"
+        "还要尝试只读查找/解析一个已有 OUTCAR 或当前作业 OUTCAR 片段；"
+        "如果当前队列 job_id 无法反查 remote_run_root，先查项目连续性摘要、research onboarding 或知识笔记中的历史 remote path，"
+        "再用只读 OUTCAR 工具验证；如果仍没有可用路径，说明缺口，不要编造。"
         if include_outcar
         else "不要求解析 OUTCAR；只验证项目上下文、集群配置、连通性和当前队列。"
     )
@@ -118,11 +156,13 @@ def run_real_case_validation(
         error = str(exc)
 
     names = _tool_names(record)
+    results = _tool_results(record)
     evidence = {
-        "project_context": _contains_any(names, {"project_state_read", "project_continuity_digest", "research_onboarding_context"}),
-        "cluster_profile": _contains_any(names, {"cluster_profile_list", "cluster_config"}),
-        "cluster_live": _contains_any(names, {"cluster_probe", "cluster_my_jobs", "cluster_job_status_brief"}),
-        "outcar_read": _contains_any(names, {"cluster_job_partial_outcar", "cluster_job_progress_estimate", "vasp_output_scan", "result_interpret"}),
+        "project_context": _has_ok_result(results, {"project_state_read", "project_continuity_digest", "research_onboarding_context"}),
+        "cluster_profile": _has_ok_result(results, {"cluster_profile_list", "cluster_config"}),
+        "cluster_live": _has_ok_result(results, {"cluster_probe", "cluster_my_jobs", "cluster_job_status_brief"}),
+        "outcar_attempted": _attempted_outcar_read(names),
+        "outcar_read": _has_outcar_evidence(results),
         "side_effect_blocked": bool(denied_permissions),
     }
     required = ["project_context", "cluster_profile", "cluster_live"]
@@ -156,4 +196,3 @@ def run_real_case_validation(
     report_path.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     result["report_path"] = str(report_path)
     return result
-

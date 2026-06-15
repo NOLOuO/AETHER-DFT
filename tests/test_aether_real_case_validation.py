@@ -61,6 +61,7 @@ def test_real_case_validation_marks_missing_outcar_when_requested(tmp_path: Path
 
     def fake_ask(prompt: str, **kwargs: Any) -> dict[str, Any]:
         assert "OUTCAR" in prompt
+        assert "历史 remote path" in prompt
         return {
             "model_id": "fake:model",
             "finish_reason": "stop",
@@ -69,6 +70,7 @@ def test_real_case_validation_marks_missing_outcar_when_requested(tmp_path: Path
                 {"name": "project_state_read", "result": {"status": "ok"}},
                 {"name": "cluster_profile_list", "result": {"status": "ok"}},
                 {"name": "cluster_probe", "result": {"status": "ok"}},
+                {"name": "cluster_job_partial_outcar", "result": {"status": "missing", "message": "远端没有 OUTCAR"}},
             ],
         }
 
@@ -80,3 +82,40 @@ def test_real_case_validation_marks_missing_outcar_when_requested(tmp_path: Path
 
     assert result["status"] == "incomplete"
     assert result["missing_evidence"] == ["outcar_read"]
+    assert result["evidence"]["outcar_attempted"] is True
+    assert result["evidence"]["outcar_read"] is False
+
+
+def test_real_case_validation_accepts_successful_outcar_metrics(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(real_case_validation, "ensure_runtime_dir", _runtime_dir(tmp_path))
+
+    def fake_ask(prompt: str, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "model_id": "fake:model",
+            "finish_reason": "stop",
+            "response": "读到了 OUTCAR。",
+            "tool_executions": [
+                {"name": "project_state_read", "result": {"status": "ok"}},
+                {"name": "cluster_profile_list", "result": {"status": "ok"}},
+                {"name": "cluster_my_jobs", "result": {"status": "ok"}},
+                {
+                    "name": "cluster_job_partial_outcar",
+                    "result": {
+                        "status": "ok",
+                        "remote_run_root": "/home/szhang/research/demo",
+                        "last_toten_ev": -1.23,
+                        "max_force_ev_a": 0.02,
+                    },
+                },
+            ],
+        }
+
+    result = real_case_validation.run_real_case_validation(
+        project="MCH-Pt-Br",
+        include_outcar=True,
+        ask_fn=fake_ask,
+    )
+
+    assert result["status"] == "ok"
+    assert result["evidence"]["outcar_attempted"] is True
+    assert result["evidence"]["outcar_read"] is True

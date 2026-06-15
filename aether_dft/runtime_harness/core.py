@@ -76,6 +76,87 @@ def _tool_markup_fallback() -> str:
     )
 
 
+def _tool_evidence_fallback(tool_executions: list[dict[str, Any]], *, reason: str = "") -> str:
+    """Return a deterministic natural-language summary when final LLM text is unusable.
+
+    This is a safety net, not a fixed workflow: the model already chose and ran
+    tools.  We only translate those completed tool results into a readable
+    answer when the final response contains unexecuted tool-call markup.
+    """
+
+    if not tool_executions:
+        return _tool_markup_fallback()
+    lines: list[str] = []
+    intro = "模型最终回复含未执行工具标记，我已拦截；下面只基于本轮已经执行过的工具证据总结。"
+    if reason:
+        intro += f" 触发原因：{reason}。"
+    lines.append(intro)
+    lines.append("")
+    lines.append("已执行工具证据：")
+    seen_counts: dict[str, int] = {}
+    for item in tool_executions[-12:]:
+        name = str(item.get("name") or "tool")
+        seen_counts[name] = seen_counts.get(name, 0) + 1
+        label = name if seen_counts[name] == 1 else f"{name}#{seen_counts[name]}"
+        result = item.get("result") if isinstance(item.get("result"), dict) else {}
+        status = str(result.get("status") or "unknown")
+        parts = [f"- {label}: {status}"]
+        message = str(result.get("message") or "").strip()
+        if message:
+            parts.append(message[:180])
+        if name == "cluster_my_jobs" and "count" in result:
+            parts.append(f"队列 job 数 {result.get('count')}")
+            jobs = result.get("jobs") if isinstance(result.get("jobs"), list) else []
+            running = [job for job in jobs if str(job.get("scheduler_state") or "").upper() == "RUNNING"]
+            if running:
+                parts.append(
+                    "RUNNING: "
+                    + ", ".join(
+                        f"{job.get('job_id')}:{job.get('name')}@{job.get('node')}"
+                        for job in running[:4]
+                    )
+                )
+        if name == "cluster_probe" and isinstance(result.get("details"), dict):
+            probe = result["details"].get("probe") or {}
+            if isinstance(probe, dict):
+                parts.append(
+                    "probe="
+                    + ", ".join(
+                        f"{key}:{probe.get(key)}"
+                        for key in ("hostname", "sbatch", "squeue")
+                        if probe.get(key)
+                    )
+                )
+        if "remote_run_root" in result:
+            parts.append(f"remote={result.get('remote_run_root')}")
+        if "last_toten_ev" in result:
+            parts.append(f"TOTEN={result.get('last_toten_ev')} eV")
+        if "last_free_energy_ev" in result and result.get("last_free_energy_ev") != result.get("last_toten_ev"):
+            parts.append(f"F={result.get('last_free_energy_ev')} eV")
+        if "max_force_ev_a" in result:
+            parts.append(f"max_force={result.get('max_force_ev_a')} eV/Å")
+        if "rms_force_ev_a" in result:
+            parts.append(f"rms_force={result.get('rms_force_ev_a')} eV/Å")
+        if "accuracy_reached" in result:
+            parts.append(f"SCF_accuracy={result.get('accuracy_reached')}")
+        if "ionic_steps_seen" in result:
+            parts.append(f"ionic_steps={result.get('ionic_steps_seen')}")
+        if "convergence_score" in result:
+            parts.append(f"convergence_score={result.get('convergence_score')}")
+        if "oscillating" in result:
+            parts.append(f"oscillating={result.get('oscillating')}")
+        if "persisted_output_path" in result:
+            parts.append(f"full={result.get('persisted_output_path')}")
+        if "category" in result:
+            parts.append(f"category={result.get('category')}")
+        if isinstance(result.get("tool_names"), list):
+            parts.append("tools=" + ", ".join(str(tool) for tool in result["tool_names"][:8]))
+        lines.append("；".join(str(part) for part in parts if str(part).strip()) + "。")
+    lines.append("")
+    lines.append("结论：本轮没有执行新的未确认工具调用；如果上面有 unavailable/error，下一步应补齐缺失路径或改用已验证的 remote_run_root/job_id 后再读。")
+    return "\n".join(lines)
+
+
 def _clean_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return json.loads(json.dumps(messages, ensure_ascii=False, default=str).encode("utf-8", errors="replace").decode("utf-8", errors="replace"))
 
@@ -666,10 +747,14 @@ class AgentHarness:
                             max_tokens=max(int(max_tokens or 0), 1000),
                         )
                         retry_content = _clean_text(str(retry_reply.get("content") or ""))
-                        response = _tool_markup_fallback() if _contains_tool_markup(retry_content) else (retry_content or _tool_markup_fallback())
+                        response = (
+                            _tool_evidence_fallback(tool_executions, reason="final reply still contained tool markup")
+                            if _contains_tool_markup(retry_content)
+                            else (retry_content or _tool_evidence_fallback(tool_executions, reason="empty final reply"))
+                        )
                         finish_reason = "tool_markup_finalized"
                     except Exception:
-                        response = _tool_markup_fallback()
+                        response = _tool_evidence_fallback(tool_executions, reason="final reply retry failed")
                 messages.append({"role": "assistant", "content": response})
                 messages = _clean_messages(messages)
                 if finish_reason == "length":
@@ -743,7 +828,11 @@ class AgentHarness:
                                 max_tokens=max(int(max_tokens or 0), 1000),
                             )
                             retry_content = _clean_text(str(retry_reply.get("content") or ""))
-                            final_content = _tool_markup_fallback() if _contains_tool_markup(retry_content) else (retry_content or _tool_markup_fallback())
+                            final_content = (
+                                _tool_evidence_fallback(tool_executions, reason="tool-loop final reply still contained tool markup")
+                                if _contains_tool_markup(retry_content)
+                                else (retry_content or _tool_evidence_fallback(tool_executions, reason="empty tool-loop final reply"))
+                            )
                         response = final_content
                         finish_reason = "tool_loop_limit_finalized"
                         messages.append({"role": "assistant", "content": response})
