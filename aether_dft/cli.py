@@ -1736,6 +1736,39 @@ def handle_cluster_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_cluster_list(args: argparse.Namespace) -> int:
+    from dft_app.remote.config import list_local_cluster_profiles
+
+    payload = list_local_cluster_profiles()
+    if getattr(args, "json", False):
+        print_json(payload)
+        return 0 if payload.get("status") == "ok" else 1
+    print(f"{Colors.CYAN}AETHER project clusters{Colors.RESET}")
+    print(f"ssh_config: {payload.get('ssh_config_path') or '(not imported)'}")
+    print(f"active: {Colors.YELLOW}{payload.get('active_alias') or '(none)'}{Colors.RESET}")
+    clusters = payload.get("clusters") or []
+    if not clusters:
+        print("项目内还没有可识别集群。运行：aether cluster import-ssh-config --source C:/Users/24651/.ssh/config --alias szhang")
+        return 1
+    for item in clusters:
+        alias = str(item.get("alias") or "")
+        marker = "*" if alias == payload.get("active_alias") else " "
+        dup = f" duplicate {item.get('occurrence')}/{item.get('duplicate_count')}" if item.get("duplicate_count", 1) > 1 else ""
+        print(
+            f"  {marker} {alias:<16} {item.get('user')}@{item.get('hostname')}:{item.get('port')} "
+            f"identity={'yes' if item.get('identityfile_configured') else 'no'}{Colors.DIM}{dup}{Colors.RESET}"
+        )
+    return 0
+
+
+def handle_cluster_use(args: argparse.Namespace) -> int:
+    from dft_app.remote.config import use_local_cluster_profile
+
+    payload = use_local_cluster_profile(args.alias, remote_base_dir=args.remote_base_dir)
+    print_json(payload)
+    return 0
+
+
 def handle_cluster_config(args: argparse.Namespace) -> int:
     from dft_app.remote import SSHRemoteRunner
 
@@ -2311,6 +2344,13 @@ def build_parser() -> argparse.ArgumentParser:
     cluster_import.add_argument("--alias", default="szhang")
     cluster_import.add_argument("--remote-base-dir", help="远程 run 根目录，默认 /home/<user>/aether-dft-runs。")
     cluster_import.set_defaults(func=handle_cluster_import)
+    cluster_list = cluster_sub.add_parser("list", help="列出项目内 SSH config 可识别的集群 Host。")
+    cluster_list.add_argument("--json", action="store_true")
+    cluster_list.set_defaults(func=handle_cluster_list)
+    cluster_use = cluster_sub.add_parser("use", help="选择项目内 SSH config 的 active 集群 alias。")
+    cluster_use.add_argument("alias")
+    cluster_use.add_argument("--remote-base-dir", help="远程 run 根目录，默认 /home/<user>/aether-dft-runs。")
+    cluster_use.set_defaults(func=handle_cluster_use)
     cluster_config = cluster_sub.add_parser("config", help="显示当前集群配置摘要，不暴露私钥/API key。")
     cluster_config.set_defaults(func=handle_cluster_config)
     cluster_probe = cluster_sub.add_parser("probe", help="真实 SSH 探测集群连通性和 sbatch/squeue/vasp_std。")

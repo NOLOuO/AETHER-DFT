@@ -4,7 +4,13 @@ from pathlib import Path
 
 from aether_dft.agent import run_agent_once
 from aether_dft.agent_tools import AetherToolRunner
-from dft_app.remote.config import RemoteClusterConfig, parse_ssh_config_host
+from dft_app.remote.config import (
+    RemoteClusterConfig,
+    list_local_cluster_profiles,
+    parse_ssh_config_host,
+    parse_ssh_config_hosts,
+    use_local_cluster_profile,
+)
 from dft_app.remote.ssh_remote_runner import SSHRemoteRunner
 
 
@@ -29,6 +35,84 @@ def test_parse_windows_ssh_config_alias(tmp_path):
     assert parsed["hostname"] == "59.77.33.28"
     assert parsed["user"] == "szhang"
     assert parsed["identityfile"].endswith("id_rsa_szhang")
+
+
+def test_parse_ssh_config_hosts_lists_project_clusters(tmp_path):
+    config_path = tmp_path / "config"
+    config_path.write_text(
+        "\n".join(
+            [
+                "Host szhang",
+                "    HostName 59.77.33.28",
+                "    User szhang",
+                "    IdentityFile C:\\Users\\24651\\.ssh\\id_rsa_szhang",
+                "Host fghe",
+                "    HostName 59.77.33.28",
+                "    User fghe",
+                "Host rxqin",
+                "    HostName 59.77.33.28",
+                "    User rxqin",
+                "Host *",
+                "    ServerAliveInterval 60",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    hosts = parse_ssh_config_hosts(config_path)
+
+    aliases = {item["alias"] for item in hosts}
+    assert aliases == {"szhang", "fghe", "rxqin"}
+    assert next(item for item in hosts if item["alias"] == "szhang")["identityfile_configured"] is True
+
+
+def test_parse_ssh_config_host_matches_openssh_first_value_for_duplicates(tmp_path):
+    config_path = tmp_path / "config"
+    config_path.write_text(
+        "\n".join(
+            [
+                "Host fghe",
+                "    HostName 59.77.33.28",
+                "    User fghe",
+                "Host fghe",
+                "    HostName 10.26.14.64",
+                "    User fghe",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    parsed = parse_ssh_config_host(config_path, "fghe")
+
+    assert parsed is not None
+    assert parsed["hostname"] == "59.77.33.28"
+
+
+def test_use_local_cluster_profile_selects_active_alias(tmp_path, monkeypatch):
+    config_path = tmp_path / "ssh_config"
+    profile_path = tmp_path / "cluster.local.json"
+    config_path.write_text(
+        "\n".join(
+            [
+                "Host rxqin",
+                "    HostName 59.77.33.28",
+                "    User rxqin",
+                "    Port 22",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(RemoteClusterConfig, "_default_ssh_config_path", classmethod(lambda cls: config_path))
+    monkeypatch.setattr(RemoteClusterConfig, "_local_profile_path", classmethod(lambda cls: profile_path))
+
+    payload = use_local_cluster_profile("rxqin")
+
+    assert payload["status"] == "ok"
+    assert payload["ssh_host_alias"] == "rxqin"
+    assert payload["remote_base_dir"] == "/home/rxqin/aether-dft-runs"
+    listed = list_local_cluster_profiles()
+    assert listed["active_alias"] == "rxqin"
+    assert listed["clusters"][0]["alias"] == "rxqin"
 
 
 def test_openssh_commands_use_project_ssh_config_alias():

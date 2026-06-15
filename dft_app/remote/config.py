@@ -179,7 +179,12 @@ class RemoteClusterConfig:
 
 
 def parse_ssh_config_host(path: Path, alias: str) -> dict[str, str] | None:
-    """Parse the small subset of OpenSSH config needed by AETHER-DFT."""
+    """Parse the small subset of OpenSSH config needed by AETHER-DFT.
+
+    OpenSSH uses the first obtained value for each parameter when multiple
+    matching Host stanzas exist.  Mirroring that behavior matters for duplicate
+    aliases such as a WAN/LAN pair with the same Host name.
+    """
     target = alias.lower()
     current_matches = False
     parsed: dict[str, str] = {}
@@ -193,13 +198,127 @@ def parse_ssh_config_host(path: Path, alias: str) -> dict[str, str] | None:
         if key == "host":
             patterns = [item.lower() for item in value.split()]
             current_matches = target in patterns
-            if current_matches:
-                parsed = {}
             continue
         if not current_matches or not key or not value:
             continue
-        parsed[key] = value
+        if key not in parsed:
+            parsed[key] = value
     return parsed or None
+
+
+def parse_ssh_config_hosts(path: Path) -> list[dict[str, Any]]:
+    """List concrete Host entries from an OpenSSH config.
+
+    This intentionally handles only the local-user-facing subset AETHER needs:
+    aliases, HostName, User, Port and whether an IdentityFile is configured.
+    Wildcard patterns are ignored because they are not directly selectable
+    cluster aliases.
+    """
+    entries: list[dict[str, Any]] = []
+    current_aliases: list[str] = []
+    current: dict[str, str] = {}
+
+    def flush() -> None:
+        if not current_aliases:
+            return
+        for alias in current_aliases:
+            if any(ch in alias for ch in "*?[]!"):
+                continue
+            entries.append(
+                {
+                    "alias": alias,
+                    "hostname": current.get("hostname") or alias,
+                    "user": current.get("user") or alias,
+                    "port": current.get("port", "22"),
+                    "identityfile_configured": bool(current.get("identityfile")),
+                }
+            )
+
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, _, value = line.partition(" ")
+        key = key.strip().lower()
+        value = value.strip()
+        if key == "host":
+            flush()
+            current_aliases = [item for item in value.split() if item]
+            current = {}
+            continue
+        if current_aliases and key and value and key not in current:
+            current[key] = value
+    flush()
+
+    counts: dict[str, int] = {}
+    for entry in entries:
+        alias = str(entry["alias"])
+        counts[alias] = counts.get(alias, 0) + 1
+        entry["duplicate_alias"] = counts[alias] > 1
+        entry["occurrence"] = counts[alias]
+    totals: dict[str, int] = {}
+    for entry in entries:
+        alias = str(entry["alias"])
+        totals[alias] = totals.get(alias, 0) + 1
+    for entry in entries:
+        entry["duplicate_count"] = totals[str(entry["alias"])]
+    return entries
+
+
+def _cluster_profiles_path() -> Path:
+    return RemoteClusterConfig._app_root() / ".secrets" / "clusters.local.json"
+
+
+def list_local_cluster_profiles() -> dict[str, Any]:
+    """Return project-local cluster aliases discovered from .secrets/ssh_config."""
+    ssh_config_path = RemoteClusterConfig._default_ssh_config_path()
+    active = RemoteClusterConfig._load_local_profile()
+    hosts = parse_ssh_config_hosts(ssh_config_path) if ssh_config_path.exists() else []
+    return {
+        "status": "ok" if hosts else "missing",
+        "ssh_config_path": str(ssh_config_path) if ssh_config_path.exists() else "",
+        "active_alias": active.get("ssh_host_alias"),
+        "active_remote_base_dir": active.get("remote_base_dir"),
+        "clusters": hosts,
+        "message": "已识别项目内 SSH config Host。" if hosts else "项目内尚未导入 SSH config。",
+    }
+
+
+def use_local_cluster_profile(alias: str, *, remote_base_dir: str | None = None) -> dict[str, Any]:
+    """Set the active project-local cluster alias."""
+    alias = str(alias or "").strip()
+    if not alias:
+        raise ValueError("cluster alias 不能为空")
+    ssh_config_path = RemoteClusterConfig._default_ssh_config_path()
+    if not ssh_config_path.exists():
+        raise ValueError("项目内尚未导入 SSH config；请先运行 cluster import-ssh-config。")
+    parsed = parse_ssh_config_host(ssh_config_path, alias)
+    if not parsed:
+        raise ValueError(f"项目 SSH config 中未找到 Host {alias}")
+    user = parsed.get("user") or alias
+    payload = {
+        "ssh_host_alias": alias,
+        "ssh_config_path": str(ssh_config_path),
+        "remote_base_dir": remote_base_dir or f"/home/{user}/aether-dft-runs",
+        "backend": "openssh",
+        "strict_host_key_checking": True,
+    }
+    profile_path = RemoteClusterConfig._local_profile_path()
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
+    profile_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {
+        "status": "ok",
+        "profile_path": str(profile_path),
+        "ssh_config_path": str(ssh_config_path),
+        "ssh_host_alias": alias,
+        "remote_base_dir": payload["remote_base_dir"],
+        "parsed_host": {
+            "hostname": parsed.get("hostname"),
+            "user": parsed.get("user"),
+            "port": parsed.get("port", "22"),
+            "identityfile_configured": bool(parsed.get("identityfile")),
+        },
+    }
 
 
 def write_local_cluster_profile(
@@ -220,26 +339,17 @@ def write_local_cluster_profile(
     parsed = parse_ssh_config_host(target_config, alias)
     if not parsed:
         raise ValueError(f"SSH config 中未找到 Host {alias}")
-    user = parsed.get("user") or alias
-    payload = {
-        "ssh_host_alias": alias,
-        "ssh_config_path": str(target_config),
-        "remote_base_dir": remote_base_dir or f"/home/{user}/aether-dft-runs",
-        "backend": "openssh",
-        "strict_host_key_checking": True,
-    }
-    profile_path = secrets_dir / "cluster.local.json"
-    profile_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    hosts = parse_ssh_config_hosts(target_config)
+    profiles_path = _cluster_profiles_path()
+    profiles_path.write_text(
+        json.dumps({"ssh_config_path": str(target_config), "clusters": hosts}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    selected = use_local_cluster_profile(alias, remote_base_dir=remote_base_dir)
+    selected["clusters_path"] = str(profiles_path)
+    selected["cluster_count"] = len(hosts)
+    selected["clusters"] = hosts
     return {
         "status": "ok",
-        "profile_path": str(profile_path),
-        "ssh_config_path": str(target_config),
-        "ssh_host_alias": alias,
-        "remote_base_dir": payload["remote_base_dir"],
-        "parsed_host": {
-            "hostname": parsed.get("hostname"),
-            "user": parsed.get("user"),
-            "port": parsed.get("port", "22"),
-            "identityfile_configured": bool(parsed.get("identityfile")),
-        },
+        **selected,
     }
