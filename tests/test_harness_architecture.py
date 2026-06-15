@@ -545,8 +545,13 @@ def test_agent_harness_truncates_model_visible_tool_result(tmp_path: Path):
     assert record["tool_executions"][0]["name"] == "huge_result"
     assert record["tool_executions"][0]["result"]["microcompacted"] is True
     assert "payload" not in record["tool_executions"][0]["result"]
+    compacted = record["tool_executions"][0]["result"]
     persisted = Path(record["tool_executions"][0]["persisted_output_path"])
     assert persisted.exists()
+    assert compacted["tool_name"] == "huge_result"
+    assert compacted["tool_call_id"] == "call_runs"
+    assert compacted["persisted_output_sha256"]
+    assert compacted["persisted_output_bytes"] > 50000
     persisted_payload = json.loads(persisted.read_text(encoding="utf-8"))
     assert len(persisted_payload["payload"]) == 50000
 

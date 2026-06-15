@@ -59,6 +59,7 @@ from aether_dft.general_agent_tools import (
     web_search,
 )
 from aether_dft.knowledge import add_note, list_notes, search_for_system, search_notes, show_note
+from aether_dft.job_watcher import register_run_record, snapshot as job_watch_snapshot
 from aether_dft.paths import PROJECT_ROOT
 from aether_dft.recommendations import recommend_next_tasks
 from aether_dft.research_sync import (
@@ -278,6 +279,7 @@ CAPABILITY_CATEGORIES: dict[str, dict[str, Any]] = {
             "cluster_profile_list",
             "cluster_probe",
             "cluster_my_jobs",
+            "job_watch_snapshot",
             "cluster_job_status_brief",
             "cluster_job_tail_log",
             "cluster_job_partial_outcar",
@@ -384,7 +386,7 @@ class ToolRegistry:
         self._register(ToolSpec("structure_enumerate_sites", "枚举 slab 上的吸附位点（ontop/bridge/hollow 等），返回每个位点的笛卡尔坐标、site_family 与最近邻顶层原子；模型自主选择候选时优先用它。", {"slab_path": {"type": "string"}, "max_sites_per_family": {"type": "integer"}, "top_layer_tolerance": {"type": "number"}, "nearest_neighbors": {"type": "integer"}}, True, ("slab_path",)), self._structure_enumerate_sites)
         self._register(ToolSpec("slab_surface_inspect", "报告 slab 表面化学环境：顶层 / 第二层原子的配位数 / 最近邻 / 对称等价分组，让模型在 enumerate_sites 之前就能识别对称冗余、合金分布与特殊原子。", {"slab_path": {"type": "string"}, "top_layer_tolerance": {"type": "number"}, "second_layer_tolerance": {"type": "number"}, "neighbor_radius": {"type": "number"}, "symprec": {"type": "number"}}, True, ("slab_path",)), self._slab_surface_inspect)
         self._register(ToolSpec("adsorbate_chemistry_hint", "返回吸附物的化学先验：候选 anchor 原子、典型 binding motif、几何尺寸与典型吸附高度；查 curated 表，回退到 ASE / RDKit 启发式。生成候选前优先调它。", {"adsorbate": {"type": "string"}}, True, ("adsorbate",)), self._adsorbate_chemistry_hint)
-        self._register(ToolSpec("knowledge_search_for_system", "跨项目 KB + research workspace 搜索与给定 material+adsorbate 相关的先验笔记。生成候选前优先调它确认是否有过去经验。", {"material": {"type": "string"}, "adsorbate": {"type": "string"}, "extra_terms": {"type": "array", "items": {"type": "string"}}, "project_priority": {"type": "string"}, "max_results": {"type": "integer"}}, True), self._knowledge_search_for_system)
+        self._register(ToolSpec("knowledge_search_for_system", "跨项目 KB + research workspace 搜索与给定 material+adsorbate 相关的先验笔记；默认先用模型按标题/描述语义选择≤5条，失败自动退回 token 匹配。生成候选前优先调它确认过去经验，特别是 warnings/gotchas/避坑。", {"material": {"type": "string"}, "adsorbate": {"type": "string"}, "extra_terms": {"type": "array", "items": {"type": "string"}}, "project_priority": {"type": "string"}, "max_results": {"type": "integer"}, "semantic": {"type": "boolean"}}, True), self._knowledge_search_for_system)
         self._register(ToolSpec("structure_add_adsorbate", "在 slab 指定位点或顶层原子附近添加单个吸附物初猜并默认冻结底层 N 层（与黑盒生成器一致）。site_index 为 0-based 顶层原子序号；如要精确放置请用 cart_coords（可从 structure_enumerate_sites 获取）。", {"slab_path": {"type": "string"}, "adsorbate": {"type": "string"}, "output_path": {"type": "string"}, "height": {"type": "number"}, "site_index": {"type": "integer"}, "cart_coords": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "orientation": {"type": "string"}, "anchor_atom_index": {"type": "integer"}, "anchor_symbol": {"type": "string"}, "coords_mode": {"type": "string"}, "fixed_bottom_layers": {"type": "integer"}}, False, ("slab_path", "adsorbate", "output_path")), self._structure_add_adsorbate)
         self._register(ToolSpec("candidate_quality_score", "对模型自主生成的吸附候选做几何自检：anchor-surface 距离、吸附物完整性、重叠/floating 风险，低分需重试。", {"slab_path": {"type": "string"}, "candidate_path": {"type": "string"}, "adsorbate": {"type": "string"}, "anchor_symbol": {"type": "string"}, "top_layer_tolerance": {"type": "number"}, "min_anchor_surface_distance": {"type": "number"}, "max_anchor_surface_distance": {"type": "number"}, "min_adsorbate_slab_distance": {"type": "number"}}, True, ("slab_path", "candidate_path")), self._candidate_quality_score)
         self._register(ToolSpec("structure_relax_short", "用本地 ASE calculator 做真实短程预优化筛查；默认 EMT，失败/不支持会明确返回，不假装成功。", {"input_path": {"type": "string"}, "output_path": {"type": "string"}, "calculator": {"type": "string"}, "max_steps": {"type": "integer"}, "fmax": {"type": "number"}, "trajectory_path": {"type": "string"}}, False, ("input_path", "output_path")), self._structure_relax_short)
@@ -428,6 +430,7 @@ class ToolRegistry:
         self._register(ToolSpec("cluster_config", "读取集群配置；可传 cluster_alias 查看指定 Host 配置，不改变 active cluster。", {"cluster_alias": {"type": "string"}}, True), self._cluster_config)
         self._register(ToolSpec("cluster_job_status_brief", "轻量单 job 查询：squeue/sacct 状态 + elapsed + 节点。可传 cluster_alias 指定账号/集群。< 2 秒。", {"job_id": {"type": "string"}, "cluster_alias": {"type": "string"}}, True, ("job_id",)), self._cluster_job_status_brief)
         self._register(ToolSpec("cluster_my_jobs", "squeue --me 简化版：列当前或指定 cluster_alias 的 running/pending job。< 2 秒。", {"limit": {"type": "integer"}, "cluster_alias": {"type": "string"}}, True), self._cluster_my_jobs)
+        self._register(ToolSpec("job_watch_snapshot", "读取 AETHER 自己提交过的后台 Slurm job 索引；用户问“上次那个/后台任务/提交后怎么样”时先用它。live_check=true 会只读查询集群最新状态。", {"live_check": {"type": "boolean"}, "limit": {"type": "integer"}}, True), self._job_watch_snapshot)
         self._register(ToolSpec("cluster_job_tail_log", "tail -n <lines> 集群上某 job 的日志（默认 vasp.out，找不到自动回落 logs/*、slurm.out、OSZICAR）。可传 cluster_alias。< 2 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "log_name": {"type": "string"}, "lines": {"type": "integer"}, "project_root": {"type": "string"}, "cluster_alias": {"type": "string"}}, True), self._cluster_job_tail_log)
         self._register(ToolSpec("cluster_job_partial_outcar", "解析当前 OUTCAR 末段：能量 / 力 / ionic step / SCF 是否收敛。可传 cluster_alias。< 3 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "project_root": {"type": "string"}, "cluster_alias": {"type": "string"}}, True), self._cluster_job_partial_outcar)
         self._register(ToolSpec("cluster_job_progress_estimate", "用 OSZICAR ionic step 轨迹判断能量趋势：是否单调下降 / 震荡 / 给收敛分数。可传 cluster_alias。< 5 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "project_root": {"type": "string"}, "cluster_alias": {"type": "string"}}, True), self._cluster_job_progress_estimate)
@@ -492,6 +495,7 @@ class ToolRegistry:
             "cluster_config",
             "cluster_probe",
             "cluster_my_jobs",
+            "job_watch_snapshot",
             "cluster_job_status_brief",
             "cluster_job_tail_log",
             "cluster_job_partial_outcar",
@@ -661,7 +665,7 @@ class ToolRegistry:
                 {"category": "project_context", "tools": ["project_continuity_digest", "web_search", "literature_search", "evidence_claim_audit", "chemistry_compute", "image_understand", "discussion_state_snapshot", "research_cycle_checkpoint", "research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
                 {"category": "structure_modeling", "tools": ["structure_modeling_tool_status", "structure_modeling_intent_plan", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
                 {"category": "dft_execution", "tools": ["cluster_execution_intent_plan", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_profile_list", "cluster_probe", "cluster_config", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "cluster_job_cancel"]},
-                {"category": "realtime_cluster_status", "tools": ["cluster_job_status_brief", "cluster_my_jobs", "cluster_job_tail_log", "cluster_job_partial_outcar", "cluster_job_progress_estimate", "cluster_job_cancel"]},
+                {"category": "realtime_cluster_status", "tools": ["cluster_job_status_brief", "cluster_my_jobs", "cluster_job_tail_log", "cluster_job_partial_outcar", "cluster_job_progress_estimate", "job_watch_snapshot", "cluster_job_cancel"]},
                 {"category": "result_analysis", "tools": ["vasp_output_scan", "result_interpret", "next_experiment_propose", "candidate_outcome_record"]},
                 {"category": "writeback_learning", "tools": ["research_learning_capture", "research_cycle_checkpoint", "evidence_claim_audit", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show", "project_progress_append", "behavior_audit"]},
             ],
@@ -1154,12 +1158,23 @@ class ToolRegistry:
         project_priority = str(payload.get("project_priority") or "").strip() or None
         if not (material or adsorbate or extra_terms):
             return {"status": "error", "message": "至少提供 material、adsorbate 或 extra_terms 之一。"}
+        try:
+            max_results = max(1, min(int(payload.get("max_results") or 12), 50))
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "max_results 必须是整数。"}
+        semantic_raw = payload.get("semantic", True)
+        semantic = (
+            semantic_raw.strip().lower() not in {"0", "false", "no", "off"}
+            if isinstance(semantic_raw, str)
+            else bool(semantic_raw)
+        )
         return search_for_system(
             material=material,
             adsorbate=adsorbate,
             extra_terms=extra_terms,
             project_priority=project_priority,
-            max_results=int(payload.get("max_results") or 12),
+            max_results=max_results,
+            semantic=semantic,
         )
 
     def _structure_defect(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2180,6 +2195,16 @@ class ToolRegistry:
         from dft_app.remote.config import list_local_cluster_profiles
         return list_local_cluster_profiles()
 
+    def _job_watch_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            limit = max(1, min(int(payload.get("limit") or 20), 100))
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "limit 必须是整数。"}
+        return job_watch_snapshot(
+            live_check=bool(payload.get("live_check", False)),
+            limit=limit,
+        )
+
     def _cluster_probe(self, payload: dict[str, Any]) -> dict[str, Any]:
         result = self._cluster_runner_for_alias(payload).probe()
         return {"status": result.status, "message": result.message, "details": result.details}
@@ -2229,6 +2254,11 @@ class ToolRegistry:
             return bundle
         store, spec, record, _run_root = bundle
         result = self._cluster_runner_for_alias(payload).submit(spec, record)
+        if result.status == "submitted":
+            try:
+                register_run_record(record, cluster_alias=str(payload.get("cluster_alias") or "").strip() or None)
+            except Exception:
+                pass
         store.save_run_record(record)
         return {"status": result.status, "message": result.message, "details": result.details}
 

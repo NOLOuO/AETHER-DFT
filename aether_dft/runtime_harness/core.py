@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -170,7 +171,24 @@ def _persist_tool_output(*, tool_name: str, tool_call_id: str, payload: Any) -> 
     return output_path
 
 
-def _microcompact_tool_result(payload: Any, *, output_path: Path | None = None, preview_limit: int = 900) -> Any:
+def _tool_artifact_meta(*, tool_name: str, tool_call_id: str, output_path: Path | None) -> dict[str, Any]:
+    if output_path is None:
+        return {}
+    meta: dict[str, Any] = {
+        "tool_name": tool_name,
+        "tool_call_id": tool_call_id,
+        "persisted_output_path": str(output_path),
+    }
+    try:
+        raw = output_path.read_bytes()
+        meta["persisted_output_sha256"] = hashlib.sha256(raw).hexdigest()
+        meta["persisted_output_bytes"] = len(raw)
+    except Exception:
+        pass
+    return meta
+
+
+def _microcompact_tool_result(payload: Any, *, output_path: Path | None = None, tool_name: str = "", tool_call_id: str = "", preview_limit: int = 900) -> Any:
     if not isinstance(payload, dict):
         text = _clean_text(payload)
         if len(text) <= preview_limit:
@@ -181,8 +199,7 @@ def _microcompact_tool_result(payload: Any, *, output_path: Path | None = None, 
             "preview": text[:preview_limit].rstrip(),
             "note": "large scalar tool result compacted; full output persisted when path is present",
         }
-        if output_path is not None:
-            compacted["persisted_output_path"] = str(output_path)
+        compacted.update(_tool_artifact_meta(tool_name=tool_name, tool_call_id=tool_call_id, output_path=output_path))
         return compacted
 
     compact: dict[str, Any] = {
@@ -211,8 +228,7 @@ def _microcompact_tool_result(payload: Any, *, output_path: Path | None = None, 
     ):
         if key in payload:
             compact[key] = payload.get(key)
-    if output_path is not None:
-        compact["persisted_output_path"] = str(output_path)
+    compact.update(_tool_artifact_meta(tool_name=tool_name, tool_call_id=tool_call_id, output_path=output_path))
 
     rendered = json.dumps(payload, ensure_ascii=False, default=str)
     compact["preview"] = rendered[:preview_limit].rstrip()
@@ -437,7 +453,12 @@ class AgentHarness:
             result_record = dict(result)
             if persisted_output_path is not None:
                 result_record["persisted_output_path"] = str(persisted_output_path)
-                result_record["result"] = _microcompact_tool_result(result["result"], output_path=persisted_output_path)
+                result_record["result"] = _microcompact_tool_result(
+                    result["result"],
+                    output_path=persisted_output_path,
+                    tool_name=name,
+                    tool_call_id=str(call.get("id") or ""),
+                )
             tool_executions.append(result_record)
             if progress_callback:
                 progress_callback(

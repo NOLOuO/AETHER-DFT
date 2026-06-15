@@ -418,3 +418,53 @@ def test_remote_submit_command_runs_inside_inputs_dir():
     assert "mkdir -p logs" in command
     assert "sbatch job.slurm" in command
     assert "sbatch inputs/job.slurm" not in command
+
+
+
+def test_job_watch_registers_submitted_run_record(tmp_path, monkeypatch):
+    import aether_dft.paths as paths
+    import aether_dft.job_watcher as job_watcher
+
+    monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path / "runtime")
+
+    class FakeRecord:
+        task_id = "task_watch"
+        run_id = "run_watch"
+        run_root = str(tmp_path / "run")
+        scheduler_job_id = "12345"
+        notes = {
+            "remote": {
+                "remote_run_root": "/home/szhang/aether-dft-runs/task_watch/run_watch",
+                "job_script": "/home/szhang/aether-dft-runs/task_watch/run_watch/inputs/job.slurm",
+            }
+        }
+
+    entry = job_watcher.register_run_record(FakeRecord(), cluster_alias="szhang")
+    payload = job_watcher.snapshot()
+
+    assert entry is not None
+    assert payload["status"] == "ok"
+    assert payload["jobs"][0]["job_id"] == "12345"
+    assert payload["jobs"][0]["cluster_alias"] == "szhang"
+    assert Path(payload["watch_path"]).exists()
+
+
+def test_job_watch_snapshot_tool_is_read_only(tmp_path, monkeypatch):
+    import aether_dft.paths as paths
+    import aether_dft.job_watcher as job_watcher
+    from aether_dft.runtime_harness.tool_registry import ToolRegistry
+
+    monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path / "runtime")
+
+    class FakeRecord:
+        task_id = "task_watch"
+        run_id = "run_watch"
+        run_root = str(tmp_path / "run")
+        scheduler_job_id = "67890"
+        notes = {"remote": {"remote_run_root": "/home/szhang/aether-dft-runs/task_watch/run_watch"}}
+
+    job_watcher.register_run_record(FakeRecord())
+    result = ToolRegistry().run_tool("job_watch_snapshot", {"limit": 5})["result"]
+
+    assert result["status"] == "ok"
+    assert result["jobs"][0]["job_id"] == "67890"

@@ -64,7 +64,7 @@ def test_candidate_outcome_record_writes_searchable_prior(tmp_path):
     assert result["outcome"]["displacement"] is not None
     assert Path(result["note"]["path"]).exists()
 
-    matches = search_for_system(material="Pt(111)", adsorbate="H2O", project_priority="pytest-outcomes")
+    matches = search_for_system(material="Pt(111)", adsorbate="H2O", project_priority="pytest-outcomes", semantic=False)
     assert matches["returned"] >= 1
     assert any(item["source"] == "knowledge_base" for item in matches["matches"])
     assert search_notes("pytest-outcomes", "candidate_outcome")

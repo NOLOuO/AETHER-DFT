@@ -98,7 +98,7 @@ def test_knowledge_search_for_system_finds_matching_note():
         "无关条目",
         "CO 在 Pd 上的吸附能",
     )
-    result = search_for_system(material="Pt(111)", adsorbate="H2O")
+    result = search_for_system(material="Pt(111)", adsorbate="H2O", semantic=False)
     assert result["status"] == "ok"
     assert result["returned"] >= 1
     titles = [match["title"] for match in result["matches"]]
@@ -108,3 +108,59 @@ def test_knowledge_search_for_system_finds_matching_note():
 def test_knowledge_search_for_system_rejects_empty_query():
     with pytest.raises(ValueError):
         search_for_system()
+
+
+
+def test_knowledge_search_for_system_can_use_semantic_selector():
+    init_project("pytest-semantic-search", description="semantic search", overwrite=True)
+    add_note(
+        "pytest-semantic-search",
+        "水在铂表面的避坑",
+        "摘要：水分子在铂表面容易出现悬浮初态；应优先检查氧端朝下和顶位吸附构型。",
+        tags=["避坑"],
+    )
+    add_note(
+        "pytest-semantic-search",
+        "普通 API 文档",
+        "Description: Tool API docs for a builder; no chemistry warning here.",
+        tags=["api"],
+    )
+
+    def selector(query, catalog, max_results):
+        assert "H2O" in query
+        assert all("content" not in item for item in catalog)
+        chosen = next(item for item in catalog if item.get("project") == "pytest-semantic-search" and "避坑" in item["title"])
+        return [{"rank": chosen["rank"], "semantic_reason": "gotcha beats API docs"}]
+
+    result = search_for_system(
+        material="Pt(111)",
+        adsorbate="H2O",
+        project_priority="pytest-semantic-search",
+        selector=selector,
+    )
+
+    assert result["selection_method"] == "semantic"
+    assert result["semantic_candidates_considered"] >= 2
+    assert result["returned"] == 1
+    assert result["matches"][0]["title"] == "水在铂表面的避坑"
+    assert result["matches"][0]["score"] == 0
+    assert result["matches"][0]["semantic_reason"] == "gotcha beats API docs"
+
+
+def test_knowledge_search_for_system_falls_back_when_semantic_selector_fails():
+    init_project("pytest-semantic-fallback", description="semantic fallback", overwrite=True)
+    add_note("pytest-semantic-fallback", "H2O Pt prior", "H2O on Pt(111) lexical prior")
+
+    def broken_selector(query, catalog, max_results):
+        raise RuntimeError("selector unavailable")
+
+    result = search_for_system(
+        material="Pt(111)",
+        adsorbate="H2O",
+        project_priority="pytest-semantic-fallback",
+        selector=broken_selector,
+    )
+
+    assert result["selection_method"] == "lexical_fallback"
+    assert "selector unavailable" in result["selection_error"]
+    assert result["returned"] >= 1

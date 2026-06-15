@@ -5,7 +5,7 @@ from datetime import datetime
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from .paths import KNOWLEDGE_BASE_DIR, PROJECT_ROOT
@@ -149,6 +149,8 @@ def search_for_system(
     extra_terms: list[str] | None = None,
     project_priority: str | None = None,
     max_results: int = 12,
+    semantic: bool = True,
+    selector: Callable[[str, list[dict[str, Any]], int], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """跨项目 / research workspace 搜索与给定体系相关的先验笔记。
 
@@ -160,6 +162,7 @@ def search_for_system(
         raise ValueError("search_for_system 需要至少一个 material / adsorbate / extra_terms。")
 
     matches: list[dict[str, Any]] = []
+    semantic_pool: list[dict[str, Any]] = []
     seen_paths: set[str] = set()
 
     def _push(path: Path, *, source: str, project_slug: str | None) -> None:
@@ -172,10 +175,9 @@ def search_for_system(
             text = path.read_text(encoding="utf-8", errors="replace")
         except Exception:
             return
-        score = _score_text_against_tokens(text, tokens)
-        if score <= 0:
-            return
-        if project_priority and project_slug == project_priority:
+        lexical_score = _score_text_against_tokens(text, tokens)
+        score = lexical_score
+        if lexical_score > 0 and project_priority and project_slug == project_priority:
             score += 1
         title = path.stem
         first_line = next((line for line in text.splitlines() if line.strip()), "").strip()
@@ -192,16 +194,18 @@ def search_for_system(
             if sum(len(line) for line in preview_lines) > 600:
                 break
         seen_paths.add(key)
-        matches.append(
-            {
-                "path": str(path),
-                "title": title,
-                "score": score,
-                "source": source,
-                "project": project_slug,
-                "preview": " ... ".join(preview_lines) or text[:240].replace("\n", " "),
-            }
-        )
+        item = {
+            "path": str(path),
+            "title": title,
+            "score": score,
+            "source": source,
+            "project": project_slug,
+            "preview": " ... ".join(preview_lines) or text[:240].replace("\n", " "),
+        }
+        if lexical_score > 0:
+            matches.append(item)
+        elif semantic:
+            semantic_pool.append(item)
 
     for note_path in _iter_cross_project_notes():
         project_slug = note_path.parent.parent.name
@@ -219,7 +223,27 @@ def search_for_system(
         _push(workspace_path, source="research_workspace", project_slug=project_slug)
 
     matches.sort(key=lambda item: item["score"], reverse=True)
-    limited = matches[:max_results]
+    lexical_limited = matches[:max_results]
+    selection_method = "lexical"
+    selection_error = ""
+    limited = lexical_limited
+    semantic_candidates = matches + semantic_pool[: max(0, 40 - len(matches))]
+    if semantic and semantic_candidates:
+        query_text = _semantic_query_text(material=material, adsorbate=adsorbate, extra_terms=extra_terms or [])
+        try:
+            selected = semantic_select_memories(
+                query_text,
+                semantic_candidates,
+                max_results=min(max_results, 5),
+                selector=selector,
+            )
+            if selected:
+                limited = selected
+                selection_method = "semantic"
+        except Exception as exc:
+            selection_error = str(exc)
+            limited = lexical_limited
+            selection_method = "lexical_fallback"
     return {
         "status": "ok",
         "query": {
@@ -228,14 +252,201 @@ def search_for_system(
             "extra_terms": list(extra_terms or []),
             "tokens": tokens,
         },
+        "selection_method": selection_method,
+        "selection_error": selection_error,
         "total_matches": len(matches),
+        "semantic_candidates_considered": len(semantic_candidates) if semantic else 0,
         "returned": len(limited),
         "matches": limited,
         "guidance": (
             "把命中条目里有领域结论 / 参数经验 / 避坑的内容当作 prior，写进 adsorption_candidate_plan.rationale；"
+            "优先使用 warnings/gotchas/known issues 这类避坑信息；不要因为正在用某个工具就选择它的 API 文档，"
+            "但要选择关于该工具/方法的失败模式和注意事项。"
             "如果没有命中，再考虑用 adsorbate_chemistry_hint 的通用先验，并在 plan 里标注 'no project prior found'。"
         ),
     }
+
+
+
+def _memory_description(text: str, *, limit: int = 420) -> str:
+    """Extract a cheap, header-first description for semantic memory selection."""
+
+    lines = text.splitlines()
+    description_lines: list[str] = []
+    in_description = False
+    for raw in lines[:80]:
+        line = raw.strip()
+        if not line:
+            if in_description and description_lines:
+                break
+            continue
+        lower = line.lower().lstrip("# ")
+        if lower.startswith(("description", "summary", "摘要", "说明", "结论", "gotcha", "warning", "避坑")):
+            in_description = True
+            description_lines.append(line.lstrip("#-:： "))
+            continue
+        if in_description:
+            if line.startswith("#") and description_lines:
+                break
+            description_lines.append(line.lstrip("- "))
+    if not description_lines:
+        for raw in lines[:40]:
+            line = raw.strip()
+            if line and not line.startswith("- Note ID:") and not line.startswith("- Project:"):
+                description_lines.append(line.lstrip("# "))
+            if sum(len(item) for item in description_lines) >= limit:
+                break
+    text = " ".join(description_lines).strip()
+    return text[:limit].rstrip()
+
+
+def _semantic_query_text(*, material: str | None, adsorbate: str | None, extra_terms: list[str]) -> str:
+    parts = []
+    if material:
+        parts.append(f"material/system={material}")
+    if adsorbate:
+        parts.append(f"adsorbate={adsorbate}")
+    if extra_terms:
+        parts.append("extra=" + ", ".join(extra_terms))
+    return "; ".join(parts)
+
+
+def _memory_catalog(candidates: list[dict[str, Any]], *, max_candidates: int = 40) -> list[dict[str, Any]]:
+    catalog: list[dict[str, Any]] = []
+    for idx, item in enumerate(candidates[:max_candidates], start=1):
+        text = str(item.get("content") or item.get("preview") or "")
+        if not text:
+            path = Path(str(item.get("path") or ""))
+            if path.exists() and path.is_file():
+                try:
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    text = ""
+        catalog.append(
+            {
+                "rank": idx,
+                "path": str(item.get("path") or ""),
+                "title": str(item.get("title") or ""),
+                "source": str(item.get("source") or ""),
+                "project": item.get("project"),
+                "lexical_score": item.get("score"),
+                "description": _memory_description(text or str(item.get("preview") or "")),
+            }
+        )
+    return catalog
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    cleaned = str(text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?", "", cleaned).strip()
+        cleaned = re.sub(r"```$", "", cleaned).strip()
+    try:
+        data = json.loads(cleaned)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            data = json.loads(cleaned[start : end + 1])
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _default_memory_selector(query: str, catalog: list[dict[str, Any]], max_results: int) -> list[dict[str, Any]]:
+    from aether_dft.model_catalog import resolve_effective_model_id, split_model_id
+    from dft_app.llm import DomesticCopilotLLM
+
+    model_id = resolve_effective_model_id()
+    provider, model = split_model_id(model_id)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是计算化学科研记忆选择器。只根据 memory metadata 选择最相关的条目。"
+                "优先 warnings/gotchas/known issues/避坑/失败模式/参数适用边界；"
+                "不要选择正在使用工具的普通 API 文档，除非它记录了坑或已知问题。"
+                "不要解释，不要输出推理过程。第一行且唯一输出必须是 JSON: "
+                "{\"selected_ranks\":[整数...], \"reason\":\"简短中文理由\"}。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {"query": query, "max_results": max_results, "memories": catalog},
+                ensure_ascii=False,
+            ),
+        },
+    ]
+    result = DomesticCopilotLLM(PROJECT_ROOT).call_messages_inline(
+        messages,
+        provider_id=provider,
+        model_id=model,
+        max_tokens=4096,
+        tools=[],
+        tool_choice="none",
+    )
+    data = _extract_json_object(str(result.get("content") or ""))
+    if not data and result.get("reasoning_content"):
+        data = _extract_json_object(str(result.get("reasoning_content") or ""))
+    ranks = data.get("selected_ranks") if isinstance(data, dict) else []
+    selected: list[dict[str, Any]] = []
+    for value in ranks or []:
+        try:
+            rank = int(value)
+        except Exception:
+            continue
+        if 1 <= rank <= len(catalog) and all(item.get("rank") != rank for item in selected):
+            selected.append({"rank": rank, "semantic_reason": str(data.get("reason") or "")})
+        if len(selected) >= max_results:
+            break
+    return selected
+
+
+def semantic_select_memories(
+    query: str,
+    candidates: list[dict[str, Any]],
+    *,
+    max_results: int = 5,
+    selector: Callable[[str, list[dict[str, Any]], int], list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    """Select relevant memories by showing only path/title/description metadata to a model.
+
+    The full note bodies are not sent to the selector.  If no selector is
+    provided, AETHER's configured model is used; callers can inject a selector
+    in tests.  Returned entries keep the original note payload so downstream
+    tools can still show previews/paths without another lookup.
+    """
+
+    if not candidates:
+        return []
+    max_results = max(1, min(int(max_results or 5), 8))
+    catalog = _memory_catalog(candidates)
+    select = selector or _default_memory_selector
+    selected_refs = select(query, catalog, max_results)
+    by_rank = {idx: item for idx, item in enumerate(candidates[: len(catalog)], start=1)}
+    selected: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for ref in selected_refs:
+        try:
+            rank = int(ref.get("rank") if isinstance(ref, dict) else ref)
+        except Exception:
+            continue
+        if rank in seen or rank not in by_rank:
+            continue
+        item = dict(by_rank[rank])
+        item["semantic_rank"] = len(selected) + 1
+        if isinstance(ref, dict) and ref.get("semantic_reason"):
+            item["semantic_reason"] = str(ref.get("semantic_reason"))
+        selected.append(item)
+        seen.add(rank)
+        if len(selected) >= max_results:
+            break
+    return selected
 
 
 def show_note(path_or_id: str, *, project: str | None = None) -> dict[str, Any]:
