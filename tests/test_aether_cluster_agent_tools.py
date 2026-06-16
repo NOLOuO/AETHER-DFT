@@ -446,6 +446,7 @@ def test_job_watch_registers_submitted_run_record(tmp_path, monkeypatch):
     assert payload["status"] == "ok"
     assert payload["jobs"][0]["job_id"] == "12345"
     assert payload["jobs"][0]["cluster_alias"] == "szhang"
+    assert "cluster_job_status_brief" in payload["jobs"][0]["suggested_next_tools"]
     assert Path(payload["watch_path"]).exists()
 
 
@@ -468,3 +469,27 @@ def test_job_watch_snapshot_tool_is_read_only(tmp_path, monkeypatch):
 
     assert result["status"] == "ok"
     assert result["jobs"][0]["job_id"] == "67890"
+    assert "job_watch_snapshot(live_check=true)" in result["jobs"][0]["suggested_next_tools"]
+
+
+def test_job_watch_completed_job_suggests_fetch_and_parse(tmp_path, monkeypatch):
+    import aether_dft.paths as paths
+    import aether_dft.job_watcher as job_watcher
+
+    monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path / "runtime")
+
+    class FakeRecord:
+        task_id = "task_done"
+        run_id = "run_done"
+        run_root = str(tmp_path / "run")
+        scheduler_job_id = "24680"
+        notes = {"remote": {"remote_run_root": "/home/szhang/aether-dft-runs/task_done/run_done"}}
+
+    job_watcher.register_run_record(FakeRecord(), cluster_alias="szhang")
+    job_watcher.update_job_state("24680", state="COMPLETED", details={"status": "ok"})
+    payload = job_watcher.snapshot()
+
+    tools = payload["jobs"][0]["suggested_next_tools"]
+    assert "cluster_job_partial_outcar" in tools
+    assert "cluster_remote_fetch" in tools
+    assert "result_interpret" in tools

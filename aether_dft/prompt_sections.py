@@ -55,6 +55,7 @@ class PromptSectionCompiler:
         "architecture_live_doc",
         "project_context",
         "cluster_runtime_digest",
+        "job_watch_digest",
         "research_workspace_digest",
         "relevant_priors_digest",
         "session_context",
@@ -119,6 +120,13 @@ class PromptSectionCompiler:
                 "layer_class": "cluster_runtime",
                 "invalidation_rule": ("cluster_runtime_digest_hash",),
             }
+        if name == "job_watch_digest":
+            return {
+                "kind": "dynamic",
+                "cache_scope": "volatile_suffix",
+                "layer_class": "cluster_runtime",
+                "invalidation_rule": ("job_watch_digest_hash",),
+            }
         if name == "research_workspace_digest":
             return {
                 "kind": "dynamic",
@@ -178,6 +186,7 @@ class PromptSectionCompiler:
             "architecture_live_doc": "architecture_live_doc_digest",
             "project_context": "project_context",
             "session_context": "session_context",
+            "job_watch_digest": "job_watch_digest",
             "tool_discovery": "tool_discovery_digest",
         }
         guard = empty_guards.get(name)

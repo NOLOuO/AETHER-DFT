@@ -84,6 +84,72 @@ def build_cluster_runtime_digest(*, project: str | None = None, limit: int = 5) 
     return "Locally recorded active/partial cluster jobs:\n" + "\n".join(rows)
 
 
+def build_job_watch_digest(*, project: str | None = None, limit: int = 5) -> str:
+    """Summarize AETHER-submitted Slurm jobs remembered by the local watcher.
+
+    This is intentionally local-only and does not SSH.  It gives the model a
+    cheap resume hook for natural-language references like "上次那个任务" while
+    keeping live cluster checks explicit through ``job_watch_snapshot`` with
+    ``live_check=true`` or the realtime cluster tools.
+    """
+
+    try:
+        from .job_watcher import snapshot
+    except Exception:
+        return ""
+    payload = snapshot(live_check=False, limit=max(limit * 4, limit))
+    if payload.get("status") not in {"ok", "partial"}:
+        return ""
+    rows: list[str] = []
+    for job in payload.get("jobs") or []:
+        if project and not _job_watch_matches_project(job, project):
+            continue
+        bits = [
+            f"job `{job.get('job_id')}`",
+            f"task `{job.get('task_id') or 'unknown'}`",
+            f"run `{job.get('run_id') or 'unknown'}`",
+            f"state={job.get('last_known_state') or 'unknown'}",
+        ]
+        if job.get("cluster_alias"):
+            bits.append(f"cluster={job.get('cluster_alias')}")
+        if job.get("remote_run_root"):
+            bits.append(f"remote={job.get('remote_run_root')}")
+        if job.get("suggested_next_tools"):
+            bits.append("next_tools=" + ",".join(str(item) for item in job.get("suggested_next_tools")[:4]))
+        rows.append("- " + " ".join(bits))
+        if len(rows) >= limit:
+            break
+    if not rows:
+        scope = f" for project `{project}`" if project else ""
+        return (
+            f"No locally watched AETHER-submitted jobs{scope}. "
+            "If the user asks about current queue, use `cluster_my_jobs`; if they ask about a remembered submission, use `job_watch_snapshot`."
+        )
+    return (
+        "AETHER job watcher remembers these submitted jobs (local index; not live SSH):\n"
+        + "\n".join(rows)
+        + "\nUse `job_watch_snapshot` first for ambiguous '上次那个/后台任务' questions; set live_check=true only when latest cluster state is needed."
+    )
+
+
+def _job_watch_matches_project(job: dict, project: str) -> bool:
+    resolved = resolve_research_project(project)
+    names = {str(project)}
+    if resolved:
+        names.add(resolved.slug)
+    needle_tokens: set[str] = set()
+    for name in names:
+        needle_tokens.update(_slug_tokens(name))
+    haystack_tokens: set[str] = set()
+    for key in ("task_id", "run_id", "run_root", "remote_run_root", "job_script", "cluster_alias"):
+        value = str(job.get(key) or "")
+        haystack_tokens.update(_slug_tokens(value))
+        path = Path(value)
+        for part in path.parts:
+            haystack_tokens.update(_slug_tokens(part))
+    return bool(needle_tokens and needle_tokens.intersection(haystack_tokens))
+
+
 def build_research_workspace_digest(*, project: str | None = None, max_chars: int = 1800) -> str:
     paths = resolve_research_project(project)
     if paths is None:

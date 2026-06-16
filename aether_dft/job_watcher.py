@@ -84,6 +84,38 @@ def update_job_state(job_id: str, *, state: str, details: dict[str, Any] | None 
     return target
 
 
+def _job_next_actions(row: dict[str, Any]) -> list[str]:
+    state = str(row.get("last_known_state") or "").strip().upper()
+    actions: list[str] = ["job_watch_snapshot(live_check=true)"]
+    if state in {"SUBMITTED", "PENDING", "CONFIGURING", "RUNNING", "COMPLETING", "R"} or not state:
+        actions.extend(["cluster_job_status_brief", "cluster_job_tail_log"])
+        if row.get("remote_run_root"):
+            actions.append("cluster_job_progress_estimate")
+    elif state in {"COMPLETED", "COMPLETE", "DONE", "CD"}:
+        if row.get("remote_run_root"):
+            actions.extend(["cluster_job_partial_outcar", "cluster_remote_fetch", "result_interpret"])
+        else:
+            actions.extend(["cluster_job_status_brief", "cluster_remote_fetch"])
+    elif state in {"FAILED", "CANCELLED", "CANCELED", "TIMEOUT", "NODE_FAIL", "OUT_OF_MEMORY", "F", "CA"}:
+        actions.extend(["cluster_job_status_brief", "cluster_job_tail_log"])
+    else:
+        actions.append("cluster_job_status_brief")
+    deduped: list[str] = []
+    for action in actions:
+        if action not in deduped:
+            deduped.append(action)
+    return deduped
+
+
+def _with_next_actions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["suggested_next_tools"] = _job_next_actions(item)
+        enriched.append(item)
+    return enriched
+
+
 def snapshot(*, live_check: bool = False, limit: int = 20) -> dict[str, Any]:
     try:
         limit_int = max(1, min(int(limit or 20), 100))
@@ -98,7 +130,7 @@ def snapshot(*, live_check: bool = False, limit: int = 20) -> dict[str, Any]:
             return {
                 "status": "partial",
                 "watch_path": str(watch_path()),
-                "jobs": rows,
+                "jobs": _with_next_actions(rows),
                 "live_results": [],
                 "message": f"无法加载实时集群查询: {exc}",
             }
@@ -116,7 +148,7 @@ def snapshot(*, live_check: bool = False, limit: int = 20) -> dict[str, Any]:
         "status": "ok",
         "watch_path": str(watch_path()),
         "count": len(rows),
-        "jobs": rows,
+        "jobs": _with_next_actions(rows),
         "live_results": live_results,
-        "guidance": "用户问上次任务/后台任务/提交后怎么样时，先读本 watcher；需要最新状态再 live_check=true。",
+        "guidance": "用户问上次任务/后台任务/提交后怎么样时，先读本 watcher；需要最新状态再 live_check=true；根据 suggested_next_tools 继续只读核对或回收结果。",
     }

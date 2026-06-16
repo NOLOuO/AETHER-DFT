@@ -14,6 +14,7 @@ from .project_state import project_paths, read_project_context
 from .permissions import get_permission_mode, permission_mode_label
 from .session_store import AetherSessionStore
 from .tool_registry import list_registered_tools
+from .context_digests import build_job_watch_digest
 
 
 def build_context_payload(*, project: str | None = None) -> dict[str, Any]:
@@ -61,6 +62,7 @@ def build_context_payload(*, project: str | None = None) -> dict[str, Any]:
         },
     }
     payload["prompt_packet"] = prompt_packet
+    payload["job_watch_digest"] = build_job_watch_digest(project=project)
     payload["sessions"] = [item.to_dict() for item in session_store.list_sessions(project=project, limit=5)]
     payload["tools"] = list_registered_tools()
     latest_session_id = session_store.latest_session_id(project=project)
@@ -110,6 +112,9 @@ def render_context_markdown(payload: dict[str, Any]) -> str:
     ]
     for name, command in payload["entrypoints"].items():
         lines.append(f"- **{name}**: `{command}`")
+    job_watch_digest = str(payload.get("job_watch_digest") or "").strip()
+    if job_watch_digest:
+        lines.extend(["", "## Background Job Watcher", "", job_watch_digest])
     lines.extend([
         "",
         "## Harness Tools",

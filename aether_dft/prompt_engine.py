@@ -13,7 +13,12 @@ from .permissions import get_permission_mode, permission_mode_label, permission_
 from .paths import CONFIG_DIR, PROJECT_ROOT, ensure_runtime_dir
 from .prompt_sections import PromptSectionCompiler
 from .project_state import read_project_context, read_project_context_digest
-from .context_digests import build_cluster_runtime_digest, build_research_workspace_digest, build_relevant_priors_digest
+from .context_digests import (
+    build_cluster_runtime_digest,
+    build_job_watch_digest,
+    build_research_workspace_digest,
+    build_relevant_priors_digest,
+)
 from .research_workspace import read_research_onboarding_context
 
 PROMPT_ASSETS_DIR = Path(__file__).resolve().parent / "prompt_assets"
@@ -110,6 +115,7 @@ def _runtime_data(*, project: str | None = None, session_context: str | None = N
     tool_digest = _tool_discovery_digest()
     architecture = load_architecture_live_doc_snapshot()
     cluster_runtime_digest = build_cluster_runtime_digest(project=project)
+    job_watch_digest = build_job_watch_digest(project=project)
     research_workspace_digest = build_research_workspace_digest(project=project) if project else ""
     relevant_priors_digest = build_relevant_priors_digest(project=project, query=session_context or project or "")
     response_contract = "\n".join(
@@ -120,6 +126,7 @@ def _runtime_data(*, project: str | None = None, session_context: str | None = N
             "如果当前阶段可执行，优先给出最短可执行下一步。",
             "用户用自然语言提出任务时，你应自行选择和调用工具；不要要求用户记工具名或 slash command。",
             "若当前项目上下文存在，先续接已有进度，再补充新动作，不要从头重讲通用流程。",
+            "用户说“上次那个/后台任务/提交后怎么样”这类指代时，先利用 job watcher / session context 定位对象，再只读核对实时状态。",
             "如果需要外部资料或事实核对，明确说明需要查证，不要把推测说成事实。",
             "当得到有价值结论时，优先把它写回项目进展或知识库，而不是只停留在口头总结。",
         ]
@@ -144,6 +151,8 @@ def _runtime_data(*, project: str | None = None, session_context: str | None = N
         "tool_discovery_digest_hash": _digest(tool_digest),
         "cluster_runtime_digest": cluster_runtime_digest,
         "cluster_runtime_digest_hash": _digest(cluster_runtime_digest),
+        "job_watch_digest": job_watch_digest,
+        "job_watch_digest_hash": _digest(job_watch_digest),
         "research_workspace_digest": research_workspace_digest,
         "research_workspace_digest_hash": _digest(research_workspace_digest),
         "relevant_priors_digest": relevant_priors_digest,

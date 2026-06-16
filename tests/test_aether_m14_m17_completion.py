@@ -115,6 +115,7 @@ def test_m16_prompt_sections_keep_agent_flexible_and_state_aware():
         "model_id": "fake:model",
         "permission_policy": "dev",
         "cluster_runtime_digest": "- active job 123 under this project",
+        "job_watch_digest": "- watched job 456 from previous AETHER submission",
         "research_workspace_digest": "- research/M17-demo is in sync with ~/research/M17-demo",
         "relevant_priors_digest": "- Pt water prior: compare atop/bridge first",
         "tool_discovery_digest": "- `chemistry_compute` — calculator",
@@ -123,11 +124,19 @@ def test_m16_prompt_sections_keep_agent_flexible_and_state_aware():
     compiled = PromptSectionCompiler().build(runtime_data)
     included = {layer["name"] for layer in compiled["layers"] if layer["included"]}
 
-    assert {"general_agent_voice", "research_workspace_habit", "cluster_runtime_digest", "research_workspace_digest", "relevant_priors_digest"}.issubset(included)
+    assert {
+        "general_agent_voice",
+        "research_workspace_habit",
+        "cluster_runtime_digest",
+        "job_watch_digest",
+        "research_workspace_digest",
+        "relevant_priors_digest",
+    }.issubset(included)
     prompt = compiled["prompt"]
     assert "工具是独立原语。你可以自由组合、跳过、回退" in prompt
     assert "research_workspace_diff" in prompt
     assert "active job 123" in prompt
+    assert "watched job 456" in prompt
     assert "Pt water prior" in prompt
 
 

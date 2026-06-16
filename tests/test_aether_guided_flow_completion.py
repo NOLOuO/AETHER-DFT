@@ -8,7 +8,7 @@ import pytest
 from ase import Atoms
 from ase.io import write
 
-from aether_dft.context_digests import build_cluster_runtime_digest
+from aether_dft.context_digests import build_cluster_runtime_digest, build_job_watch_digest
 from aether_dft import research_workspace
 from aether_dft.runtime_harness.core import AgentHarness
 from aether_dft.runtime_harness.tool_registry import ToolRegistry
@@ -281,6 +281,35 @@ def test_cluster_runtime_digest_filters_to_current_project(tmp_path: Path, monke
     assert "111" in digest
     assert "222" not in digest
     assert "333" not in digest
+
+
+def test_job_watch_digest_filters_to_current_project(tmp_path: Path, monkeypatch):
+    import aether_dft.paths as paths
+    import aether_dft.job_watcher as job_watcher
+
+    monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path / "runtime")
+
+    class DemoRecord:
+        task_id = "DemoProject-task"
+        run_id = "run-demo"
+        run_root = str(tmp_path / ".aether" / "runs" / "DemoProject-task" / "run-demo")
+        scheduler_job_id = "444"
+        notes = {"remote": {"remote_run_root": "/home/user/research/DemoProject/run-demo"}}
+
+    class OtherRecord:
+        task_id = "OtherProject-task"
+        run_id = "run-other"
+        run_root = str(tmp_path / ".aether" / "runs" / "OtherProject-task" / "run-other")
+        scheduler_job_id = "555"
+        notes = {"remote": {"remote_run_root": "/home/user/research/OtherProject/run-other"}}
+
+    job_watcher.register_run_record(DemoRecord(), cluster_alias="demo")
+    job_watcher.register_run_record(OtherRecord(), cluster_alias="other")
+
+    digest = build_job_watch_digest(project="DemoProject")
+    assert "444" in digest
+    assert "555" not in digest
+    assert "job_watch_snapshot" in digest
 
 
 def test_behavior_audit_flags_claim_without_evidence():

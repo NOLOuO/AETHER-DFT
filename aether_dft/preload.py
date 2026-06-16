@@ -8,7 +8,12 @@ from typing import Any
 from dft_app.llm.key_store import load_api_keys
 from dft_app.llm.provider_presets import build_provider_model_config
 
-from .context_digests import build_cluster_runtime_digest, build_research_workspace_digest, build_relevant_priors_digest
+from .context_digests import (
+    build_cluster_runtime_digest,
+    build_job_watch_digest,
+    build_research_workspace_digest,
+    build_relevant_priors_digest,
+)
 from .model_catalog import load_model_catalog, resolve_effective_model_id, split_model_id
 from .paths import PROJECT_ROOT
 from .permissions import get_permission_mode, permission_mode_label
@@ -70,6 +75,7 @@ def build_preload_summary(*, project: str | None = None, probe_cluster: bool = F
     project_state_digest = read_project_context_digest(project) if project else ""
     research_digest = build_research_workspace_digest(project=project) if project else ""
     cluster_digest = build_cluster_runtime_digest(project=project)
+    job_watch_digest = build_job_watch_digest(project=project)
     priors_digest = build_relevant_priors_digest(project=project, query=(session_context or project or ""))
     registry = ToolRegistry()
     try:
@@ -123,12 +129,14 @@ def build_preload_summary(*, project: str | None = None, probe_cluster: bool = F
             "research_onboarding_loaded": bool((onboarding.get("context") or "").strip()),
             "research_workspace_digest_loaded": bool(research_digest),
             "cluster_runtime_digest_loaded": bool(cluster_digest),
+            "job_watch_digest_loaded": bool(job_watch_digest),
             "relevant_priors_loaded": bool(priors_digest),
             "discussion_tool_count": len(discussion_tools),
             "execution_tool_count": len(execution_tools),
         },
         "cluster": {
             "runtime_digest": cluster_digest,
+            "job_watch_digest": job_watch_digest,
             "live_probe": cluster_probe,
         },
         "next_user_entrypoints": [
@@ -171,6 +179,7 @@ def format_preload_summary(summary: PreloadSummary) -> str:
             f"  · research_onboarding={prompt['research_onboarding_loaded']}",
             f"  · research_workspace_digest={prompt['research_workspace_digest_loaded']}",
             f"  · cluster_runtime_digest={prompt['cluster_runtime_digest_loaded']}",
+            f"  · job_watch_digest={prompt['job_watch_digest_loaded']}",
             f"  · tools discussion/execution={prompt['discussion_tool_count']}/{prompt['execution_tool_count']}",
         ]
     )

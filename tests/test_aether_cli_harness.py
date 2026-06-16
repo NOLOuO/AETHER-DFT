@@ -141,6 +141,8 @@ def test_cli_preload_reports_context_sources(capsys):
     assert payload["project"]["slug"] == "MCH-Pt-Br"
     assert payload["prompt_preload"]["discussion_tool_count"] > 0
     assert payload["prompt_preload"]["execution_tool_count"] >= payload["prompt_preload"]["discussion_tool_count"]
+    assert payload["prompt_preload"]["job_watch_digest_loaded"] is True
+    assert "job_watch_digest" in payload["cluster"]
     assert "aether-dft chat --project MCH-Pt-Br" in payload["next_user_entrypoints"]
 
 
@@ -149,6 +151,7 @@ def test_cli_preload_human_output_mentions_files(capsys):
     out = capsys.readouterr().out
     assert "AETHER preload ready" in out
     assert "research files preloaded" in out
+    assert "job_watch_digest" in out
     assert "tools discussion/execution" in out
 
 
