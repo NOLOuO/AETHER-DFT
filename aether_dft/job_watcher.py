@@ -84,34 +84,79 @@ def update_job_state(job_id: str, *, state: str, details: dict[str, Any] | None 
     return target
 
 
-def _job_next_actions(row: dict[str, Any]) -> list[str]:
+def _job_followup_options(row: dict[str, Any]) -> list[dict[str, Any]]:
     state = str(row.get("last_known_state") or "").strip().upper()
-    actions: list[str] = ["job_watch_snapshot(live_check=true)"]
+    options: list[dict[str, Any]] = [
+        {
+            "goal": "refresh_scheduler_state",
+            "when": "the user needs current cluster truth rather than the local watcher snapshot",
+            "evidence_needed": "live scheduler state for this job id",
+            "candidate_tools": ["job_watch_snapshot(live_check=true)", "cluster_job_status_brief"],
+        }
+    ]
     if state in {"SUBMITTED", "PENDING", "CONFIGURING", "RUNNING", "COMPLETING", "R"} or not state:
-        actions.extend(["cluster_job_status_brief", "cluster_job_tail_log"])
+        options.append(
+            {
+                "goal": "inspect_running_or_queued_job",
+                "when": "the job appears queued/running or the state is stale/unknown",
+                "evidence_needed": "queue state plus recent stdout/stderr or VASP progress if available",
+                "candidate_tools": ["cluster_job_status_brief", "cluster_job_tail_log"],
+            }
+        )
         if row.get("remote_run_root"):
-            actions.append("cluster_job_progress_estimate")
+            options.append(
+                {
+                    "goal": "estimate_vasp_progress",
+                    "when": "remote_run_root exists and the user asks whether the calculation is converging or moving",
+                    "evidence_needed": "OSZICAR/OUTCAR tail evidence from the remote run directory",
+                    "candidate_tools": ["cluster_job_progress_estimate", "cluster_job_partial_outcar"],
+                }
+            )
     elif state in {"COMPLETED", "COMPLETE", "DONE", "CD"}:
         if row.get("remote_run_root"):
-            actions.extend(["cluster_job_partial_outcar", "cluster_remote_fetch", "result_interpret"])
+            options.append(
+                {
+                    "goal": "recover_completed_result",
+                    "when": "the user wants the finished calculation interpreted or brought back locally",
+                    "evidence_needed": "remote OUTCAR/OSZICAR/CONTCAR plus local run record",
+                    "candidate_tools": ["cluster_job_partial_outcar", "cluster_remote_fetch", "result_interpret"],
+                }
+            )
         else:
-            actions.extend(["cluster_job_status_brief", "cluster_remote_fetch"])
+            options.append(
+                {
+                    "goal": "locate_completed_outputs",
+                    "when": "the scheduler says complete but the watcher lacks a remote run root",
+                    "evidence_needed": "job status and run metadata sufficient to find outputs",
+                    "candidate_tools": ["cluster_job_status_brief", "cluster_remote_fetch"],
+                }
+            )
     elif state in {"FAILED", "CANCELLED", "CANCELED", "TIMEOUT", "NODE_FAIL", "OUT_OF_MEMORY", "F", "CA"}:
-        actions.extend(["cluster_job_status_brief", "cluster_job_tail_log"])
+        options.append(
+            {
+                "goal": "diagnose_stopped_job",
+                "when": "the job failed, timed out, was cancelled, or ended abnormally",
+                "evidence_needed": "scheduler terminal state plus log tail/error messages",
+                "candidate_tools": ["cluster_job_status_brief", "cluster_job_tail_log"],
+            }
+        )
     else:
-        actions.append("cluster_job_status_brief")
-    deduped: list[str] = []
-    for action in actions:
-        if action not in deduped:
-            deduped.append(action)
-    return deduped
+        options.append(
+            {
+                "goal": "clarify_unknown_state",
+                "when": "the watcher state is not enough to answer confidently",
+                "evidence_needed": "fresh scheduler status and any available logs",
+                "candidate_tools": ["cluster_job_status_brief"],
+            }
+        )
+    return options
 
 
 def _with_next_actions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     enriched: list[dict[str, Any]] = []
     for row in rows:
         item = dict(row)
-        item["suggested_next_tools"] = _job_next_actions(item)
+        item["followup_options"] = _job_followup_options(item)
         enriched.append(item)
     return enriched
 
@@ -150,5 +195,8 @@ def snapshot(*, live_check: bool = False, limit: int = 20) -> dict[str, Any]:
         "count": len(rows),
         "jobs": _with_next_actions(rows),
         "live_results": live_results,
-        "guidance": "用户问上次任务/后台任务/提交后怎么样时，先读本 watcher；需要最新状态再 live_check=true；根据 suggested_next_tools 继续只读核对或回收结果。",
+        "guidance": (
+            "本 watcher 只提供 AETHER 已知提交记录和可选 followup_options。"
+            "模型应根据用户意图、权限和证据缺口自由选择后续工具；需要最新状态时再 live_check=true。"
+        ),
     }

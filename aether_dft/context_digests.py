@@ -88,9 +88,9 @@ def build_job_watch_digest(*, project: str | None = None, limit: int = 5) -> str
     """Summarize AETHER-submitted Slurm jobs remembered by the local watcher.
 
     This is intentionally local-only and does not SSH.  It gives the model a
-    cheap resume hook for natural-language references like "上次那个任务" while
-    keeping live cluster checks explicit through ``job_watch_snapshot`` with
-    ``live_check=true`` or the realtime cluster tools.
+    cheap resume hook for ambiguous references to prior AETHER-submitted work
+    while keeping live cluster checks explicit through ``job_watch_snapshot``
+    with ``live_check=true`` or the realtime cluster tools.
     """
 
     try:
@@ -114,8 +114,11 @@ def build_job_watch_digest(*, project: str | None = None, limit: int = 5) -> str
             bits.append(f"cluster={job.get('cluster_alias')}")
         if job.get("remote_run_root"):
             bits.append(f"remote={job.get('remote_run_root')}")
-        if job.get("suggested_next_tools"):
-            bits.append("next_tools=" + ",".join(str(item) for item in job.get("suggested_next_tools")[:4]))
+        followups = job.get("followup_options") or []
+        if followups:
+            goals = [str(item.get("goal") or "") for item in followups if isinstance(item, dict) and item.get("goal")]
+            if goals:
+                bits.append("followup_goals=" + ",".join(goals[:4]))
         rows.append("- " + " ".join(bits))
         if len(rows) >= limit:
             break
@@ -123,12 +126,12 @@ def build_job_watch_digest(*, project: str | None = None, limit: int = 5) -> str
         scope = f" for project `{project}`" if project else ""
         return (
             f"No locally watched AETHER-submitted jobs{scope}. "
-            "If the user asks about current queue, use `cluster_my_jobs`; if they ask about a remembered submission, use `job_watch_snapshot`."
+            "The model should decide whether the user needs queue evidence, session context, or a remembered AETHER submission before choosing tools."
         )
     return (
         "AETHER job watcher remembers these submitted jobs (local index; not live SSH):\n"
         + "\n".join(rows)
-        + "\nUse `job_watch_snapshot` first for ambiguous '上次那个/后台任务' questions; set live_check=true only when latest cluster state is needed."
+        + "\nTreat followup_goals as optional evidence goals, not a fixed workflow; choose tools only when the user's intent requires that evidence."
     )
 
 

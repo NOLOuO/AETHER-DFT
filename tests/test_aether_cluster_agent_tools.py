@@ -446,7 +446,7 @@ def test_job_watch_registers_submitted_run_record(tmp_path, monkeypatch):
     assert payload["status"] == "ok"
     assert payload["jobs"][0]["job_id"] == "12345"
     assert payload["jobs"][0]["cluster_alias"] == "szhang"
-    assert "cluster_job_status_brief" in payload["jobs"][0]["suggested_next_tools"]
+    assert any(item["goal"] == "inspect_running_or_queued_job" for item in payload["jobs"][0]["followup_options"])
     assert Path(payload["watch_path"]).exists()
 
 
@@ -469,7 +469,7 @@ def test_job_watch_snapshot_tool_is_read_only(tmp_path, monkeypatch):
 
     assert result["status"] == "ok"
     assert result["jobs"][0]["job_id"] == "67890"
-    assert "job_watch_snapshot(live_check=true)" in result["jobs"][0]["suggested_next_tools"]
+    assert any(item["goal"] == "refresh_scheduler_state" for item in result["jobs"][0]["followup_options"])
 
 
 def test_job_watch_completed_job_suggests_fetch_and_parse(tmp_path, monkeypatch):
@@ -489,7 +489,8 @@ def test_job_watch_completed_job_suggests_fetch_and_parse(tmp_path, monkeypatch)
     job_watcher.update_job_state("24680", state="COMPLETED", details={"status": "ok"})
     payload = job_watcher.snapshot()
 
-    tools = payload["jobs"][0]["suggested_next_tools"]
-    assert "cluster_job_partial_outcar" in tools
-    assert "cluster_remote_fetch" in tools
-    assert "result_interpret" in tools
+    followups = payload["jobs"][0]["followup_options"]
+    recover = next(item for item in followups if item["goal"] == "recover_completed_result")
+    assert {"cluster_job_partial_outcar", "cluster_remote_fetch", "result_interpret"}.issubset(
+        set(recover["candidate_tools"])
+    )

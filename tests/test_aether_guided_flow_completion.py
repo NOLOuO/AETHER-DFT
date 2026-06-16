@@ -309,7 +309,8 @@ def test_job_watch_digest_filters_to_current_project(tmp_path: Path, monkeypatch
     digest = build_job_watch_digest(project="DemoProject")
     assert "444" in digest
     assert "555" not in digest
-    assert "job_watch_snapshot" in digest
+    assert "followup_goals" in digest
+    assert "fixed workflow" in digest
 
 
 def test_behavior_audit_flags_claim_without_evidence():
