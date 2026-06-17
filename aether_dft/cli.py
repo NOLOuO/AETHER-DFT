@@ -42,6 +42,7 @@ TOP_LEVEL_COMMANDS = {
     "doctor",
     "explain",
     "fetch",
+    "followup",
     "harness",
     "kb",
     "mainline",
@@ -1714,6 +1715,50 @@ def handle_session_resume(args: argparse.Namespace) -> int:
     return 0 if payload["status"] == "ok" else 1
 
 
+def handle_followup_schedule(args: argparse.Namespace) -> int:
+    from .followups import schedule_followup
+
+    result = schedule_followup(
+        project=args.project,
+        prompt=args.prompt,
+        due_at=args.due_at,
+        interval_minutes=args.interval_minutes,
+        title=args.title,
+        related_job_id=args.job_id,
+        related_run_id=args.run_id,
+    )
+    print_json(result)
+    return 0 if result.get("status") == "ok" else 1
+
+
+def handle_followup_list(args: argparse.Namespace) -> int:
+    from .followups import list_followups
+
+    print_json(list_followups(project=args.project, include_done=args.include_done, limit=args.limit))
+    return 0
+
+
+def handle_followup_due(args: argparse.Namespace) -> int:
+    from .followups import due_followups
+
+    print_json(due_followups(project=args.project, now=args.now, limit=args.limit))
+    return 0
+
+
+def handle_followup_complete(args: argparse.Namespace) -> int:
+    from .followups import complete_followup
+
+    result = complete_followup(
+        args.followup_id,
+        project=args.project,
+        status=args.status,
+        note=args.note,
+        reschedule=not args.no_reschedule,
+    )
+    print_json(result)
+    return 0 if result.get("status") in {"ok", "rescheduled"} else 1
+
+
 def handle_tools_list(args: argparse.Namespace) -> int:
     from .tool_registry import list_registered_tools
 
@@ -2345,6 +2390,35 @@ def build_parser() -> argparse.ArgumentParser:
     session_resume.add_argument("--project")
     session_resume.add_argument("--limit", type=int, default=8)
     session_resume.set_defaults(func=handle_session_resume)
+
+    followup_parser = sub.add_parser("followup", help="项目科研 follow-up / 提醒队列。")
+    followup_sub = followup_parser.add_subparsers(dest="followup_command")
+    followup_schedule = followup_sub.add_parser("schedule", help="写入一个未来科研检查意图。")
+    followup_schedule.add_argument("prompt")
+    followup_schedule.add_argument("--project")
+    followup_schedule.add_argument("--due-at", dest="due_at", help="ISO 时间，例如 2026-06-18T09:00:00+08:00")
+    followup_schedule.add_argument("--interval-minutes", type=int)
+    followup_schedule.add_argument("--title")
+    followup_schedule.add_argument("--job-id")
+    followup_schedule.add_argument("--run-id")
+    followup_schedule.set_defaults(func=handle_followup_schedule)
+    followup_list = followup_sub.add_parser("list", help="列出未完成 follow-up。")
+    followup_list.add_argument("--project")
+    followup_list.add_argument("--include-done", action="store_true")
+    followup_list.add_argument("--limit", type=int, default=50)
+    followup_list.set_defaults(func=handle_followup_list)
+    followup_due = followup_sub.add_parser("due", help="列出已到期 follow-up。")
+    followup_due.add_argument("--project")
+    followup_due.add_argument("--now")
+    followup_due.add_argument("--limit", type=int, default=20)
+    followup_due.set_defaults(func=handle_followup_due)
+    followup_complete = followup_sub.add_parser("complete", help="完成/取消一个 follow-up。")
+    followup_complete.add_argument("followup_id")
+    followup_complete.add_argument("--project")
+    followup_complete.add_argument("--status", default="done")
+    followup_complete.add_argument("--note")
+    followup_complete.add_argument("--no-reschedule", action="store_true")
+    followup_complete.set_defaults(func=handle_followup_complete)
 
     tools_parser = sub.add_parser("tools", help="AETHER harness 工具注册表。")
     tools_sub = tools_parser.add_subparsers(dest="tools_command")

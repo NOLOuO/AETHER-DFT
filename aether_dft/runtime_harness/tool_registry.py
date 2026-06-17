@@ -58,6 +58,7 @@ from aether_dft.general_agent_tools import (
     literature_search,
     web_search,
 )
+from aether_dft.followups import complete_followup, due_followups, list_followups, schedule_followup
 from aether_dft.knowledge import add_note, list_notes, search_for_system, search_notes, show_note
 from aether_dft.job_watcher import register_run_record, snapshot as job_watch_snapshot
 from aether_dft.paths import PROJECT_ROOT
@@ -186,6 +187,10 @@ CAPABILITY_CATEGORIES: dict[str, dict[str, Any]] = {
             "research_cycle_checkpoint",
             "recommend_next_tasks",
             "next_experiment_propose",
+            "research_followup_list",
+            "research_followup_due",
+            "research_followup_schedule",
+            "research_followup_complete",
         ],
     },
     "research_context": {
@@ -365,6 +370,10 @@ class ToolRegistry:
         self._register(ToolSpec("research_progress_append", "按研究工作区格式倒序追加 research/<项目>/研究进展.md。", {"project": {"type": "string"}, "completed": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}}, False, ("project",)), self._research_progress_append)
         self._register(ToolSpec("project_continuity_digest", "读取项目状态、research、知识库、近期 run 和最近结果，生成下一轮可续接摘要；这是证据地图，不是固定流程。", {"project": {"type": "string"}, "focus": {"type": "string"}, "recent_results": {"type": "array", "items": {"type": "object"}}, "max_chars": {"type": "integer"}}, True), self._project_continuity_digest)
         self._register(ToolSpec("research_cycle_checkpoint", "把当前科研循环的目标、决定、证据、开放问题、blocker、下一步持久化到项目 checkpoint/progress/state。", {"project": {"type": "string"}, "goal": {"type": "string"}, "current_decision": {"type": "string"}, "evidence_refs": {"type": "array", "items": {"type": "string"}}, "open_questions": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}, "run_ids": {"type": "array", "items": {"type": "string"}}, "candidate_ids": {"type": "array", "items": {"type": "string"}}, "update_project_state": {"type": "boolean"}}, False, ("project", "goal", "current_decision")), self._research_cycle_checkpoint)
+        self._register(ToolSpec("research_followup_schedule", "把用户明确要求的未来科研检查/提醒写入项目 follow-up 队列；模型负责把自然语言时间转成 due_at ISO 或 interval_minutes。不会自动提交/取消/查询集群。", {"project": {"type": "string"}, "prompt": {"type": "string"}, "due_at": {"type": "string"}, "interval_minutes": {"type": "integer"}, "title": {"type": "string"}, "related_job_id": {"type": "string"}, "related_run_id": {"type": "string"}, "metadata": {"type": "object"}}, False, ("prompt",)), self._research_followup_schedule)
+        self._register(ToolSpec("research_followup_list", "列出项目 follow-up 队列；这是计划/提醒索引，不是已完成事实。", {"project": {"type": "string"}, "include_done": {"type": "boolean"}, "limit": {"type": "integer"}}, True), self._research_followup_list)
+        self._register(ToolSpec("research_followup_due", "读取已经到期的科研 follow-up；返回 evidence_goals，模型应自主选择需要的状态/日志/结果工具补证据。", {"project": {"type": "string"}, "now": {"type": "string"}, "limit": {"type": "integer"}}, True), self._research_followup_due)
+        self._register(ToolSpec("research_followup_complete", "把 follow-up 标记完成/取消，或对 interval_minutes follow-up 自动重排；只有完成证据检查后再调用。", {"project": {"type": "string"}, "followup_id": {"type": "string"}, "status": {"type": "string"}, "note": {"type": "string"}, "reschedule": {"type": "boolean"}}, False, ("followup_id",)), self._research_followup_complete)
         self._register(ToolSpec("evidence_claim_audit", "审计模型准备写出的科研 claim 是否带 evidence_refs；无证据 claim 必须降级为假设/下一步。", {"claims": {"type": "array", "items": {"type": "object"}}, "evidence_items": {"type": "array", "items": {"type": "object"}}}, True), self._evidence_claim_audit)
         self._register(ToolSpec("web_search", "通用网页检索入口。若本地未接 live connector，会返回 query_urls 与 connector_required，不会伪造结果。", {"query": {"type": "string"}, "max_results": {"type": "integer"}, "live": {"type": "boolean"}}, True, ("query",)), self._web_search)
         self._register(ToolSpec("literature_search", "文献检索入口：默认给出 arXiv/Semantic Scholar/Scholar 查询 envelope；live=true 时尝试 arXiv Atom fallback。", {"query": {"type": "string"}, "max_results": {"type": "integer"}, "source": {"type": "string"}, "live": {"type": "boolean"}}, True, ("query",)), self._literature_search)
@@ -479,6 +488,8 @@ class ToolRegistry:
             "research_proposal_plan",
             "research_progress_append",
             "research_learning_capture",
+            "research_followup_list",
+            "research_followup_due",
             "recommend_next_tasks",
             "knowledge_note_add",
             "knowledge_note_list",
@@ -662,7 +673,7 @@ class ToolRegistry:
             "status": "ok",
             "principle": "能力地图不是固定流程；模型应根据 research/session/tool evidence 自主选择最小必要工具。",
             "capability_stages": [
-                {"category": "project_context", "tools": ["project_continuity_digest", "web_search", "literature_search", "evidence_claim_audit", "chemistry_compute", "image_understand", "discussion_state_snapshot", "research_cycle_checkpoint", "research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
+                {"category": "project_context", "tools": ["project_continuity_digest", "web_search", "literature_search", "evidence_claim_audit", "chemistry_compute", "image_understand", "discussion_state_snapshot", "research_cycle_checkpoint", "research_followup_list", "research_followup_due", "research_followup_schedule", "research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
                 {"category": "structure_modeling", "tools": ["structure_modeling_tool_status", "structure_modeling_intent_plan", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
                 {"category": "dft_execution", "tools": ["cluster_execution_intent_plan", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_profile_list", "cluster_probe", "cluster_config", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "cluster_job_cancel"]},
                 {"category": "realtime_cluster_status", "tools": ["cluster_job_status_brief", "cluster_my_jobs", "cluster_job_tail_log", "cluster_job_partial_outcar", "cluster_job_progress_estimate", "job_watch_snapshot", "cluster_job_cancel"]},
@@ -2244,6 +2255,41 @@ class ToolRegistry:
             str(payload.get("title") or "").strip(),
             str(payload.get("content") or "").strip(),
             tags=_string_list(payload.get("tags")),
+        )
+
+    def _research_followup_schedule(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return schedule_followup(
+            project=str(payload.get("project") or "").strip() or None,
+            prompt=str(payload.get("prompt") or "").strip(),
+            due_at=str(payload.get("due_at") or "").strip() or None,
+            interval_minutes=payload.get("interval_minutes"),
+            title=str(payload.get("title") or "").strip() or None,
+            related_job_id=str(payload.get("related_job_id") or "").strip() or None,
+            related_run_id=str(payload.get("related_run_id") or "").strip() or None,
+            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
+        )
+
+    def _research_followup_list(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return list_followups(
+            project=str(payload.get("project") or "").strip() or None,
+            include_done=bool(payload.get("include_done", False)),
+            limit=payload.get("limit") or 50,
+        )
+
+    def _research_followup_due(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return due_followups(
+            project=str(payload.get("project") or "").strip() or None,
+            now=str(payload.get("now") or "").strip() or None,
+            limit=payload.get("limit") or 20,
+        )
+
+    def _research_followup_complete(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return complete_followup(
+            str(payload.get("followup_id") or "").strip(),
+            project=str(payload.get("project") or "").strip() or None,
+            status=str(payload.get("status") or "done").strip() or "done",
+            note=str(payload.get("note") or "").strip() or None,
+            reschedule=bool(payload.get("reschedule", True)),
         )
 
     def _cluster_remote_submit(self, payload: dict[str, Any]) -> dict[str, Any]:

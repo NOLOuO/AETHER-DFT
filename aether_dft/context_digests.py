@@ -153,6 +153,44 @@ def _job_watch_matches_project(job: dict, project: str) -> bool:
     return bool(needle_tokens and needle_tokens.intersection(haystack_tokens))
 
 
+def build_followup_digest(*, project: str | None = None, limit: int = 5) -> str:
+    """Summarize due/upcoming project follow-ups without running their actions."""
+
+    try:
+        from .followups import due_followups, list_followups
+    except Exception:
+        return ""
+    due = due_followups(project=project, limit=limit)
+    upcoming = list_followups(project=project, limit=limit)
+    rows: list[str] = []
+    if due.get("followups"):
+        rows.append("Due research follow-ups (intent only; gather evidence before answering):")
+        for item in due.get("followups") or []:
+            bits = [
+                f"id=`{item.get('id')}`",
+                f"title={item.get('title') or 'untitled'}",
+                f"due_at={item.get('due_at')}",
+            ]
+            if item.get("related_job_id"):
+                bits.append(f"job={item.get('related_job_id')}")
+            if item.get("related_run_id"):
+                bits.append(f"run={item.get('related_run_id')}")
+            goals = item.get("evidence_goals") or []
+            if goals:
+                bits.append("evidence_goals=" + ",".join(str(goal.get("goal") or "") for goal in goals[:3] if isinstance(goal, dict)))
+            rows.append("- " + " ".join(bits))
+    else:
+        followups = upcoming.get("followups") or []
+        if followups:
+            rows.append("Upcoming research follow-ups:")
+            for item in followups[:limit]:
+                rows.append(f"- id=`{item.get('id')}` title={item.get('title') or 'untitled'} due_at={item.get('due_at')} status={item.get('status') or 'scheduled'}")
+    if not rows:
+        return ""
+    rows.append("Treat follow-ups as reminders/check intents, not facts or fixed workflows; decide evidence tools from the user goal.")
+    return "\n".join(rows)
+
+
 def build_research_workspace_digest(*, project: str | None = None, max_chars: int = 1800) -> str:
     paths = resolve_research_project(project)
     if paths is None:

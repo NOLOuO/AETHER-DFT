@@ -15,6 +15,7 @@ from .prompt_sections import PromptSectionCompiler
 from .project_state import read_project_context, read_project_context_digest
 from .context_digests import (
     build_cluster_runtime_digest,
+    build_followup_digest,
     build_job_watch_digest,
     build_research_workspace_digest,
     build_relevant_priors_digest,
@@ -116,6 +117,7 @@ def _runtime_data(*, project: str | None = None, session_context: str | None = N
     architecture = load_architecture_live_doc_snapshot()
     cluster_runtime_digest = build_cluster_runtime_digest(project=project)
     job_watch_digest = build_job_watch_digest(project=project)
+    followup_digest = build_followup_digest(project=project)
     research_workspace_digest = build_research_workspace_digest(project=project) if project else ""
     relevant_priors_digest = build_relevant_priors_digest(project=project, query=session_context or project or "")
     response_contract = "\n".join(
@@ -153,6 +155,8 @@ def _runtime_data(*, project: str | None = None, session_context: str | None = N
         "cluster_runtime_digest_hash": _digest(cluster_runtime_digest),
         "job_watch_digest": job_watch_digest,
         "job_watch_digest_hash": _digest(job_watch_digest),
+        "followup_digest": followup_digest,
+        "followup_digest_hash": _digest(followup_digest),
         "research_workspace_digest": research_workspace_digest,
         "research_workspace_digest_hash": _digest(research_workspace_digest),
         "relevant_priors_digest": relevant_priors_digest,
