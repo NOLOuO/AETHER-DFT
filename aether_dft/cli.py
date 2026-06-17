@@ -374,6 +374,32 @@ def _print_resume_options(sessions: list[Any], *, heading: str) -> None:
             )
 
 
+def _rank_resume_matches(session_store: Any, raw: str, scoped_sessions: list[Any], *, project: str | None, current_session_id: str) -> tuple[list[Any], dict[str, Any]]:
+    lexical_matches = [item for item in scoped_sessions if _session_matches_query(item, raw)]
+    if len(lexical_matches) == 1:
+        return lexical_matches, {"selection_method": "lexical_exact", "selection_error": ""}
+    if hasattr(session_store, "rank_sessions"):
+        try:
+            ranked = session_store.rank_sessions(
+                query=raw,
+                project=project,
+                exclude_session_id=current_session_id,
+                limit=50,
+                max_results=10,
+            )
+            hits = ranked.get("matches") if isinstance(ranked, dict) else []
+            ranked_matches = [hit.summary for hit in hits if hasattr(hit, "summary")]
+            if ranked_matches:
+                return ranked_matches, ranked if isinstance(ranked, dict) else {}
+            if lexical_matches:
+                return lexical_matches, ranked if isinstance(ranked, dict) else {}
+        except Exception as exc:
+            if lexical_matches:
+                return lexical_matches, {"selection_method": "lexical_fallback", "selection_error": str(exc)}
+            return [], {"selection_method": "semantic_failed", "selection_error": str(exc)}
+    return lexical_matches, {"selection_method": "lexical", "selection_error": ""}
+
+
 def handle_chat_resume_command(line: str, args: argparse.Namespace, session_store: Any, current_session_id: str) -> str:
     raw = line[len("/resume") :].strip()
     all_scope = False
@@ -420,11 +446,21 @@ def handle_chat_resume_command(line: str, args: argparse.Namespace, session_stor
             print("没有可续接的 session。")
             return current_session_id
     elif not raw.startswith("session_"):
-        matches = [item for item in scoped_sessions if _session_matches_query(item, raw)]
+        matches, match_meta = _rank_resume_matches(
+            session_store,
+            raw,
+            scoped_sessions,
+            project=scope_project,
+            current_session_id=current_session_id,
+        )
         if len(matches) == 1:
+            method = str(match_meta.get("selection_method") or "")
+            if method.startswith("semantic"):
+                print(f"{Colors.DIM}semantic resume match: {method}{Colors.RESET}")
             raw = matches[0].session_id
         elif len(matches) > 1:
-            _print_resume_options(matches[:10], heading=f"resume matches for {raw!r}")
+            method = str(match_meta.get("selection_method") or "matches")
+            _print_resume_options(matches[:10], heading=f"resume matches for {raw!r} ({method})")
             if not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty()):
                 print("非交互 stdin：请使用 /resume <session_id>。")
                 return current_session_id
@@ -569,6 +605,12 @@ def print_chat_context_status(*, session_store: Any, session_id: str) -> None:
     used_chars = len(session_context)
     usable_chars = usable_context_chars()
     usage_ratio = used_chars / usable_chars if usable_chars else 0.0
+    analysis = {}
+    if hasattr(session_store, "analyze_context"):
+        try:
+            analysis = session_store.analyze_context(session_id)
+        except Exception as exc:
+            analysis = {"status": "error", "message": str(exc)}
     print_json(
         {
             "model": program_model_id(),
@@ -579,6 +621,7 @@ def print_chat_context_status(*, session_store: Any, session_id: str) -> None:
             "context_usage_percent": round(usage_ratio * 100, 2),
             "compacted_turn_count": state.get("compacted_turn_count", 0),
             "has_compact_summary": bool(str(state.get("compact_summary") or "").strip()),
+            "context_analysis": analysis,
             "suggestions": _context_suggestions(
                 usage_ratio=usage_ratio,
                 has_compact_summary=bool(str(state.get("compact_summary") or "").strip()),

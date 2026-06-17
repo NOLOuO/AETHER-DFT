@@ -5,6 +5,7 @@ from pathlib import Path
 
 from aether_dft import cli
 from aether_dft.session_store import AetherSessionStore, SESSION_CONTEXT_MAX_CHARS
+from aether_dft.session_search import rank_session_summaries
 from aether_dft.tool_registry import AetherToolRegistry, list_registered_tools
 from aether_dft.runtime_harness.tool_registry import ToolRegistry
 
@@ -167,6 +168,93 @@ def test_session_search_and_rename(tmp_path: Path):
     assert store.list_sessions(project="demo")[0].title == "Pt slab OUTCAR follow-up"
 
 
+def test_semantic_session_search_uses_metadata_catalog_not_fixed_phrases(tmp_path: Path):
+    store = AetherSessionStore(tmp_path / "sessions")
+    water = store.start_session(project="Pt-H2O", first_prompt="讨论 H2O 在 Pt(111) 的吸附构型")
+    store.append_turn(
+        water,
+        {
+            "project": "Pt-H2O",
+            "prompt": "比较 top bridge hollow 的初始构型",
+            "response": "优先 O-down hollow 和 atop，后续看吸附能。",
+        },
+    )
+    barrier = store.start_session(project="MCH-Pt-Br", first_prompt="MCH 脱氢 NEB 势垒")
+    store.append_turn(
+        barrier,
+        {
+            "project": "MCH-Pt-Br",
+            "prompt": "看 Br 修饰 Pt 上 C-H 活化过渡态",
+            "response": "下一步检查 NEB images。",
+        },
+    )
+
+    sessions = store.list_sessions(limit=10)
+
+    def selector(query: str, catalog: list[dict], max_results: int) -> list[dict]:
+        assert "water adsorption on platinum" in query
+        assert any(item["session_id"] == water for item in catalog)
+        assert any("O-down" in item["transcript_excerpt"] for item in catalog)
+        selected = next(item for item in catalog if item["session_id"] == water)
+        return [{"rank": selected["rank"], "reason": "语义匹配 water/Pt adsorption"}]
+
+    result = rank_session_summaries(
+        "water adsorption on platinum",
+        sessions,
+        transcript_loader=lambda sid: store.read_transcript(sid, limit=8),
+        selector=selector,
+    )
+
+    assert result["selection_method"] == "semantic"
+    assert result["matches"][0].summary.session_id == water
+    assert result["matches"][0].reason == "语义匹配 water/Pt adsorption"
+
+
+def test_session_resume_recovers_malformed_transcript_rows(tmp_path: Path):
+    store = AetherSessionStore(tmp_path / "sessions")
+    session_id = store.start_session(project="demo", first_prompt="resume recovery")
+    transcript = store._transcript_path(session_id)
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    transcript.write_text(
+        "\n".join(
+            [
+                "{bad json",
+                json.dumps({"type": "turn", "record": "not a dict"}, ensure_ascii=False),
+                json.dumps(
+                    {
+                        "type": "turn",
+                        "record": {
+                            "project": "demo",
+                            "prompt": "检查 OUTCAR",
+                            "response": "电子步收敛。",
+                            "tool_executions": [
+                                {"arguments": {"job_id": "1"}, "result": {"status": "ok"}},
+                                {"name": "cluster_job_partial_outcar", "arguments": {"job_id": "1"}, "result": {"status": "ok"}},
+                            ],
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps({"type": "turn", "record": {"prompt": "   ", "response": "  "}}, ensure_ascii=False),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    payload = store.resume_payload(session_id=session_id)
+    recovery = payload["recovery"]
+
+    assert payload["status"] == "ok"
+    assert recovery["status"] == "recovered"
+    assert recovery["invalid_json_rows"] == 1
+    assert recovery["malformed_rows"] == 2
+    assert recovery["skipped_tool_records"] == 1
+    assert len(payload["recent_turns"]) == 1
+    tools = payload["recent_turns"][0]["record"]["tool_executions"]
+    assert [tool["name"] for tool in tools] == ["cluster_job_partial_outcar"]
+
+
 def test_session_context_includes_compact_tool_trail_without_large_results(tmp_path: Path):
     store = AetherSessionStore(tmp_path / "sessions")
     session_id = store.start_session(project="demo")
@@ -198,6 +286,33 @@ def test_session_context_includes_compact_tool_trail_without_large_results(tmp_p
     assert "aether_discover_tools(ok; category=structure_modeling" in context
     assert "x" * 200 not in context
     assert "y" * 200 not in context
+
+
+def test_session_context_analysis_identifies_large_tool_results(tmp_path: Path):
+    store = AetherSessionStore(tmp_path / "sessions")
+    session_id = store.start_session(project="demo", first_prompt="context analysis")
+    store.append_turn(
+        session_id,
+        {
+            "project": "demo",
+            "prompt": "分析最新 OUTCAR",
+            "response": "需要看收敛和能量。",
+            "tool_executions": [
+                {
+                    "name": "cluster_job_partial_outcar",
+                    "arguments": {"job_id": "123"},
+                    "result": {"status": "ok", "outcar": "ENERGY\n" + "x" * 5000},
+                }
+            ],
+        },
+    )
+
+    analysis = store.analyze_context(session_id)
+
+    assert analysis["status"] == "ok"
+    assert analysis["top_buckets"][0]["name"] == "tool_result_chars"
+    assert analysis["top_tool_results"][0]["name"] == "cluster_job_partial_outcar"
+    assert analysis["large_turns"][0]["turn"] == 1
 
 
 def test_permission_mode_blocks_write_tools_in_ask_mode():

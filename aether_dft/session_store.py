@@ -347,18 +347,95 @@ class AetherSessionStore:
         return transcript_path
 
     def _read_transcript_rows(self, session_id: str) -> list[dict[str, Any]]:
+        rows, _diagnostics = self._read_transcript_rows_with_recovery(session_id)
+        return rows
+
+    @staticmethod
+    def _sanitize_transcript_row(row: Any) -> tuple[dict[str, Any] | None, int]:
+        """Return an API-safe transcript row plus skipped nested item count.
+
+        Session files are append-only JSONL and may contain half-written rows,
+        stale fields, or malformed tool records after interruption.  Resume
+        should repair what it can and drop only the broken fragments instead of
+        crashing the whole conversation.
+        """
+
+        if not isinstance(row, dict):
+            return None, 0
+        record = row.get("record")
+        if not isinstance(record, dict):
+            return None, 0
+        prompt = _clean_text(record.get("prompt"))
+        response = _clean_text(record.get("response"))
+        raw_tools = record.get("tool_executions")
+        skipped_tools = 0
+        tools: list[dict[str, Any]] = []
+        if isinstance(raw_tools, list):
+            for item in raw_tools:
+                if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+                    skipped_tools += 1
+                    continue
+                cleaned_tool = {
+                    "name": _clean_text(item.get("name")).strip(),
+                    "arguments": item.get("arguments") if isinstance(item.get("arguments"), dict) else {},
+                    "result": item.get("result") if isinstance(item.get("result"), dict) else {},
+                }
+                for key in ("status", "duration_s", "started_at", "finished_at"):
+                    if key in item:
+                        cleaned_tool[key] = _clean_jsonable(item.get(key))
+                tools.append(_clean_jsonable(cleaned_tool))
+        if not prompt.strip() and not response.strip() and not tools:
+            return None, skipped_tools
+        clean_record = dict(record)
+        clean_record["prompt"] = prompt
+        clean_record["response"] = response
+        if tools:
+            clean_record["tool_executions"] = tools
+        else:
+            clean_record.pop("tool_executions", None)
+        clean_row = dict(row)
+        clean_row["type"] = str(clean_row.get("type") or "turn")
+        clean_row["record"] = _clean_jsonable(clean_record)
+        return _clean_jsonable(clean_row), skipped_tools
+
+    def _read_transcript_rows_with_recovery(self, session_id: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         path = self._transcript_path(session_id)
+        diagnostics = {
+            "status": "ok",
+            "session_id": session_id,
+            "path": str(path),
+            "raw_rows": 0,
+            "kept_rows": 0,
+            "invalid_json_rows": 0,
+            "malformed_rows": 0,
+            "skipped_tool_records": 0,
+        }
         if not path.exists():
-            return []
+            return [], diagnostics
         rows: list[dict[str, Any]] = []
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
+            diagnostics["raw_rows"] += 1
             try:
-                rows.append(_clean_jsonable(json.loads(line)))
+                raw = json.loads(line)
             except json.JSONDecodeError:
+                diagnostics["invalid_json_rows"] += 1
                 continue
-        return rows
+            sanitized, skipped_tools = self._sanitize_transcript_row(raw)
+            diagnostics["skipped_tool_records"] += skipped_tools
+            if sanitized is None:
+                diagnostics["malformed_rows"] += 1
+                continue
+            rows.append(sanitized)
+        diagnostics["kept_rows"] = len(rows)
+        if (
+            diagnostics["invalid_json_rows"]
+            or diagnostics["malformed_rows"]
+            or diagnostics["skipped_tool_records"]
+        ):
+            diagnostics["status"] = "recovered"
+        return rows, diagnostics
 
     def read_transcript(self, session_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
         rows = self._read_transcript_rows(session_id)
@@ -382,6 +459,117 @@ class AetherSessionStore:
             if len(matches) >= limit:
                 break
         return list(reversed(matches))
+
+    def rank_sessions(
+        self,
+        *,
+        query: str,
+        project: str | None = None,
+        exclude_session_id: str | None = None,
+        limit: int = 50,
+        max_results: int = 8,
+        selector: Any | None = None,
+        semantic: bool = True,
+    ) -> dict[str, Any]:
+        from .session_search import rank_session_summaries
+
+        sessions = [
+            item
+            for item in self.list_sessions(project=project, limit=limit)
+            if not exclude_session_id or item.session_id != exclude_session_id
+        ]
+        return rank_session_summaries(
+            query,
+            sessions,
+            transcript_loader=lambda sid: self.read_transcript(sid, limit=8),
+            max_results=max_results,
+            selector=selector,
+            semantic=semantic,
+        )
+
+    def analyze_context(self, session_id: str) -> dict[str, Any]:
+        """Explain what is consuming resumable session context.
+
+        The output is intentionally approximate and character-based because it
+        must work without provider tokenizers.  It still gives the model/user a
+        concrete diagnosis: whether long-term context is dominated by human
+        prompts, assistant summaries, or large tool results such as OUTCAR/logs.
+        """
+
+        state = self.load_state(session_id)
+        rows = self._read_transcript_rows(session_id)
+        buckets = {
+            "user_prompt_chars": 0,
+            "assistant_response_chars": 0,
+            "tool_argument_chars": 0,
+            "tool_result_chars": 0,
+            "other_record_chars": 0,
+            "compact_summary_chars": len(str(state.get("compact_summary") or "")),
+        }
+        tool_results: dict[str, int] = {}
+        tool_requests: dict[str, int] = {}
+        large_turns: list[dict[str, Any]] = []
+        for index, row in enumerate(rows, start=1):
+            record = row.get("record") if isinstance(row, dict) else {}
+            if not isinstance(record, dict):
+                continue
+            prompt_chars = len(str(record.get("prompt") or ""))
+            response_chars = len(str(record.get("response") or ""))
+            buckets["user_prompt_chars"] += prompt_chars
+            buckets["assistant_response_chars"] += response_chars
+            turn_tool_chars = 0
+            for tool in record.get("tool_executions") or []:
+                if not isinstance(tool, dict):
+                    continue
+                name = str(tool.get("name") or "unknown")
+                arg_chars = len(json.dumps(tool.get("arguments") or {}, ensure_ascii=False, default=str))
+                result_chars = len(json.dumps(tool.get("result") or {}, ensure_ascii=False, default=str))
+                buckets["tool_argument_chars"] += arg_chars
+                buckets["tool_result_chars"] += result_chars
+                tool_requests[name] = tool_requests.get(name, 0) + arg_chars
+                tool_results[name] = tool_results.get(name, 0) + result_chars
+                turn_tool_chars += arg_chars + result_chars
+            known = {"prompt", "response", "tool_executions"}
+            other_chars = len(json.dumps({k: v for k, v in record.items() if k not in known}, ensure_ascii=False, default=str))
+            buckets["other_record_chars"] += other_chars
+            turn_chars = prompt_chars + response_chars + turn_tool_chars + other_chars
+            if turn_chars >= 2000:
+                large_turns.append(
+                    {
+                        "turn": index,
+                        "chars": turn_chars,
+                        "prompt": self._collapse_text(record.get("prompt"), limit=120),
+                        "tools": self._tool_trail(list(record.get("tool_executions") or []), limit=4),
+                    }
+                )
+        total = sum(int(value) for value in buckets.values())
+
+        def _top(mapping: dict[str, int], *, limit: int = 8) -> list[dict[str, Any]]:
+            return [
+                {"name": name, "chars": chars, "percent": round((chars / total) * 100, 2) if total else 0.0}
+                for name, chars in sorted(mapping.items(), key=lambda item: item[1], reverse=True)[:limit]
+            ]
+
+        top_buckets = [
+            {"name": name, "chars": chars, "percent": round((chars / total) * 100, 2) if total else 0.0}
+            for name, chars in sorted(buckets.items(), key=lambda item: item[1], reverse=True)
+            if chars
+        ]
+        return {
+            "status": "ok",
+            "session_id": session_id,
+            "turn_count": len(rows),
+            "approx_total_chars": total,
+            "buckets": buckets,
+            "top_buckets": top_buckets,
+            "top_tool_results": _top(tool_results),
+            "top_tool_requests": _top(tool_requests),
+            "large_turns": large_turns[-8:],
+            "guidance": (
+                "Use this as a context diagnosis, not a scientific conclusion. "
+                "Large tool_result buckets should usually be microcompacted/persisted as artifacts before long follow-up chats."
+            ),
+        }
 
     @staticmethod
     def _collapse_text(value: Any, *, limit: int = 220) -> str:
@@ -575,10 +763,13 @@ class AetherSessionStore:
         if not resolved:
             return {"status": "empty", "session_id": None, "state": None, "recent_turns": []}
         state = self.load_state(resolved)
+        recent_turns, recovery = self._read_transcript_rows_with_recovery(resolved)
+        recent_turns = recent_turns[-limit:]
         return {
             "status": "ok",
             "session_id": resolved,
             "state": state,
-            "recent_turns": self.read_transcript(resolved, limit=limit),
+            "recent_turns": recent_turns,
+            "recovery": recovery,
             "session_context": self.build_session_context(resolved),
         }
