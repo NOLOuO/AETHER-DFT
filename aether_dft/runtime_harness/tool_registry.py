@@ -39,6 +39,7 @@ from aether_dft.adsorption import (
     plan_adsorption_task,
     run_adsorption_full_workflow,
 )
+from aether_dft.auto_mode import auto_mode_status, checkpoint_auto_mode, configure_auto_mode
 from aether_dft.prompt_engine import load_architecture_live_doc_snapshot
 from aether_dft.permissions import get_permission_mode, permission_mode_label, should_allow_tool
 from aether_dft.project_state import append_progress, project_paths, read_project_context, write_project_state
@@ -187,6 +188,9 @@ CAPABILITY_CATEGORIES: dict[str, dict[str, Any]] = {
             "research_cycle_checkpoint",
             "recommend_next_tasks",
             "next_experiment_propose",
+            "auto_mode_status",
+            "auto_mode_configure",
+            "auto_mode_checkpoint",
             "research_followup_list",
             "research_followup_due",
             "research_followup_schedule",
@@ -370,6 +374,9 @@ class ToolRegistry:
         self._register(ToolSpec("research_progress_append", "按研究工作区格式倒序追加 research/<项目>/研究进展.md。", {"project": {"type": "string"}, "completed": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}}, False, ("project",)), self._research_progress_append)
         self._register(ToolSpec("project_continuity_digest", "读取项目状态、research、知识库、近期 run 和最近结果，生成下一轮可续接摘要；这是证据地图，不是固定流程。", {"project": {"type": "string"}, "focus": {"type": "string"}, "recent_results": {"type": "array", "items": {"type": "object"}}, "max_chars": {"type": "integer"}}, True), self._project_continuity_digest)
         self._register(ToolSpec("research_cycle_checkpoint", "把当前科研循环的目标、决定、证据、开放问题、blocker、下一步持久化到项目 checkpoint/progress/state。", {"project": {"type": "string"}, "goal": {"type": "string"}, "current_decision": {"type": "string"}, "evidence_refs": {"type": "array", "items": {"type": "string"}}, "open_questions": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}, "run_ids": {"type": "array", "items": {"type": "string"}}, "candidate_ids": {"type": "array", "items": {"type": "string"}}, "update_project_state": {"type": "boolean"}}, False, ("project", "goal", "current_decision")), self._research_cycle_checkpoint)
+        self._register(ToolSpec("auto_mode_status", "读取 /auto 目标驱动科研模式状态、到期 follow-up 和自主策略；这是目标/证据地图，不是固定流程。", {"project": {"type": "string"}, "include_due": {"type": "boolean"}}, True), self._auto_mode_status)
+        self._register(ToolSpec("auto_mode_configure", "开启/关闭或调整 /auto 模式。开启时必须有 research_goal；会创建周期 monitor/daily report follow-up 意图，但不会自动运行集群动作。", {"project": {"type": "string"}, "enabled": {"type": "boolean"}, "research_goal": {"type": "string"}, "monitor_interval_hours": {"type": "integer"}, "daily_report_time": {"type": "string"}, "allow_cluster_submit": {"type": "boolean"}, "allow_structure_build": {"type": "boolean"}, "allow_literature_search": {"type": "boolean"}, "allow_research_writeback": {"type": "boolean"}, "reset_questions": {"type": "boolean"}}, False, ("enabled",)), self._auto_mode_configure)
+        self._register(ToolSpec("auto_mode_checkpoint", "记录 auto 模式本轮观察、决策、证据、下一关注点和需要问人类的问题；用于长期目标闭环。", {"project": {"type": "string"}, "status": {"type": "string"}, "observation": {"type": "string"}, "decision": {"type": "string"}, "evidence_refs": {"type": "array", "items": {"type": "string"}}, "next_focus": {"type": "string"}, "open_questions": {"type": "array", "items": {"type": "string"}}, "human_questions": {"type": "array", "items": {"type": "string"}}}, False), self._auto_mode_checkpoint)
         self._register(ToolSpec("research_followup_schedule", "把用户明确要求的未来科研检查/提醒写入项目 follow-up 队列；模型负责把自然语言时间转成 due_at ISO 或 interval_minutes。不会自动提交/取消/查询集群。", {"project": {"type": "string"}, "prompt": {"type": "string"}, "due_at": {"type": "string"}, "interval_minutes": {"type": "integer"}, "title": {"type": "string"}, "related_job_id": {"type": "string"}, "related_run_id": {"type": "string"}, "metadata": {"type": "object"}}, False, ("prompt",)), self._research_followup_schedule)
         self._register(ToolSpec("research_followup_list", "列出项目 follow-up 队列；这是计划/提醒索引，不是已完成事实。", {"project": {"type": "string"}, "include_done": {"type": "boolean"}, "limit": {"type": "integer"}}, True), self._research_followup_list)
         self._register(ToolSpec("research_followup_due", "读取已经到期的科研 follow-up；返回 evidence_goals，模型应自主选择需要的状态/日志/结果工具补证据。", {"project": {"type": "string"}, "now": {"type": "string"}, "limit": {"type": "integer"}}, True), self._research_followup_due)
@@ -476,6 +483,8 @@ class ToolRegistry:
             "computational_chemistry_workflow_map",
             "project_continuity_digest",
             "research_cycle_checkpoint",
+            "auto_mode_status",
+            "auto_mode_checkpoint",
             "evidence_claim_audit",
             "web_search",
             "literature_search",
@@ -673,7 +682,7 @@ class ToolRegistry:
             "status": "ok",
             "principle": "能力地图不是固定流程；模型应根据 research/session/tool evidence 自主选择最小必要工具。",
             "capability_stages": [
-                {"category": "project_context", "tools": ["project_continuity_digest", "web_search", "literature_search", "evidence_claim_audit", "chemistry_compute", "image_understand", "discussion_state_snapshot", "research_cycle_checkpoint", "research_followup_list", "research_followup_due", "research_followup_schedule", "research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
+                {"category": "project_context", "tools": ["project_continuity_digest", "web_search", "literature_search", "evidence_claim_audit", "chemistry_compute", "image_understand", "discussion_state_snapshot", "research_cycle_checkpoint", "auto_mode_status", "auto_mode_checkpoint", "research_followup_list", "research_followup_due", "research_followup_schedule", "research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
                 {"category": "structure_modeling", "tools": ["structure_modeling_tool_status", "structure_modeling_intent_plan", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
                 {"category": "dft_execution", "tools": ["cluster_execution_intent_plan", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_profile_list", "cluster_probe", "cluster_config", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "cluster_job_cancel"]},
                 {"category": "realtime_cluster_status", "tools": ["cluster_job_status_brief", "cluster_my_jobs", "cluster_job_tail_log", "cluster_job_partial_outcar", "cluster_job_progress_estimate", "job_watch_snapshot", "cluster_job_cancel"]},
@@ -2255,6 +2264,38 @@ class ToolRegistry:
             str(payload.get("title") or "").strip(),
             str(payload.get("content") or "").strip(),
             tags=_string_list(payload.get("tags")),
+        )
+
+    def _auto_mode_status(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return auto_mode_status(
+            project=str(payload.get("project") or "").strip() or None,
+            include_due=bool(payload.get("include_due", True)),
+        )
+
+    def _auto_mode_configure(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return configure_auto_mode(
+            project=str(payload.get("project") or "").strip() or None,
+            enabled=bool(payload.get("enabled", False)),
+            research_goal=str(payload.get("research_goal") or "").strip() or None,
+            monitor_interval_hours=payload.get("monitor_interval_hours"),
+            daily_report_time=str(payload.get("daily_report_time") or "").strip() or None,
+            allow_cluster_submit=payload.get("allow_cluster_submit") if "allow_cluster_submit" in payload else None,
+            allow_structure_build=payload.get("allow_structure_build") if "allow_structure_build" in payload else None,
+            allow_literature_search=payload.get("allow_literature_search") if "allow_literature_search" in payload else None,
+            allow_research_writeback=payload.get("allow_research_writeback") if "allow_research_writeback" in payload else None,
+            reset_questions=bool(payload.get("reset_questions", False)),
+        )
+
+    def _auto_mode_checkpoint(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return checkpoint_auto_mode(
+            project=str(payload.get("project") or "").strip() or None,
+            status=str(payload.get("status") or "").strip() or None,
+            observation=str(payload.get("observation") or "").strip() or None,
+            decision=str(payload.get("decision") or "").strip() or None,
+            evidence_refs=_string_list(payload.get("evidence_refs")),
+            next_focus=str(payload.get("next_focus") or "").strip() or None,
+            open_questions=_string_list(payload.get("open_questions")) if "open_questions" in payload else None,
+            human_questions=_string_list(payload.get("human_questions")) if "human_questions" in payload else None,
         )
 
     def _research_followup_schedule(self, payload: dict[str, Any]) -> dict[str, Any]:

@@ -34,6 +34,7 @@ TOP_LEVEL_COMMANDS = {
     "agent",
     "analyze",
     "ask",
+    "auto",
     "chat",
     "cluster",
     "context",
@@ -222,6 +223,7 @@ def print_chat_help() -> None:
     print(f"  {Colors.GREEN}/model{Colors.RESET}       打开模型选择器")
     print(f"  {Colors.GREEN}/permission{Colors.RESET}  打开权限模式选择器")
     print(f"  {Colors.GREEN}/project{Colors.RESET}     打开项目选择器")
+    print(f"  {Colors.GREEN}/auto{Colors.RESET}        开启/查看目标驱动自动科研模式")
     print(f"  {Colors.GREEN}/recommend{Colors.RESET}   推荐下一步科研任务")
     print(f"  {Colors.GREEN}/clear{Colors.RESET}       清屏")
     print(f"  {Colors.GREEN}/exit{Colors.RESET}        退出")
@@ -231,6 +233,7 @@ def print_chat_help() -> None:
 CHAT_COMMAND_PALETTE: list[tuple[str, str]] = [
     ("/model", "切换模型"),
     ("/project", "切换 research 课题项目"),
+    ("/auto", "目标驱动自动科研模式"),
     ("/resume", "切换当前项目内的对话"),
     ("/continue", "继续上次失败/未完成输入"),
     ("/history", "搜索/查看当前 session 历史"),
@@ -277,6 +280,13 @@ def print_chat_status(*, session_store: Any, session_id: str, project: str | Non
     if hasattr(session_store, "project_session_reference_path"):
         ref_path = session_store.project_session_reference_path(session_id)
         project_ref = str(ref_path) if ref_path else None
+    auto = {}
+    try:
+        from .auto_mode import auto_mode_status
+
+        auto = auto_mode_status(project=project or state.get("project"), include_due=False).get("state") or {}
+    except Exception:
+        auto = {}
     print_json(
         {
             "program": PROGRAM_NAME,
@@ -284,6 +294,14 @@ def print_chat_status(*, session_store: Any, session_id: str, project: str | Non
             "model": active_model_id(args),
             "context_window": program_context_window(),
             "permission": {"mode": get_permission_mode(), "label": permission_mode_label()},
+            "auto": {
+                "enabled": bool(auto.get("enabled")),
+                "research_goal": auto.get("research_goal") or "",
+                "status": auto.get("status") or "",
+                "monitor_interval_hours": auto.get("monitor_interval_hours"),
+                "daily_report_time": auto.get("daily_report_time"),
+                "allow_cluster_submit": bool(auto.get("allow_cluster_submit")),
+            },
             "session": {
                 "id": session_id,
                 "project": project or state.get("project"),
@@ -825,6 +843,14 @@ def run_chat_model_turn(
             status="in_progress",
         )
     stream_printer, stream_state = make_stream_printer()
+    allow_cluster_submit = False
+    try:
+        from .auto_mode import load_auto_state
+
+        auto = load_auto_state(args.project)
+        allow_cluster_submit = bool(auto.get("enabled") and auto.get("allow_cluster_submit"))
+    except Exception:
+        allow_cluster_submit = False
     try:
         record = ask_once(
             prompt,
@@ -832,6 +858,7 @@ def run_chat_model_turn(
             model_id=args.model,
             max_tokens=args.max_tokens,
             max_steps=args.max_steps,
+            allow_cluster_submit=allow_cluster_submit,
             session_id=session_id,
             permission_mode=get_permission_mode(),
             progress_callback=make_chat_progress_printer(),
@@ -1003,6 +1030,86 @@ def handle_chat_permission_command(line: str) -> None:
         print(f"{Colors.RED}permission switch failed{Colors.RESET}: {exc}")
         return
     print(f"{Colors.GREEN}permission switched{Colors.RESET}: {payload['mode']} / {payload['label']}")
+
+
+def print_auto_preview(payload: dict[str, Any]) -> None:
+    state = payload.get("state") or {}
+    if not state:
+        print_json(payload)
+        return
+    enabled = bool(state.get("enabled"))
+    label = f"{Colors.GREEN}ON{Colors.RESET}" if enabled else f"{Colors.YELLOW}OFF{Colors.RESET}"
+    print(f"{Colors.CYAN}auto mode{Colors.RESET}: {label}")
+    print(f"  goal: {_shorten_inline(state.get('research_goal'), limit=140) or 'none'}")
+    print(f"  project: {state.get('project') or 'none'}")
+    print(f"  status: {state.get('status') or 'idle'}")
+    print(f"  monitor: every {state.get('monitor_interval_hours')}h | daily report: {state.get('daily_report_time')}")
+    print(f"  cluster submit: {'allowed by auto state' if state.get('allow_cluster_submit') else 'not allowed by auto state'}")
+    questions = state.get("human_questions") or []
+    if questions:
+        print(f"  {Colors.YELLOW}questions for human{Colors.RESET}:")
+        for question in questions[:5]:
+            print(f"   - {question}")
+
+
+def handle_chat_auto_command(line: str, args: argparse.Namespace, session_store: Any, session_id: str) -> tuple[bool, str]:
+    from .auto_mode import auto_mode_status, configure_auto_mode
+
+    raw = line[len("/auto") :].strip()
+    if raw in {"off", "stop", "pause", "disable"}:
+        result = configure_auto_mode(project=args.project, enabled=False)
+        print_auto_preview(result)
+        return True, session_id
+    if raw in {"status", "show", "list"}:
+        print_json(auto_mode_status(project=args.project, include_due=True))
+        return True, session_id
+    if raw in {"tick", "run", "continue"}:
+        prompt = (
+            "[execution-mode]\n"
+            "AUTO MODE TICK: 读取 auto_mode_status、due follow-ups、project/session/research/job evidence，"
+            "围绕当前 research_goal 自主决定下一步。若目标或关键输入不清楚，只问人类一个最小问题；"
+            "否则执行最小必要工具链：可检索文献、构建/检查结构、准备/提交允许的计算、监控/分析结果、写回学习或生成日报。"
+            "不要按固定流程跑，按证据缺口选择动作。"
+        )
+        return run_chat_model_turn(
+            prompt,
+            args=args,
+            session_store=session_store,
+            session_id=session_id,
+            failure_hint="auto tick 未完成；状态已保留，可稍后 /auto tick 重试",
+        )
+    goal = raw
+    if not goal:
+        current = auto_mode_status(project=args.project, include_due=True)
+        state = current.get("state") or {}
+        if state.get("enabled"):
+            print_auto_preview(current)
+            print(f"{Colors.DIM}输入 /auto tick 让模型推进一轮；/auto off 关闭。{Colors.RESET}")
+            return True, session_id
+        if hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
+            try:
+                goal = input("research goal> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return True, session_id
+        if not goal:
+            print("开启 /auto 需要明确研究目标，例如：/auto 研究 Br 修饰 Pt 上 MCH 脱氢势垒并找到最可能路径")
+            return True, session_id
+    result = configure_auto_mode(
+        project=args.project,
+        enabled=True,
+        research_goal=goal,
+        monitor_interval_hours=4,
+        daily_report_time="18:00",
+        allow_literature_search=True,
+        allow_structure_build=True,
+        allow_cluster_submit=True,
+        allow_research_writeback=True,
+        reset_questions=True,
+    )
+    print_auto_preview(result)
+    print(f"{Colors.DIM}已创建周期 monitor/daily-report follow-up。输入 /auto tick 可立即让模型推进一轮。{Colors.RESET}")
+    return True, session_id
 
 
 def print_demo_help() -> None:
@@ -1617,6 +1724,9 @@ def handle_chat(args: argparse.Namespace) -> int:
         if line.startswith("/model"):
             handle_chat_model_command(line, args)
             continue
+        if line.startswith("/auto"):
+            _, session_id = handle_chat_auto_command(line, args, session_store, session_id)
+            continue
         if line.startswith("/permission"):
             handle_chat_permission_command(line)
             continue
@@ -1757,6 +1867,73 @@ def handle_followup_complete(args: argparse.Namespace) -> int:
     )
     print_json(result)
     return 0 if result.get("status") in {"ok", "rescheduled"} else 1
+
+
+def handle_auto_status(args: argparse.Namespace) -> int:
+    from .auto_mode import auto_mode_status
+
+    print_json(auto_mode_status(project=args.project, include_due=True))
+    return 0
+
+
+def handle_auto_on(args: argparse.Namespace) -> int:
+    from .auto_mode import configure_auto_mode
+
+    result = configure_auto_mode(
+        project=args.project,
+        enabled=True,
+        research_goal=args.goal,
+        monitor_interval_hours=args.monitor_interval_hours,
+        daily_report_time=args.daily_report_time,
+        allow_cluster_submit=args.allow_cluster_submit,
+        allow_structure_build=not args.no_structure_build,
+        allow_literature_search=not args.no_literature,
+        allow_research_writeback=not args.no_writeback,
+        reset_questions=True,
+    )
+    print_json(result)
+    return 0 if result.get("status") == "ok" else 1
+
+
+def handle_auto_off(args: argparse.Namespace) -> int:
+    from .auto_mode import configure_auto_mode
+
+    result = configure_auto_mode(project=args.project, enabled=False)
+    print_json(result)
+    return 0 if result.get("status") == "ok" else 1
+
+
+def handle_auto_tick(args: argparse.Namespace) -> int:
+    if not args.project:
+        print_json({"status": "error", "message": "auto tick 需要 --project，以便读取项目目标和记录会话。"})
+        return 1
+    chat_args = argparse.Namespace(
+        prompt=[
+            "[execution-mode]",
+            "AUTO MODE TICK: 围绕当前 /auto research_goal 自主推进一轮。先查 auto_mode_status/due followups/project/session evidence；不清楚就问人类一个最小问题，否则选择最小必要工具推进并 checkpoint。",
+        ],
+        project=args.project,
+        model=args.model,
+        max_tokens=args.max_tokens,
+        max_steps=args.max_steps,
+        resume=True,
+        session_id=args.session_id,
+        task_plan=False,
+        task_run=False,
+        material=None,
+        structure_path=None,
+        slab_path=None,
+        adsorbate=None,
+        preferred_site=None,
+        preferred_orientation=None,
+        task_type=None,
+        submit_profile=None,
+        model_spec_path=None,
+        step2_manifest_path=None,
+        candidate_id=None,
+        planner="rule",
+    )
+    return handle_chat(chat_args)
 
 
 def handle_tools_list(args: argparse.Namespace) -> int:
@@ -2419,6 +2596,32 @@ def build_parser() -> argparse.ArgumentParser:
     followup_complete.add_argument("--note")
     followup_complete.add_argument("--no-reschedule", action="store_true")
     followup_complete.set_defaults(func=handle_followup_complete)
+
+    auto_parser = sub.add_parser("auto", help="目标驱动自动科研模式。")
+    auto_sub = auto_parser.add_subparsers(dest="auto_command")
+    auto_status = auto_sub.add_parser("status", help="查看 /auto 状态。")
+    auto_status.add_argument("--project")
+    auto_status.set_defaults(func=handle_auto_status)
+    auto_on = auto_sub.add_parser("on", help="开启 /auto 并设置明确研究目标。")
+    auto_on.add_argument("goal")
+    auto_on.add_argument("--project")
+    auto_on.add_argument("--monitor-interval-hours", type=int, default=4)
+    auto_on.add_argument("--daily-report-time", default="18:00")
+    auto_on.add_argument("--allow-cluster-submit", action="store_true", help="允许 auto turn 调用真实 cluster submit；仍受 permission 模式约束。")
+    auto_on.add_argument("--no-structure-build", action="store_true")
+    auto_on.add_argument("--no-literature", action="store_true")
+    auto_on.add_argument("--no-writeback", action="store_true")
+    auto_on.set_defaults(func=handle_auto_on)
+    auto_off = auto_sub.add_parser("off", help="关闭 /auto。")
+    auto_off.add_argument("--project")
+    auto_off.set_defaults(func=handle_auto_off)
+    auto_tick = auto_sub.add_parser("tick", help="执行一轮 auto 模式推进；适合人工触发或外部计划任务定时调用。")
+    auto_tick.add_argument("--project", required=True)
+    auto_tick.add_argument("--model")
+    auto_tick.add_argument("--max-tokens", type=int)
+    auto_tick.add_argument("--max-steps", type=int, default=10)
+    auto_tick.add_argument("--session-id")
+    auto_tick.set_defaults(func=handle_auto_tick)
 
     tools_parser = sub.add_parser("tools", help="AETHER harness 工具注册表。")
     tools_sub = tools_parser.add_subparsers(dest="tools_command")

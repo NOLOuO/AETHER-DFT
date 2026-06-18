@@ -191,6 +191,17 @@ def build_followup_digest(*, project: str | None = None, limit: int = 5) -> str:
     return "\n".join(rows)
 
 
+def build_auto_mode_digest(*, project: str | None = None) -> str:
+    try:
+        from .auto_mode import build_auto_mode_digest as _build
+    except Exception:
+        return ""
+    try:
+        return _build(project=project)
+    except Exception:
+        return ""
+
+
 def build_research_workspace_digest(*, project: str | None = None, max_chars: int = 1800) -> str:
     paths = resolve_research_project(project)
     if paths is None:

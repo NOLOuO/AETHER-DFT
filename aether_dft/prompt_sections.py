@@ -54,6 +54,7 @@ class PromptSectionCompiler:
         "runtime_context",
         "architecture_live_doc",
         "project_context",
+        "auto_mode_digest",
         "cluster_runtime_digest",
         "job_watch_digest",
         "followup_digest",
@@ -99,6 +100,13 @@ class PromptSectionCompiler:
                 "cache_scope": "volatile_suffix",
                 "layer_class": "project_state",
                 "invalidation_rule": ("project", "project_context_digest"),
+            }
+        if name == "auto_mode_digest":
+            return {
+                "kind": "dynamic",
+                "cache_scope": "volatile_suffix",
+                "layer_class": "autonomy",
+                "invalidation_rule": ("auto_mode_digest_hash",),
             }
         if name == "architecture_live_doc":
             return {
@@ -193,6 +201,7 @@ class PromptSectionCompiler:
         empty_guards = {
             "architecture_live_doc": "architecture_live_doc_digest",
             "project_context": "project_context",
+            "auto_mode_digest": "auto_mode_digest",
             "session_context": "session_context",
             "job_watch_digest": "job_watch_digest",
             "followup_digest": "followup_digest",

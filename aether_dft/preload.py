@@ -9,6 +9,7 @@ from dft_app.llm.key_store import load_api_keys
 from dft_app.llm.provider_presets import build_provider_model_config
 
 from .context_digests import (
+    build_auto_mode_digest,
     build_cluster_runtime_digest,
     build_followup_digest,
     build_job_watch_digest,
@@ -78,6 +79,7 @@ def build_preload_summary(*, project: str | None = None, probe_cluster: bool = F
     cluster_digest = build_cluster_runtime_digest(project=project)
     job_watch_digest = build_job_watch_digest(project=project)
     followup_digest = build_followup_digest(project=project)
+    auto_mode_digest = build_auto_mode_digest(project=project)
     priors_digest = build_relevant_priors_digest(project=project, query=(session_context or project or ""))
     registry = ToolRegistry()
     try:
@@ -133,6 +135,7 @@ def build_preload_summary(*, project: str | None = None, probe_cluster: bool = F
             "cluster_runtime_digest_loaded": bool(cluster_digest),
             "job_watch_digest_loaded": bool(job_watch_digest),
             "followup_digest_loaded": bool(followup_digest),
+            "auto_mode_loaded": bool(auto_mode_digest),
             "relevant_priors_loaded": bool(priors_digest),
             "discussion_tool_count": len(discussion_tools),
             "execution_tool_count": len(execution_tools),
@@ -141,6 +144,7 @@ def build_preload_summary(*, project: str | None = None, probe_cluster: bool = F
             "runtime_digest": cluster_digest,
             "job_watch_digest": job_watch_digest,
             "followup_digest": followup_digest,
+            "auto_mode_digest": auto_mode_digest,
             "live_probe": cluster_probe,
         },
         "next_user_entrypoints": [
@@ -185,6 +189,7 @@ def format_preload_summary(summary: PreloadSummary) -> str:
             f"  · cluster_runtime_digest={prompt['cluster_runtime_digest_loaded']}",
             f"  · job_watch_digest={prompt['job_watch_digest_loaded']}",
             f"  · followups={prompt['followup_digest_loaded']}",
+            f"  · auto_mode={prompt['auto_mode_loaded']}",
             f"  · tools discussion/execution={prompt['discussion_tool_count']}/{prompt['execution_tool_count']}",
         ]
     )
