@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 from aether_dft.auto_campaign import (
     list_campaigns,
@@ -73,6 +74,54 @@ def test_auto_campaign_tracks_candidates_batch_and_pruning(tmp_path: Path, monke
     assert pruned["keepers"]
     listed = list_campaigns(project="demo")
     assert listed["campaigns"][0]["campaign_id"] == "h2o-pt"
+
+
+def test_auto_campaign_imports_candidate_fields_from_manifest(tmp_path: Path, monkeypatch):
+    _redirect_dirs(monkeypatch, tmp_path)
+    start_campaign(project="demo", goal="Screen CO/Pt candidates", campaign_id="co-pt")
+    poscar = tmp_path / "ontop.POSCAR"
+    poscar.write_text("POSCAR placeholder", encoding="utf-8")
+    manifest = tmp_path / "candidate_manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "task_id": "co-screen",
+                "material_name": "Pt(111)",
+                "adsorbate_source": "CO",
+                "candidates": [
+                    {
+                        "candidate_id": "co-ontop",
+                        "site_family": "ontop",
+                        "site_label": "ontop-01",
+                        "orientation_label": "C-down",
+                        "anchor_symbol": "C",
+                        "height": 1.9,
+                        "metadata": {"rank": 1, "model_reason": "CO C-down atop is a strong baseline."},
+                        "score": {"total": 0.88, "reason": "good distance and motif"},
+                        "exported_files": {"poscar_path": str(poscar)},
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    registered = register_candidates(
+        project="demo",
+        campaign_id="co-pt",
+        source_manifest_path=str(manifest),
+        candidates=[{"candidate_id": "co-ontop", "status": "quality_pass"}],
+    )
+
+    candidate = registered["campaign"]["candidates"][0]
+    assert registered["manifest_imported"] == 1
+    assert candidate["candidate_id"] == "co-ontop"
+    assert candidate["status"] == "quality_pass"
+    assert candidate["structure_path"] == str(poscar)
+    assert candidate["material"] == "Pt(111)"
+    assert candidate["adsorbate"] == "CO"
+    assert candidate["quality_score"] == 0.88
 
 
 def test_auto_campaign_tools_are_registered_and_discoverable(tmp_path: Path, monkeypatch):

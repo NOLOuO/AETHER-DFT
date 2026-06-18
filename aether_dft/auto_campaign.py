@@ -150,9 +150,25 @@ def register_candidates(
         return payload
     campaign = payload["campaign"]
     existing = {str(item.get("candidate_id") or ""): item for item in campaign.get("candidates", []) if isinstance(item, dict)}
+    manifest_candidates = _load_manifest_candidates(source_manifest_path)
+    merged_inputs: dict[str, dict[str, Any]] = {
+        str(item.get("candidate_id") or ""): item
+        for item in manifest_candidates
+        if isinstance(item, dict) and str(item.get("candidate_id") or "")
+    }
+    for raw in candidates or []:
+        if not isinstance(raw, dict):
+            continue
+        cid = str(raw.get("candidate_id") or raw.get("id") or "").strip()
+        if cid and cid in merged_inputs:
+            merged_inputs[cid] = {**merged_inputs[cid], **raw}
+        elif cid:
+            merged_inputs[cid] = raw
+        else:
+            merged_inputs[f"__anon_{len(merged_inputs) + 1}"] = raw
     added: list[dict[str, Any]] = []
     updated: list[dict[str, Any]] = []
-    for index, raw in enumerate(candidates or [], start=1):
+    for index, raw in enumerate(merged_inputs.values(), start=1):
         if not isinstance(raw, dict):
             continue
         candidate_id = _safe_id(str(raw.get("candidate_id") or raw.get("id") or f"cand_{len(existing) + index:03d}"), prefix="cand")
@@ -187,12 +203,17 @@ def register_candidates(
             existing[candidate_id] = entry
             added.append(entry)
     campaign["candidates"] = list(existing.values())
-    _append_event(campaign, "candidates_registered", note or f"added={len(added)} updated={len(updated)}")
+    _append_event(
+        campaign,
+        "candidates_registered",
+        note or f"added={len(added)} updated={len(updated)} manifest_imported={len(manifest_candidates)}",
+    )
     saved = _save(str(campaign["project"]), campaign)
     return {
         **saved,
         "added": added,
         "updated": updated,
+        "manifest_imported": len(manifest_candidates),
         "summary": _campaign_summary(saved["campaign"]),
         "guidance": "继续用 candidate_quality_score / dft_run_task / cluster_remote_submit 等工具推进；campaign 只追踪批量状态。",
     }
@@ -358,6 +379,65 @@ def _append_event(campaign: dict[str, Any], event: str, note: str, **extra: Any)
     rows = campaign.setdefault("events", [])
     rows.append({"at": _now_iso(), "event": event, "note": str(note or ""), **extra})
     campaign["events"] = rows[-200:]
+
+
+def _load_manifest_candidates(source_manifest_path: str | None) -> list[dict[str, Any]]:
+    text = str(source_manifest_path or "").strip()
+    if not text:
+        return []
+    path = Path(text)
+    if not path.exists() or not path.is_file():
+        return []
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(manifest, dict):
+        return []
+    material = str(manifest.get("material_name") or "").strip()
+    adsorbate = str(manifest.get("adsorbate_source") or "").strip()
+    rows = manifest.get("candidates") or []
+    if not isinstance(rows, list):
+        return []
+    parsed: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        candidate_id = str(row.get("candidate_id") or "").strip()
+        if not candidate_id:
+            continue
+        exported = row.get("exported_files") if isinstance(row.get("exported_files"), dict) else {}
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        score = row.get("score") if isinstance(row.get("score"), dict) else {}
+        score_total = _maybe_float(score.get("total")) if isinstance(score, dict) else None
+        reason = ""
+        if isinstance(score, dict):
+            reason = str(score.get("reason") or "").strip()
+        reason = reason or str(metadata.get("model_reason") or "").strip()
+        parsed.append(
+            {
+                "candidate_id": candidate_id,
+                "status": "candidate",
+                "structure_path": str(exported.get("poscar_path") or metadata.get("source_poscar_path") or "").strip(),
+                "material": material,
+                "adsorbate": adsorbate,
+                "motif": str(row.get("site_label") or row.get("site_family") or "").strip(),
+                "orientation": str(row.get("orientation_label") or "").strip(),
+                "reason": reason,
+                "quality_score": score_total,
+                "priority": score_total,
+                "metadata": {
+                    "manifest_task_id": manifest.get("task_id"),
+                    "manifest_path": str(path),
+                    "site_family": row.get("site_family"),
+                    "site_label": row.get("site_label"),
+                    "anchor_symbol": row.get("anchor_symbol"),
+                    "height": row.get("height"),
+                    "rank": metadata.get("rank"),
+                },
+            }
+        )
+    return parsed
 
 
 def _maybe_float(value: Any) -> float | None:
