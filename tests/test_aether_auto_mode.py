@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from aether_dft import cli
-from aether_dft.auto_mode import build_auto_mode_digest, configure_auto_mode, auto_mode_status
+from aether_dft.auto_mode import build_auto_mode_digest, configure_auto_mode, auto_mode_status, infer_research_goal
 from aether_dft.runtime_harness.tool_registry import ToolRegistry
 
 
@@ -52,6 +52,21 @@ def test_auto_mode_requires_goal_when_enabled(tmp_path: Path, monkeypatch):
 
     assert result["status"] == "needs_goal"
     assert result["state"]["enabled"] is False
+
+
+def test_auto_goal_can_be_inferred_from_existing_session(tmp_path: Path, monkeypatch):
+    from aether_dft.session_store import AetherSessionStore
+
+    _redirect_dirs(monkeypatch, tmp_path)
+    store = AetherSessionStore(tmp_path / "sessions")
+    session_id = store.start_session(project="demo", first_prompt="研究目标：阐明 Br 修饰 Pt 上 MCH 脱氢最可能路径")
+    store.append_turn(session_id, {"project": "demo", "prompt": "先比较 TS1/TS4", "response": "当前重点是势垒和中间体稳定性。"})
+
+    inferred = infer_research_goal(project="demo", session_store=store, session_id=session_id)
+
+    assert inferred["status"] == "ok"
+    assert "MCH 脱氢" in inferred["goal"]
+    assert inferred["source"].startswith(("current_session_state", "current_session_context", "session_summary"))
 
 
 def test_auto_mode_tools_are_model_visible_and_permissioned(tmp_path: Path, monkeypatch):
@@ -106,3 +121,28 @@ def test_interactive_slash_auto_enables_goal(monkeypatch, tmp_path, capsys):
     assert "ON" in out
     assert '"enabled": true' in out
     assert "CO 在 Pt(111)" in out
+
+
+def test_interactive_slash_auto_toggles_and_infers_goal(monkeypatch, tmp_path, capsys):
+    import aether_dft.paths as paths
+    import aether_dft.project_state as project_state
+    from aether_dft.session_store import AetherSessionStore
+
+    runtime_dir = tmp_path / "runtime"
+    monkeypatch.setattr(paths, "RUNTIME_DIR", runtime_dir)
+    monkeypatch.setattr(paths, "PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(project_state, "PROJECTS_DIR", tmp_path / "projects")
+    store = AetherSessionStore()
+    existing = store.start_session(project="demo", first_prompt="研究目标：确定 H2O/Pt(111) 最稳定吸附构型")
+    store.append_turn(existing, {"project": "demo", "prompt": "比较 top/hollow", "response": "继续算吸附能。"})
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    inputs = iter(["/auto", "/status", "/auto", "/status", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    assert cli.main(["chat", "--project", "demo"]) == 0
+    out = capsys.readouterr().out
+    assert "auto goal inferred" in out
+    assert "H2O/Pt(111)" in out
+    assert '"enabled": true' in out
+    assert '"enabled": false' in out

@@ -27,6 +27,152 @@ def _normalize_project(project: Any) -> str | None:
     return text or None
 
 
+def _collapse(value: Any, *, limit: int = 260) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _extract_goal_from_text(text: str) -> str:
+    """Extract a project goal from existing project/session evidence.
+
+    This is structural evidence extraction, not natural-language command
+    routing.  It looks for explicit goal/focus fields first, then falls back to
+    the first substantive project/session statement.
+    """
+
+    lines = [line.strip(" \t#-*•") for line in str(text or "").splitlines()]
+    explicit_prefixes = (
+        "research_goal",
+        "goal",
+        "objective",
+        "current_focus",
+        "研究目标",
+        "科研目标",
+        "目标",
+        "当前重点",
+        "当前问题",
+    )
+    for line in lines:
+        if not line:
+            continue
+        lowered = line.lower()
+        for prefix in explicit_prefixes:
+            if lowered.startswith(prefix.lower()):
+                parts = line.split(":", 1) if ":" in line else line.split("：", 1)
+                value = parts[1] if len(parts) > 1 else line
+                value = value.strip(" -：:")
+                if len(value) >= 8:
+                    return _collapse(value)
+    for line in lines:
+        lowered = line.lower()
+        if lowered in {"session context", "recent turns", "project state markdown", "project metadata", "new research chat"}:
+            continue
+        if len(line) >= 12 and not lowered.startswith(
+            (
+                "status",
+                "created",
+                "updated",
+                "session_id",
+                "project",
+                "turn_count",
+                "model_usable_context",
+                "session_context",
+                "this context",
+            )
+        ):
+            return _collapse(line)
+    return ""
+
+
+def infer_research_goal(
+    *,
+    project: str | None = None,
+    session_store: Any | None = None,
+    session_id: str | None = None,
+    max_chars: int = 8000,
+) -> dict[str, Any]:
+    """Infer an auto-mode goal from project files and existing conversation.
+
+    `/auto` is a switch, so the normal path should not force the human to
+    retype a goal already present in project state or chat history.
+    """
+
+    evidence: list[dict[str, str]] = []
+    project = _normalize_project(project)
+    if project:
+        try:
+            from .project_state import read_project_context_digest
+
+            text = read_project_context_digest(project)
+            if text:
+                evidence.append({"source": "project_context_digest", "text": text[:max_chars]})
+        except Exception:
+            pass
+        try:
+            paths = project_paths(project)
+            for name, path in (
+                ("project_metadata", paths.metadata),
+                ("project_state", paths.state),
+                ("project_state_md", paths.state_md),
+                ("project_progress", paths.progress),
+            ):
+                if path.exists():
+                    evidence.append({"source": name, "text": path.read_text(encoding="utf-8", errors="replace")[:max_chars]})
+        except Exception:
+            pass
+    if session_store is not None:
+        if session_id and hasattr(session_store, "load_state"):
+            try:
+                state = session_store.load_state(session_id)
+                text = "\n".join(
+                    str(state.get(key) or "")
+                    for key in ("title", "first_prompt", "last_response")
+                    if str(state.get(key) or "").strip()
+                )
+                if text:
+                    evidence.append({"source": "current_session_state", "text": text})
+            except Exception:
+                pass
+        if session_id and hasattr(session_store, "build_session_context"):
+            try:
+                text = session_store.build_session_context(session_id, max_chars=max_chars)
+                if text:
+                    evidence.append({"source": "current_session_context", "text": text})
+            except Exception:
+                pass
+        if hasattr(session_store, "list_sessions"):
+            try:
+                for item in session_store.list_sessions(project=project, limit=5):
+                    parts = [
+                        getattr(item, "title", ""),
+                        getattr(item, "first_prompt", ""),
+                        getattr(item, "last_response", ""),
+                        getattr(item, "pending_prompt", ""),
+                    ]
+                    text = "\n".join(str(part or "") for part in parts if str(part or "").strip())
+                    if text:
+                        evidence.append({"source": f"session_summary:{getattr(item, 'session_id', '')}", "text": text})
+            except Exception:
+                pass
+    for item in evidence:
+        candidate = _extract_goal_from_text(item["text"])
+        if candidate:
+            return {
+                "status": "ok",
+                "goal": candidate,
+                "source": item["source"],
+                "evidence_sources": [entry["source"] for entry in evidence],
+            }
+    return {
+        "status": "empty",
+        "goal": "",
+        "source": "",
+        "evidence_sources": [entry["source"] for entry in evidence],
+    }
+
+
 def _next_daily_due(time_text: Any) -> str:
     text = str(time_text or DEFAULT_DAILY_REPORT_TIME).strip()
     hour = 18

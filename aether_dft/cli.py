@@ -223,7 +223,7 @@ def print_chat_help() -> None:
     print(f"  {Colors.GREEN}/model{Colors.RESET}       打开模型选择器")
     print(f"  {Colors.GREEN}/permission{Colors.RESET}  打开权限模式选择器")
     print(f"  {Colors.GREEN}/project{Colors.RESET}     打开项目选择器")
-    print(f"  {Colors.GREEN}/auto{Colors.RESET}        开启/查看目标驱动自动科研模式")
+    print(f"  {Colors.GREEN}/auto{Colors.RESET}        开关目标驱动自动科研模式")
     print(f"  {Colors.GREEN}/recommend{Colors.RESET}   推荐下一步科研任务")
     print(f"  {Colors.GREEN}/clear{Colors.RESET}       清屏")
     print(f"  {Colors.GREEN}/exit{Colors.RESET}        退出")
@@ -233,7 +233,7 @@ def print_chat_help() -> None:
 CHAT_COMMAND_PALETTE: list[tuple[str, str]] = [
     ("/model", "切换模型"),
     ("/project", "切换 research 课题项目"),
-    ("/auto", "目标驱动自动科研模式"),
+    ("/auto", "开关目标驱动自动科研模式"),
     ("/resume", "切换当前项目内的对话"),
     ("/continue", "继续上次失败/未完成输入"),
     ("/history", "搜索/查看当前 session 历史"),
@@ -1053,13 +1053,15 @@ def print_auto_preview(payload: dict[str, Any]) -> None:
 
 
 def handle_chat_auto_command(line: str, args: argparse.Namespace, session_store: Any, session_id: str) -> tuple[bool, str]:
-    from .auto_mode import auto_mode_status, configure_auto_mode
+    from .auto_mode import auto_mode_status, configure_auto_mode, infer_research_goal
 
     raw = line[len("/auto") :].strip()
     if raw in {"off", "stop", "pause", "disable"}:
         result = configure_auto_mode(project=args.project, enabled=False)
         print_auto_preview(result)
         return True, session_id
+    if raw == "on":
+        raw = ""
     if raw in {"status", "show", "list"}:
         print_json(auto_mode_status(project=args.project, include_due=True))
         return True, session_id
@@ -1083,17 +1085,25 @@ def handle_chat_auto_command(line: str, args: argparse.Namespace, session_store:
         current = auto_mode_status(project=args.project, include_due=True)
         state = current.get("state") or {}
         if state.get("enabled"):
-            print_auto_preview(current)
-            print(f"{Colors.DIM}输入 /auto tick 让模型推进一轮；/auto off 关闭。{Colors.RESET}")
+            result = configure_auto_mode(project=args.project, enabled=False)
+            print_auto_preview(result)
             return True, session_id
-        if hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
-            try:
-                goal = input("research goal> ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print()
-                return True, session_id
+        goal = str(state.get("research_goal") or "").strip()
+        inferred = {}
         if not goal:
-            print("开启 /auto 需要明确研究目标，例如：/auto 研究 Br 修饰 Pt 上 MCH 脱氢势垒并找到最可能路径")
+            inferred = infer_research_goal(project=args.project, session_store=session_store, session_id=session_id)
+            goal = str(inferred.get("goal") or "").strip()
+            if goal:
+                print(f"{Colors.DIM}auto goal inferred from {inferred.get('source')}: {_shorten_inline(goal, limit=120)}{Colors.RESET}")
+        if hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
+            if not goal:
+                try:
+                    goal = input("research goal> ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    return True, session_id
+        if not goal:
+            print("没有从当前项目或对话中找到明确研究目标。请先说明目标，或输入 /auto <目标>。")
             return True, session_id
     result = configure_auto_mode(
         project=args.project,
