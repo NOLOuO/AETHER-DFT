@@ -12,6 +12,12 @@ from .project_state import project_paths
 
 DEFAULT_MONITOR_INTERVAL_HOURS = 4
 DEFAULT_DAILY_REPORT_TIME = "18:00"
+AUTO_COMPUTATIONAL_STRATEGY = (
+    "Computational strategy: do not over-invest in hand-perfecting a single model or structure. "
+    "When the search space is uncertain, enumerate a diverse candidate set, run cheap sanity/quality filters, "
+    "batch-submit the scientifically plausible candidates when allowed, then prune and refine from calculated evidence. "
+    "Human time is scarce; compute is the lever."
+)
 
 
 def _now() -> datetime:
@@ -299,7 +305,8 @@ def configure_auto_mode(
         **saved,
         "guidance": (
             "Auto mode stores the human research goal and periodic evidence intents. "
-            "It does not hard-code a pipeline: the model decides whether literature, structure, cluster, analysis, writeback, or a human question is needed next."
+            "It does not hard-code a pipeline: the model decides whether literature, structure, cluster, analysis, writeback, or a human question is needed next. "
+            "Default bias: convert uncertainty into candidate sets and let calculations filter them."
         ),
     }
 
@@ -323,7 +330,8 @@ def _ensure_auto_followups(state: dict[str, Any]) -> None:
             prompt=(
                 "AUTO MODE periodic check. Research goal: "
                 f"{goal}. Inspect project/session/follow-up/job evidence, decide whether to search literature, build/check structures, "
-                "monitor/fetch/analyze calculations, write back learning, or ask the human one blocking question."
+                "monitor/fetch/analyze calculations, write back learning, or ask the human one blocking question. "
+                "Prefer broad candidate enumeration plus cheap filtering over hand-perfecting a single model when uncertainty remains."
             ),
             interval_minutes=interval_hours * 60,
             metadata={"auto_mode": True, "auto_kind": "monitor"},
@@ -334,7 +342,7 @@ def _ensure_auto_followups(state: dict[str, Any]) -> None:
             title="Auto daily report",
             prompt=(
                 "AUTO MODE daily report. Summarize progress toward the research goal, evidence collected, calculations running/completed, "
-                "blockers/questions for the human, and the next autonomous focus. Goal: "
+                "candidate-space coverage, blockers/questions for the human, and the next autonomous focus. Goal: "
                 f"{goal}"
             ),
             due_at=_next_daily_due(state.get("daily_report_time")),
@@ -388,6 +396,12 @@ def auto_mode_status(*, project: str | None = None, include_due: bool = True) ->
                 "a destructive/irreversible action is needed",
             ],
             "not_fixed_workflow": True,
+            "computational_strategy": {
+                "principle": "Human supplies the end-to-end research objective; AI turns uncertainty into computable candidate spaces.",
+                "default_bias": "Enumerate diverse plausible candidates, cheaply filter, batch calculate, then refine from results.",
+                "avoid": "Do not spend human/model effort trying to hand-perfect one structure before using computation unless the candidate space is genuinely tiny.",
+                "ask_human_only_for": "Goal ambiguity, costly branch choice, missing permissions/credentials, or irreversible/destructive action.",
+            },
         },
     }
     if include_due:
@@ -462,6 +476,8 @@ def collect_due_auto_intents(
         "AUTO MODE DUE WORK: /auto is enabled for this project. The human should not have to type a manual command.\n"
         "Use tools to inspect project/session/research/job evidence, then decide the smallest useful next scientific action toward the research goal.\n"
         "Do not follow a fixed pipeline. Literature search, structure building, cluster submission, monitoring, parsing, writeback, or asking one human question are all optional and evidence-driven.\n"
+        f"{AUTO_COMPUTATIONAL_STRATEGY}\n"
+        "Operational bias: if several adsorption sites, orientations, conformers, spin/charge states, coverages, or pathways are plausible, build/rank a candidate set instead of arguing for one perfect choice. Use preflight/quality checks to avoid obviously bad jobs, then let DFT results prune.\n"
         "If a cluster submission is scientifically necessary, respect permission/auto state and submit only when allowed. If blocked, ask exactly one concise human question.\n"
         "Before finishing, call auto_mode_checkpoint with observation, decision, evidence_refs, next_focus, and any human_questions.\n\n"
         f"Project: {project_name or 'none'}\n"
@@ -530,6 +546,8 @@ def build_auto_mode_digest(*, project: str | None = None) -> str:
         "Autonomy contract: human sets/adjusts the research goal and answers blocking questions; AI decides the next evidence/action step.",
         "Ask the human only for ambiguity, materially branching costly choices, missing credentials/permissions, or destructive/irreversible actions.",
         "Do not follow a fixed literature→structure→submit pipeline; choose the smallest evidence/action loop that advances the goal.",
+        AUTO_COMPUTATIONAL_STRATEGY,
+        "Default execution pattern under uncertainty: enumerate candidates → cheap quality/preflight filters → batch calculations when allowed → parse/prune/refine → report only decisions and blockers.",
     ]
     last = state.get("last_checkpoint") if isinstance(state.get("last_checkpoint"), dict) else {}
     if last:

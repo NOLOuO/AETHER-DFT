@@ -37,10 +37,12 @@ def test_auto_mode_configure_persists_goal_and_schedules_followups(tmp_path: Pat
 
     assert result["status"] == "ok"
     state = auto_mode_status(project="demo")["state"]
+    policy = auto_mode_status(project="demo")["policy"]
     assert state["enabled"] is True
     assert state["monitor_interval_hours"] == 3
     assert state["allow_cluster_submit"] is True
     assert "H2O" in state["research_goal"]
+    assert policy["computational_strategy"]["default_bias"].startswith("Enumerate diverse plausible candidates")
 
     scheduled = auto_mode_status(project="demo")["scheduled_followups"]["followups"]
     auto_kinds = {(item.get("metadata") or {}).get("auto_kind") for item in scheduled}
@@ -49,6 +51,8 @@ def test_auto_mode_configure_persists_goal_and_schedules_followups(tmp_path: Pat
     digest = build_auto_mode_digest(project="demo")
     assert "Auto mode is ON" in digest
     assert "Autonomy contract" in digest
+    assert "Human time is scarce; compute is the lever" in digest
+    assert "enumerate candidates" in digest
     assert "H2O" in digest
 
 
@@ -78,6 +82,9 @@ def test_auto_mode_collects_due_work_for_background_loop(tmp_path: Path, monkeyp
     assert followup["id"] in plan["followup_ids"]
     assert "AUTO MODE DUE WORK" in plan["prompt"]
     assert "Do not follow a fixed pipeline" in plan["prompt"]
+    assert "enumerate a diverse candidate set" in plan["prompt"]
+    assert "batch-submit" in plan["prompt"]
+    assert "hand-perfecting a single model" in plan["prompt"]
     assert "H2O/Pt(111)" in plan["prompt"]
 
     completed = complete_due_auto_intents(project="demo", followup_ids=plan["followup_ids"], note="tested")
