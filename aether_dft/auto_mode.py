@@ -399,6 +399,7 @@ def auto_mode_status(*, project: str | None = None, include_due: bool = True) ->
             "computational_strategy": {
                 "principle": "Human supplies the end-to-end research objective; AI turns uncertainty into computable candidate spaces.",
                 "default_bias": "Enumerate diverse plausible candidates, cheaply filter, batch calculate, then refine from results.",
+                "state_board": "Use auto_campaign_* tools to persist candidates, quality filters, run/job bindings, parsed results, next batches, and pruning decisions.",
                 "avoid": "Do not spend human/model effort trying to hand-perfect one structure before using computation unless the candidate space is genuinely tiny.",
                 "ask_human_only_for": "Goal ambiguity, costly branch choice, missing permissions/credentials, or irreversible/destructive action.",
             },
@@ -407,6 +408,12 @@ def auto_mode_status(*, project: str | None = None, include_due: bool = True) ->
     if include_due:
         payload["due_followups"] = due_followups(project=state.get("project") or project, limit=10)
         payload["scheduled_followups"] = list_followups(project=state.get("project") or project, limit=10)
+        try:
+            from .auto_campaign import list_campaigns
+
+            payload["active_campaigns"] = list_campaigns(project=state.get("project") or project or "", include_closed=False, limit=5)
+        except Exception as exc:
+            payload["active_campaigns"] = {"status": "error", "message": str(exc), "campaigns": []}
     return payload
 
 
@@ -477,6 +484,7 @@ def collect_due_auto_intents(
         "Use tools to inspect project/session/research/job evidence, then decide the smallest useful next scientific action toward the research goal.\n"
         "Do not follow a fixed pipeline. Literature search, structure building, cluster submission, monitoring, parsing, writeback, or asking one human question are all optional and evidence-driven.\n"
         f"{AUTO_COMPUTATIONAL_STRATEGY}\n"
+        "Campaign state board: first inspect auto_campaign_status/list for this project; start one if the goal needs multi-candidate exploration and none exists. Register generated candidates, bind run_id/job_id after build/submit, update results after monitor/fetch/parse, and use prune_plan/next_batch to manage compute resources.\n"
         "Operational bias: if several adsorption sites, orientations, conformers, spin/charge states, coverages, or pathways are plausible, build/rank a candidate set instead of arguing for one perfect choice. Use preflight/quality checks to avoid obviously bad jobs, then let DFT results prune.\n"
         "If a cluster submission is scientifically necessary, respect permission/auto state and submit only when allowed. If blocked, ask exactly one concise human question.\n"
         "Before finishing, call auto_mode_checkpoint with observation, decision, evidence_refs, next_focus, and any human_questions.\n\n"
@@ -548,6 +556,7 @@ def build_auto_mode_digest(*, project: str | None = None) -> str:
         "Do not follow a fixed literature→structure→submit pipeline; choose the smallest evidence/action loop that advances the goal.",
         AUTO_COMPUTATIONAL_STRATEGY,
         "Default execution pattern under uncertainty: enumerate candidates → cheap quality/preflight filters → batch calculations when allowed → parse/prune/refine → report only decisions and blockers.",
+        "Use auto_campaign_* as the project state board for multi-candidate campaigns: register candidates, bind runs/jobs, track results, choose next batch, and prune.",
     ]
     last = state.get("last_checkpoint") if isinstance(state.get("last_checkpoint"), dict) else {}
     if last:

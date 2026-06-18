@@ -85,6 +85,8 @@ def test_auto_mode_collects_due_work_for_background_loop(tmp_path: Path, monkeyp
     assert "enumerate a diverse candidate set" in plan["prompt"]
     assert "batch-submit" in plan["prompt"]
     assert "hand-perfecting a single model" in plan["prompt"]
+    assert "auto_campaign_status/list" in plan["prompt"]
+    assert "Register generated candidates" in plan["prompt"]
     assert "H2O/Pt(111)" in plan["prompt"]
 
     completed = complete_due_auto_intents(project="demo", followup_ids=plan["followup_ids"], note="tested")

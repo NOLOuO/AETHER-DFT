@@ -39,6 +39,15 @@ from aether_dft.adsorption import (
     plan_adsorption_task,
     run_adsorption_full_workflow,
 )
+from aether_dft.auto_campaign import (
+    list_campaigns as auto_campaign_list,
+    load_campaign as auto_campaign_load,
+    next_batch as auto_campaign_next_batch,
+    prune_plan as auto_campaign_prune_plan,
+    register_candidates as auto_campaign_register_candidates,
+    start_campaign as auto_campaign_start,
+    update_candidate as auto_campaign_update_candidate,
+)
 from aether_dft.auto_mode import auto_mode_status, checkpoint_auto_mode, configure_auto_mode
 from aether_dft.prompt_engine import load_architecture_live_doc_snapshot
 from aether_dft.permissions import get_permission_mode, permission_mode_label, should_allow_tool
@@ -261,6 +270,19 @@ CAPABILITY_CATEGORIES: dict[str, dict[str, Any]] = {
             "adsorption_workflow_status",
         ],
     },
+    "auto_campaign": {
+        "label": "自动科研 campaign / 候选集状态板",
+        "when_to_use": "需要端到端自动化地管理多个候选、批量 run/job、质量筛选、结果剪枝和下一批计算时。",
+        "tools": [
+            "auto_campaign_start",
+            "auto_campaign_list",
+            "auto_campaign_status",
+            "auto_campaign_register_candidates",
+            "auto_campaign_update_candidate",
+            "auto_campaign_next_batch",
+            "auto_campaign_prune_plan",
+        ],
+    },
     "dft_tasking": {
         "label": "DFT 输入生成 / VASP preflight",
         "when_to_use": "需要从结构进入计算任务、生成/检查 INCAR/KPOINTS/job.slurm、套用 research 模板时。",
@@ -377,6 +399,13 @@ class ToolRegistry:
         self._register(ToolSpec("auto_mode_status", "读取 /auto 目标驱动科研模式状态、到期 follow-up 和自主策略；这是目标/证据地图，不是固定流程。", {"project": {"type": "string"}, "include_due": {"type": "boolean"}}, True), self._auto_mode_status)
         self._register(ToolSpec("auto_mode_configure", "开启/关闭或调整 /auto 模式。开启时必须有 research_goal；会创建周期 monitor/daily report follow-up 意图，但不会自动运行集群动作。", {"project": {"type": "string"}, "enabled": {"type": "boolean"}, "research_goal": {"type": "string"}, "monitor_interval_hours": {"type": "integer"}, "daily_report_time": {"type": "string"}, "allow_cluster_submit": {"type": "boolean"}, "allow_structure_build": {"type": "boolean"}, "allow_literature_search": {"type": "boolean"}, "allow_research_writeback": {"type": "boolean"}, "reset_questions": {"type": "boolean"}}, False, ("enabled",)), self._auto_mode_configure)
         self._register(ToolSpec("auto_mode_checkpoint", "记录 auto 模式本轮观察、决策、证据、下一关注点和需要问人类的问题；用于长期目标闭环。", {"project": {"type": "string"}, "status": {"type": "string"}, "observation": {"type": "string"}, "decision": {"type": "string"}, "evidence_refs": {"type": "array", "items": {"type": "string"}}, "next_focus": {"type": "string"}, "open_questions": {"type": "array", "items": {"type": "string"}}, "human_questions": {"type": "array", "items": {"type": "string"}}}, False), self._auto_mode_checkpoint)
+        self._register(ToolSpec("auto_campaign_start", "为当前研究目标开启一个批量候选 campaign。它只建立状态板，不固定流程；模型仍需自己枚举候选、过滤、提交和剪枝。", {"project": {"type": "string"}, "goal": {"type": "string"}, "campaign_id": {"type": "string"}, "strategy": {"type": "string"}, "metadata": {"type": "object"}}, False, ("project", "goal")), self._auto_campaign_start)
+        self._register(ToolSpec("auto_campaign_list", "列出项目中的自动化 campaign 摘要，帮助模型续接批量候选/批量计算状态。", {"project": {"type": "string"}, "include_closed": {"type": "boolean"}, "limit": {"type": "integer"}}, True, ("project",)), self._auto_campaign_list)
+        self._register(ToolSpec("auto_campaign_status", "读取一个 campaign 的完整候选/run/job/结果状态；/auto 每轮应优先看它来决定是补候选、提交、监控还是剪枝。", {"project": {"type": "string"}, "campaign_id": {"type": "string"}}, True, ("project",)), self._auto_campaign_status)
+        self._register(ToolSpec("auto_campaign_register_candidates", "把模型生成/manifest 中的多个候选登记进 campaign；用于批量探索，不代表已提交计算。", {"project": {"type": "string"}, "campaign_id": {"type": "string"}, "candidates": {"type": "array", "items": {"type": "object"}}, "source_manifest_path": {"type": "string"}, "note": {"type": "string"}}, False, ("project", "candidates")), self._auto_campaign_register_candidates)
+        self._register(ToolSpec("auto_campaign_update_candidate", "更新 campaign 中单个候选的质量分、run_id、job_id、远端路径、状态或结果；提交/监控/解析后调用。", {"project": {"type": "string"}, "campaign_id": {"type": "string"}, "candidate_id": {"type": "string"}, "status": {"type": "string"}, "quality_score": {"type": "number"}, "run_id": {"type": "string"}, "run_root": {"type": "string"}, "job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "result": {"type": "object"}, "note": {"type": "string"}}, False, ("project", "candidate_id")), self._auto_campaign_update_candidate)
+        self._register(ToolSpec("auto_campaign_next_batch", "从 campaign 中选出下一批尚未绑定 run/job 的候选，供模型逐个 build/preflight/submit。只选批次，不提交。", {"project": {"type": "string"}, "campaign_id": {"type": "string"}, "max_candidates": {"type": "integer"}, "min_quality_score": {"type": "number"}}, True, ("project",)), self._auto_campaign_next_batch)
+        self._register(ToolSpec("auto_campaign_prune_plan", "根据质量分和已解析结果生成候选剪枝建议；apply=true 才把低优先级候选标记 discarded/promising。", {"project": {"type": "string"}, "campaign_id": {"type": "string"}, "keep_top": {"type": "integer"}, "min_quality_score": {"type": "number"}, "max_energy_ev": {"type": "number"}, "apply": {"type": "boolean"}, "rationale": {"type": "string"}}, False, ("project",)), self._auto_campaign_prune_plan)
         self._register(ToolSpec("research_followup_schedule", "把用户明确要求的未来科研检查/提醒写入项目 follow-up 队列；模型负责把自然语言时间转成 due_at ISO 或 interval_minutes。不会自动提交/取消/查询集群。", {"project": {"type": "string"}, "prompt": {"type": "string"}, "due_at": {"type": "string"}, "interval_minutes": {"type": "integer"}, "title": {"type": "string"}, "related_job_id": {"type": "string"}, "related_run_id": {"type": "string"}, "metadata": {"type": "object"}}, False, ("prompt",)), self._research_followup_schedule)
         self._register(ToolSpec("research_followup_list", "列出项目 follow-up 队列；这是计划/提醒索引，不是已完成事实。", {"project": {"type": "string"}, "include_done": {"type": "boolean"}, "limit": {"type": "integer"}}, True), self._research_followup_list)
         self._register(ToolSpec("research_followup_due", "读取已经到期的科研 follow-up；返回 evidence_goals，模型应自主选择需要的状态/日志/结果工具补证据。", {"project": {"type": "string"}, "now": {"type": "string"}, "limit": {"type": "integer"}}, True), self._research_followup_due)
@@ -485,6 +514,9 @@ class ToolRegistry:
             "research_cycle_checkpoint",
             "auto_mode_status",
             "auto_mode_checkpoint",
+            "auto_campaign_list",
+            "auto_campaign_status",
+            "auto_campaign_next_batch",
             "evidence_claim_audit",
             "web_search",
             "literature_search",
@@ -683,6 +715,7 @@ class ToolRegistry:
             "principle": "能力地图不是固定流程；模型应根据 research/session/tool evidence 自主选择最小必要工具。",
             "capability_stages": [
                 {"category": "project_context", "tools": ["project_continuity_digest", "web_search", "literature_search", "evidence_claim_audit", "chemistry_compute", "image_understand", "discussion_state_snapshot", "research_cycle_checkpoint", "auto_mode_status", "auto_mode_checkpoint", "research_followup_list", "research_followup_due", "research_followup_schedule", "research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
+                {"category": "auto_campaign", "tools": ["auto_campaign_start", "auto_campaign_list", "auto_campaign_status", "auto_campaign_register_candidates", "auto_campaign_update_candidate", "auto_campaign_next_batch", "auto_campaign_prune_plan"]},
                 {"category": "structure_modeling", "tools": ["structure_modeling_tool_status", "structure_modeling_intent_plan", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
                 {"category": "dft_execution", "tools": ["cluster_execution_intent_plan", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_profile_list", "cluster_probe", "cluster_config", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "cluster_job_cancel"]},
                 {"category": "realtime_cluster_status", "tools": ["cluster_job_status_brief", "cluster_my_jobs", "cluster_job_tail_log", "cluster_job_partial_outcar", "cluster_job_progress_estimate", "job_watch_snapshot", "cluster_job_cancel"]},
@@ -2296,6 +2329,75 @@ class ToolRegistry:
             next_focus=str(payload.get("next_focus") or "").strip() or None,
             open_questions=_string_list(payload.get("open_questions")) if "open_questions" in payload else None,
             human_questions=_string_list(payload.get("human_questions")) if "human_questions" in payload else None,
+        )
+
+    def _auto_campaign_start(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return auto_campaign_start(
+            project=str(payload.get("project") or "").strip(),
+            goal=str(payload.get("goal") or "").strip(),
+            campaign_id=str(payload.get("campaign_id") or "").strip() or None,
+            strategy=str(payload.get("strategy") or "").strip() or None,
+            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None,
+        )
+
+    def _auto_campaign_list(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return auto_campaign_list(
+            project=str(payload.get("project") or "").strip(),
+            include_closed=bool(payload.get("include_closed", False)),
+            limit=payload.get("limit") or 20,
+        )
+
+    def _auto_campaign_status(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return auto_campaign_load(
+            project=str(payload.get("project") or "").strip(),
+            campaign_id=str(payload.get("campaign_id") or "").strip() or None,
+        )
+
+    def _auto_campaign_register_candidates(self, payload: dict[str, Any]) -> dict[str, Any]:
+        candidates = payload.get("candidates")
+        if not isinstance(candidates, list):
+            candidates = []
+        return auto_campaign_register_candidates(
+            project=str(payload.get("project") or "").strip(),
+            campaign_id=str(payload.get("campaign_id") or "").strip() or None,
+            candidates=[item for item in candidates if isinstance(item, dict)],
+            source_manifest_path=str(payload.get("source_manifest_path") or "").strip() or None,
+            note=str(payload.get("note") or "").strip() or None,
+        )
+
+    def _auto_campaign_update_candidate(self, payload: dict[str, Any]) -> dict[str, Any]:
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else None
+        return auto_campaign_update_candidate(
+            project=str(payload.get("project") or "").strip(),
+            campaign_id=str(payload.get("campaign_id") or "").strip() or None,
+            candidate_id=str(payload.get("candidate_id") or "").strip(),
+            status=str(payload.get("status") or "").strip() or None,
+            quality_score=payload.get("quality_score") if "quality_score" in payload else None,
+            run_id=str(payload.get("run_id") or "").strip() or None,
+            run_root=str(payload.get("run_root") or "").strip() or None,
+            job_id=str(payload.get("job_id") or "").strip() or None,
+            remote_run_root=str(payload.get("remote_run_root") or "").strip() or None,
+            result=result,
+            note=str(payload.get("note") or "").strip() or None,
+        )
+
+    def _auto_campaign_next_batch(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return auto_campaign_next_batch(
+            project=str(payload.get("project") or "").strip(),
+            campaign_id=str(payload.get("campaign_id") or "").strip() or None,
+            max_candidates=payload.get("max_candidates") or 4,
+            min_quality_score=payload.get("min_quality_score") if "min_quality_score" in payload else None,
+        )
+
+    def _auto_campaign_prune_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return auto_campaign_prune_plan(
+            project=str(payload.get("project") or "").strip(),
+            campaign_id=str(payload.get("campaign_id") or "").strip() or None,
+            keep_top=payload.get("keep_top") or 4,
+            min_quality_score=payload.get("min_quality_score") if "min_quality_score" in payload else None,
+            max_energy_ev=payload.get("max_energy_ev") if "max_energy_ev" in payload else None,
+            apply=bool(payload.get("apply", False)),
+            rationale=str(payload.get("rationale") or "").strip() or None,
         )
 
     def _research_followup_schedule(self, payload: dict[str, Any]) -> dict[str, Any]:
