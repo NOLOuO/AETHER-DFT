@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -1052,6 +1053,83 @@ def print_auto_preview(payload: dict[str, Any]) -> None:
             print(f"   - {question}")
 
 
+def run_auto_due_once(
+    *,
+    args: argparse.Namespace,
+    session_store: Any,
+    session_ref: dict[str, str | None],
+    now: str | None = None,
+    turn_runner: Any | None = None,
+    quiet: bool = False,
+) -> dict[str, Any]:
+    """Run one due autonomous model turn, if the durable queue says one is due."""
+
+    from .auto_mode import collect_due_auto_intents, complete_due_auto_intents
+
+    plan = collect_due_auto_intents(project=args.project, now=now, limit=5)
+    if not plan.get("should_run"):
+        return {"status": plan.get("status") or "idle", "ran": False, "plan": plan}
+    if not quiet:
+        titles = ", ".join(str(item.get("title") or item.get("id")) for item in (plan.get("followups") or [])[:3])
+        print(f"\n{Colors.CYAN}[auto]{Colors.RESET} due: {titles or 'scheduled research work'}")
+    runner = turn_runner or run_chat_model_turn
+    ok, new_session_id = runner(
+        str(plan.get("prompt") or ""),
+        args=args,
+        session_store=session_store,
+        session_id=session_ref.get("id"),
+        failure_hint="auto 后台推进未完成；状态和 follow-up 已保留，下次到期会继续。",
+    )
+    if new_session_id:
+        session_ref["id"] = new_session_id
+    if not ok:
+        return {"status": "error", "ran": True, "completed": False, "plan": plan}
+    completed = complete_due_auto_intents(
+        project=args.project,
+        followup_ids=plan.get("followup_ids") or [],
+        note="Processed by /auto autonomous loop.",
+        reschedule=True,
+    )
+    return {"status": "ok", "ran": True, "completed": True, "plan": plan, "completion": completed}
+
+
+def start_auto_background_loop(
+    *,
+    args: argparse.Namespace,
+    session_store: Any,
+    session_ref: dict[str, str | None],
+) -> threading.Event:
+    """Start the in-process /auto scheduler for interactive chat.
+
+    The durable follow-up queue is the source of truth; this thread merely
+    wakes up periodically while the chat UI is open and lets the model handle
+    any due research work.  No manual user command is required.
+    """
+
+    stop_event = threading.Event()
+    try:
+        interval = max(10.0, float(os.getenv("AETHER_AUTO_LOOP_INTERVAL_SECONDS", "300")))
+    except ValueError:
+        interval = 300.0
+    lock = threading.Lock()
+
+    def worker() -> None:
+        # First wait keeps chat startup snappy and avoids firing immediately
+        # after the user toggles /auto on; due work is handled by schedule time.
+        while not stop_event.wait(interval):
+            if lock.locked():
+                continue
+            with lock:
+                try:
+                    run_auto_due_once(args=args, session_store=session_store, session_ref=session_ref)
+                except Exception as exc:  # defensive UI guard; details are visible to the user.
+                    print(f"\n{Colors.YELLOW}[auto] background loop paused after error: {exc}{Colors.RESET}")
+
+    thread = threading.Thread(target=worker, name="aether-auto-loop", daemon=True)
+    thread.start()
+    return stop_event
+
+
 def handle_chat_auto_command(line: str, args: argparse.Namespace, session_store: Any, session_id: str) -> tuple[bool, str]:
     from .auto_mode import auto_mode_status, configure_auto_mode, infer_research_goal
 
@@ -1066,20 +1144,8 @@ def handle_chat_auto_command(line: str, args: argparse.Namespace, session_store:
         print_json(auto_mode_status(project=args.project, include_due=True))
         return True, session_id
     if raw in {"tick", "run", "continue"}:
-        prompt = (
-            "[execution-mode]\n"
-            "AUTO MODE TICK: 读取 auto_mode_status、due follow-ups、project/session/research/job evidence，"
-            "围绕当前 research_goal 自主决定下一步。若目标或关键输入不清楚，只问人类一个最小问题；"
-            "否则执行最小必要工具链：可检索文献、构建/检查结构、准备/提交允许的计算、监控/分析结果、写回学习或生成日报。"
-            "不要按固定流程跑，按证据缺口选择动作。"
-        )
-        return run_chat_model_turn(
-            prompt,
-            args=args,
-            session_store=session_store,
-            session_id=session_id,
-            failure_hint="auto tick 未完成；状态已保留，可稍后 /auto tick 重试",
-        )
+        print("不用手动推进：/auto 开启后会根据项目 follow-up 到期时间由后台自动让模型工作。")
+        return True, session_id
     goal = raw
     if not goal:
         current = auto_mode_status(project=args.project, include_due=True)
@@ -1118,7 +1184,7 @@ def handle_chat_auto_command(line: str, args: argparse.Namespace, session_store:
         reset_questions=True,
     )
     print_auto_preview(result)
-    print(f"{Colors.DIM}已创建周期 monitor/daily-report follow-up。输入 /auto tick 可立即让模型推进一轮。{Colors.RESET}")
+    print(f"{Colors.DIM}已创建周期 monitor/daily-report follow-up；保持 chat 打开时，后台会在到期后自动推进。{Colors.RESET}")
     return True, session_id
 
 
@@ -1670,6 +1736,8 @@ def handle_chat(args: argparse.Namespace) -> int:
         payload = session_store.resume_payload(session_id=session_id, project=args.project)
         if payload["status"] == "ok" and payload["recent_turns"]:
             print_resume_preview(payload)
+    session_ref: dict[str, str | None] = {"id": session_id}
+    auto_stop_event = start_auto_background_loop(args=args, session_store=session_store, session_ref=session_ref)
     while True:
         try:
             model_short = active_model_id(args).split(":", 1)[-1]
@@ -1677,9 +1745,11 @@ def handle_chat(args: argparse.Namespace) -> int:
             line = input(f"aether[{project_short}|{model_short}]> ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
+            auto_stop_event.set()
             print_chat_resume_hint(session_id=session_id, project=args.project)
             return 0
         if line in {"/exit", "exit", "quit", ":q"}:
+            auto_stop_event.set()
             print_chat_resume_hint(session_id=session_id, project=args.project)
             return 0
         if not line:
@@ -1708,13 +1778,16 @@ def handle_chat(args: argparse.Namespace) -> int:
             if raw_project:
                 args.project = None if raw_project in {"none", "clear", "no-project"} else raw_project
             session_id = session_store.start_session(project=args.project)
+            session_ref["id"] = session_id
             print(f"{Colors.GREEN}new session{Colors.RESET}: {session_id} project={args.project or 'none'}")
             continue
         if line.startswith("/resume"):
             session_id = handle_chat_resume_command(line, args, session_store, session_id)
+            session_ref["id"] = session_id
             continue
         if line == "/continue":
             _, session_id = handle_chat_continue_command(args, session_store, session_id)
+            session_ref["id"] = session_id
             continue
         if line.startswith("/history"):
             handle_chat_history_command(line, session_store=session_store, session_id=session_id)
@@ -1736,6 +1809,7 @@ def handle_chat(args: argparse.Namespace) -> int:
             continue
         if line.startswith("/auto"):
             _, session_id = handle_chat_auto_command(line, args, session_store, session_id)
+            session_ref["id"] = session_id
             continue
         if line.startswith("/permission"):
             handle_chat_permission_command(line)
@@ -1793,6 +1867,7 @@ def handle_chat(args: argparse.Namespace) -> int:
             continue
         if line.startswith("/project"):
             session_id = handle_chat_project_command(line, args, session_store, session_id)
+            session_ref["id"] = session_id
             continue
         if line.startswith("/recommend"):
             from .recommendations import recommend_next_tasks
@@ -1807,6 +1882,7 @@ def handle_chat(args: argparse.Namespace) -> int:
             session_id=session_id,
             failure_hint="本 session 仍然保留；输入 /model 打开模型选择器后继续，或稍后重试",
         )
+        session_ref["id"] = session_id
 
 
 def handle_session_list(args: argparse.Namespace) -> int:
@@ -1911,39 +1987,6 @@ def handle_auto_off(args: argparse.Namespace) -> int:
     result = configure_auto_mode(project=args.project, enabled=False)
     print_json(result)
     return 0 if result.get("status") == "ok" else 1
-
-
-def handle_auto_tick(args: argparse.Namespace) -> int:
-    if not args.project:
-        print_json({"status": "error", "message": "auto tick 需要 --project，以便读取项目目标和记录会话。"})
-        return 1
-    chat_args = argparse.Namespace(
-        prompt=[
-            "[execution-mode]",
-            "AUTO MODE TICK: 围绕当前 /auto research_goal 自主推进一轮。先查 auto_mode_status/due followups/project/session evidence；不清楚就问人类一个最小问题，否则选择最小必要工具推进并 checkpoint。",
-        ],
-        project=args.project,
-        model=args.model,
-        max_tokens=args.max_tokens,
-        max_steps=args.max_steps,
-        resume=True,
-        session_id=args.session_id,
-        task_plan=False,
-        task_run=False,
-        material=None,
-        structure_path=None,
-        slab_path=None,
-        adsorbate=None,
-        preferred_site=None,
-        preferred_orientation=None,
-        task_type=None,
-        submit_profile=None,
-        model_spec_path=None,
-        step2_manifest_path=None,
-        candidate_id=None,
-        planner="rule",
-    )
-    return handle_chat(chat_args)
 
 
 def handle_tools_list(args: argparse.Namespace) -> int:
@@ -2625,14 +2668,6 @@ def build_parser() -> argparse.ArgumentParser:
     auto_off = auto_sub.add_parser("off", help="关闭 /auto。")
     auto_off.add_argument("--project")
     auto_off.set_defaults(func=handle_auto_off)
-    auto_tick = auto_sub.add_parser("tick", help="执行一轮 auto 模式推进；适合人工触发或外部计划任务定时调用。")
-    auto_tick.add_argument("--project", required=True)
-    auto_tick.add_argument("--model")
-    auto_tick.add_argument("--max-tokens", type=int)
-    auto_tick.add_argument("--max-steps", type=int, default=10)
-    auto_tick.add_argument("--session-id")
-    auto_tick.set_defaults(func=handle_auto_tick)
-
     tools_parser = sub.add_parser("tools", help="AETHER harness 工具注册表。")
     tools_sub = tools_parser.add_subparsers(dest="tools_command")
     tools_list = tools_sub.add_parser("list", help="列出模型可调用工具。")

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .followups import due_followups, list_followups, schedule_followup
+from .followups import complete_followup, due_followups, list_followups, schedule_followup
 from .paths import ensure_runtime_dir
 from .project_state import project_paths
 
@@ -394,6 +394,120 @@ def auto_mode_status(*, project: str | None = None, include_due: bool = True) ->
         payload["due_followups"] = due_followups(project=state.get("project") or project, limit=10)
         payload["scheduled_followups"] = list_followups(project=state.get("project") or project, limit=10)
     return payload
+
+
+def collect_due_auto_intents(
+    *,
+    project: str | None = None,
+    now: str | None = None,
+    limit: int = 5,
+) -> dict[str, Any]:
+    """Return a single model prompt for due autonomous work.
+
+    This is the important distinction for autonomous mode:
+    the user does not manually advance a fixed step.  The runtime checks the
+    durable follow-up queue and, only when something is due, asks the model to
+    decide the smallest next scientific action from the available evidence.
+    """
+
+    state = load_auto_state(project)
+    if not state.get("enabled"):
+        return {
+            "status": "disabled",
+            "should_run": False,
+            "state": state,
+            "followups": [],
+            "followup_ids": [],
+            "prompt": "",
+        }
+    project_name = state.get("project") or project
+    due = due_followups(project=project_name, now=now, limit=limit)
+    if due.get("status") != "ok":
+        return {
+            "status": "error",
+            "should_run": False,
+            "state": state,
+            "followups": [],
+            "followup_ids": [],
+            "prompt": "",
+            "message": due.get("message") or "无法读取 due follow-ups。",
+        }
+    followups = [item for item in (due.get("followups") or []) if isinstance(item, dict)]
+    if not followups:
+        return {
+            "status": "idle",
+            "should_run": False,
+            "state": state,
+            "followups": [],
+            "followup_ids": [],
+            "prompt": "",
+        }
+    safe_followups = []
+    for item in followups:
+        safe_followups.append(
+            {
+                "id": item.get("id"),
+                "title": item.get("title"),
+                "prompt": item.get("prompt"),
+                "due_at": item.get("due_at"),
+                "interval_minutes": item.get("interval_minutes"),
+                "related_job_id": item.get("related_job_id"),
+                "related_run_id": item.get("related_run_id"),
+                "evidence_goals": item.get("evidence_goals") or [],
+                "metadata": item.get("metadata") or {},
+            }
+        )
+    prompt = (
+        "[execution-mode]\n"
+        "AUTO MODE DUE WORK: /auto is enabled for this project. The human should not have to type a manual command.\n"
+        "Use tools to inspect project/session/research/job evidence, then decide the smallest useful next scientific action toward the research goal.\n"
+        "Do not follow a fixed pipeline. Literature search, structure building, cluster submission, monitoring, parsing, writeback, or asking one human question are all optional and evidence-driven.\n"
+        "If a cluster submission is scientifically necessary, respect permission/auto state and submit only when allowed. If blocked, ask exactly one concise human question.\n"
+        "Before finishing, call auto_mode_checkpoint with observation, decision, evidence_refs, next_focus, and any human_questions.\n\n"
+        f"Project: {project_name or 'none'}\n"
+        f"Research goal: {state.get('research_goal') or ''}\n"
+        f"Auto status: {state.get('status') or 'idle'}\n"
+        f"Allowed actions: literature={state.get('allow_literature_search')}, structure_build={state.get('allow_structure_build')}, "
+        f"cluster_submit={state.get('allow_cluster_submit')}, research_writeback={state.get('allow_research_writeback')}\n"
+        "Due intents JSON:\n"
+        f"{json.dumps(safe_followups, ensure_ascii=False, indent=2)}"
+    )
+    return {
+        "status": "ok",
+        "should_run": True,
+        "state": state,
+        "followups": safe_followups,
+        "followup_ids": [str(item.get("id") or "") for item in safe_followups if item.get("id")],
+        "prompt": prompt,
+    }
+
+
+def complete_due_auto_intents(
+    *,
+    project: str | None = None,
+    followup_ids: list[str] | None = None,
+    note: str | None = None,
+    reschedule: bool = True,
+) -> dict[str, Any]:
+    """Mark due autonomous intents as processed after a model turn.
+
+    Recurring monitor/daily-report follow-ups are rescheduled; one-off
+    follow-ups are completed.  This keeps the background loop from repeatedly
+    firing the same intent after the model has already inspected it.
+    """
+
+    ids = [str(item or "").strip() for item in (followup_ids or []) if str(item or "").strip()]
+    results = []
+    for followup_id in ids:
+        results.append(
+            complete_followup(
+                followup_id,
+                project=project,
+                note=note or "Processed by /auto background loop.",
+                reschedule=reschedule,
+            )
+        )
+    return {"status": "ok", "count": len(results), "results": results}
 
 
 def build_auto_mode_digest(*, project: str | None = None) -> str:

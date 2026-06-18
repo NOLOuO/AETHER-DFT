@@ -4,7 +4,14 @@ import json
 from pathlib import Path
 
 from aether_dft import cli
-from aether_dft.auto_mode import build_auto_mode_digest, configure_auto_mode, auto_mode_status, infer_research_goal
+from aether_dft.auto_mode import (
+    build_auto_mode_digest,
+    collect_due_auto_intents,
+    complete_due_auto_intents,
+    configure_auto_mode,
+    auto_mode_status,
+    infer_research_goal,
+)
 from aether_dft.runtime_harness.tool_registry import ToolRegistry
 
 
@@ -43,6 +50,39 @@ def test_auto_mode_configure_persists_goal_and_schedules_followups(tmp_path: Pat
     assert "Auto mode is ON" in digest
     assert "Autonomy contract" in digest
     assert "H2O" in digest
+
+
+def test_auto_mode_collects_due_work_for_background_loop(tmp_path: Path, monkeypatch):
+    from aether_dft.followups import schedule_followup
+
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(
+        project="demo",
+        enabled=True,
+        research_goal="确定 H2O/Pt(111) 最稳定吸附构型并完成吸附能验证",
+        monitor_interval_hours=4,
+    )
+    due_at = "2000-01-01T00:00:00+08:00"
+    followup = schedule_followup(
+        project="demo",
+        title="Check H2O adsorption evidence",
+        prompt="检查已有 H2O/Pt(111) 计算、缺口和下一步。",
+        due_at=due_at,
+        interval_minutes=240,
+        metadata={"auto_mode": True, "auto_kind": "monitor"},
+    )["followup"]
+
+    plan = collect_due_auto_intents(project="demo", now="2000-01-01T01:00:00+08:00")
+
+    assert plan["should_run"] is True
+    assert followup["id"] in plan["followup_ids"]
+    assert "AUTO MODE DUE WORK" in plan["prompt"]
+    assert "Do not follow a fixed pipeline" in plan["prompt"]
+    assert "H2O/Pt(111)" in plan["prompt"]
+
+    completed = complete_due_auto_intents(project="demo", followup_ids=plan["followup_ids"], note="tested")
+    assert completed["status"] == "ok"
+    assert any(item["status"] == "rescheduled" for item in completed["results"])
 
 
 def test_auto_mode_requires_goal_when_enabled(tmp_path: Path, monkeypatch):
@@ -102,6 +142,72 @@ def test_auto_cli_on_status_off(tmp_path: Path, monkeypatch, capsys):
     assert cli.main(["auto", "off", "--project", "demo"]) == 0
     disabled = json.loads(capsys.readouterr().out)
     assert disabled["state"]["enabled"] is False
+
+
+def test_interactive_slash_auto_run_words_do_not_trigger_manual_model_turn(monkeypatch, tmp_path, capsys):
+    import aether_dft.paths as paths
+    import aether_dft.project_state as project_state
+    from aether_dft.session_store import AetherSessionStore
+
+    monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(paths, "PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(project_state, "PROJECTS_DIR", tmp_path / "projects")
+    store = AetherSessionStore()
+    session_id = store.start_session(project="demo", first_prompt="研究目标：验证 CO/Pt 吸附构型")
+    calls: list[str] = []
+
+    def fake_turn(prompt, **kwargs):
+        calls.append(prompt)
+        return True, session_id
+
+    monkeypatch.setattr(cli, "run_chat_model_turn", fake_turn)
+    args = cli.argparse.Namespace(project="demo")
+
+    ok, returned = cli.handle_chat_auto_command("/auto run", args, store, session_id)
+
+    assert ok is True
+    assert returned == session_id
+    assert calls == []
+    assert "不用手动推进" in capsys.readouterr().out
+
+
+def test_auto_due_runner_invokes_model_and_reschedules_due_work(monkeypatch, tmp_path):
+    from aether_dft.followups import schedule_followup
+    from aether_dft.session_store import AetherSessionStore
+
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="研究 MCH 在 Br/Pt 上脱氢路径")
+    followup = schedule_followup(
+        project="demo",
+        title="Auto monitor now",
+        prompt="检查集群任务和研究进展。",
+        due_at="2000-01-01T00:00:00+08:00",
+        interval_minutes=240,
+        metadata={"auto_mode": True, "auto_kind": "monitor"},
+    )["followup"]
+    store = AetherSessionStore(tmp_path / "sessions")
+    session_id = store.start_session(project="demo")
+    captured: list[str] = []
+
+    def fake_runner(prompt, **kwargs):
+        captured.append(prompt)
+        return True, session_id
+
+    args = cli.argparse.Namespace(project="demo")
+    result = cli.run_auto_due_once(
+        args=args,
+        session_store=store,
+        session_ref={"id": session_id},
+        now="2000-01-01T01:00:00+08:00",
+        turn_runner=fake_runner,
+        quiet=True,
+    )
+
+    assert result["status"] == "ok"
+    assert result["ran"] is True
+    assert captured and "AUTO MODE DUE WORK" in captured[0]
+    assert followup["id"] in result["plan"]["followup_ids"]
+    assert any(item["status"] == "rescheduled" for item in result["completion"]["results"])
 
 
 def test_interactive_slash_auto_enables_goal(monkeypatch, tmp_path, capsys):
