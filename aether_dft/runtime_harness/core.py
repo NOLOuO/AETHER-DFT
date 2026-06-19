@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import re
 import threading
@@ -61,12 +62,87 @@ def _contains_tool_markup(value: str) -> bool:
         marker in text
         for marker in (
             "<｜｜DSML｜｜tool_calls>",
+            "<ï½œï½œDSMLï½œï½œtool_calls>",
             "<|tool_calls|>",
             "<tool_call",
             "<invoke name=",
+            "<ï½œï½œDSMLï½œï½œinvoke name=",
             "</invoke>",
         )
     )
+
+
+def _parse_scalar_tool_value(value: str, *, force_string: bool) -> Any:
+    text = html.unescape(str(value or "")).strip()
+    if force_string:
+        return text
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if lowered in {"null", "none"}:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        return float(text)
+    except ValueError:
+        return text
+
+
+def _extract_text_tool_calls(value: str) -> list[dict[str, Any]]:
+    """Parse DSML-like text tool calls emitted by some OpenAI-compatible models.
+
+    DeepSeek/Qwen-compatible backends occasionally serialize tool calls into
+    assistant content instead of the structured ``tool_calls`` field.  Treating
+    that content as a final answer makes the agent look stuck even though the
+    model selected the right next tools.  This parser is intentionally narrow:
+    it only accepts explicit ``invoke name=...`` blocks with parameter tags and
+    converts them back into ordinary OpenAI-style tool calls.
+    """
+
+    text = str(value or "")
+    if "invoke name=" not in text:
+        return []
+    calls: list[dict[str, Any]] = []
+    invoke_re = re.compile(r"<[^<>\n]*invoke\s+name=[\"']([^\"']+)[\"'][^>]*>(.*?)</[^<>\n]*invoke>", re.DOTALL)
+    param_re = re.compile(
+        r"<[^<>\n]*parameter\s+name=[\"']([^\"']+)[\"'](?:\s+string=[\"']([^\"']+)[\"'])?[^>]*>(.*?)</[^<>\n]*parameter>",
+        re.DOTALL,
+    )
+    for index, match in enumerate(invoke_re.finditer(text)):
+        name = html.unescape(match.group(1)).strip()
+        if not name:
+            continue
+        body = match.group(2)
+        args: dict[str, Any] = {}
+        for param in param_re.finditer(body):
+            key = html.unescape(param.group(1)).strip()
+            if not key:
+                continue
+            force_string = str(param.group(2) or "").lower() == "true"
+            args[key] = _parse_scalar_tool_value(param.group(3), force_string=force_string)
+        digest = hashlib.sha1(f"{name}:{index}:{json.dumps(args, sort_keys=True, ensure_ascii=False)}".encode("utf-8")).hexdigest()[:10]
+        calls.append(
+            {
+                "id": f"text_tool_call_{digest}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(args, ensure_ascii=False),
+                },
+            }
+        )
+    return calls
 
 
 def _tool_markup_fallback() -> str:
@@ -510,6 +586,20 @@ class AgentHarness:
                 finish_reason = str(reply.get("finish_reason") or "stop")
                 tool_calls = reply.get("tool_calls") or []
                 content = str(reply.get("content") or "")
+                if not tool_calls:
+                    text_tool_calls = _extract_text_tool_calls(content)
+                    if text_tool_calls:
+                        tool_calls = text_tool_calls
+                        finish_reason = "text_tool_calls"
+                        content = re.split(r"<[^<>\n]*tool_calls[^>]*>", content, maxsplit=1)[0].strip()
+                        log_event(
+                            "text_tool_calls_parsed",
+                            {
+                                "session_id": session_id,
+                                "step": step_index + 1,
+                                "tool_names": [str((call.get("function") or {}).get("name") or "") for call in tool_calls],
+                            },
+                        )
                 if tool_calls:
                     assistant_message: dict[str, Any] = {"role": "assistant", "content": content, "tool_calls": tool_calls}
                     reasoning_content = str(reply.get("reasoning_content") or "").strip()

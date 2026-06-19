@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -30,6 +31,9 @@ from .project_state import append_progress, init_project, list_projects, load_pr
 
 PROGRAM_NAME = "AETHER-DFT"
 PROGRAM_COMMAND = "aether"
+AUTO_TURN_MIN_STEPS = 12
+AUTO_TURN_MIN_TOKENS = 1400
+AUTO_INITIAL_MAX_PASSES = 3
 TOP_LEVEL_COMMANDS = {
     "adsorption",
     "agent",
@@ -1053,6 +1057,148 @@ def print_auto_preview(payload: dict[str, Any]) -> None:
             print(f"   - {question}")
 
 
+def auto_turn_args(args: argparse.Namespace) -> argparse.Namespace:
+    """Return a non-mutating args copy with enough budget for /auto work.
+
+    A normal user chat can be intentionally short, but an autonomous pass must
+    have enough tool steps to inspect state, act, and write a checkpoint.
+    Otherwise `/auto` feels broken: it starts, uses a few tools, then stops
+    before persisting progress.
+    """
+
+    auto_args = copy.copy(args)
+    try:
+        auto_args.max_steps = max(int(getattr(auto_args, "max_steps", 0) or 0), AUTO_TURN_MIN_STEPS)
+    except (TypeError, ValueError):
+        auto_args.max_steps = AUTO_TURN_MIN_STEPS
+    try:
+        current_tokens = int(getattr(auto_args, "max_tokens", 0) or 0)
+    except (TypeError, ValueError):
+        current_tokens = 0
+    auto_args.max_tokens = max(current_tokens, AUTO_TURN_MIN_TOKENS) if current_tokens else AUTO_TURN_MIN_TOKENS
+    return auto_args
+
+
+def _latest_session_record(session_store: Any, session_id: str | None) -> dict[str, Any]:
+    if not session_id or not hasattr(session_store, "read_transcript"):
+        return {}
+    try:
+        rows = session_store.read_transcript(session_id, limit=1)
+    except Exception:
+        return {}
+    if not rows:
+        return {}
+    record = rows[-1].get("record") if isinstance(rows[-1], dict) else None
+    return record if isinstance(record, dict) else {}
+
+
+def _auto_fallback_checkpoint(
+    *,
+    project: str | None,
+    session_id: str | None,
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    from .auto_mode import checkpoint_auto_mode
+
+    tools = [item for item in (record.get("tool_executions") or []) if isinstance(item, dict)]
+    if not tools:
+        return {"status": "skipped", "reason": "no_tool_evidence"}
+    names = [str(item.get("name") or "tool") for item in tools if item.get("name")]
+    evidence_refs = []
+    if record.get("record_path"):
+        evidence_refs.append(str(record.get("record_path")))
+    if session_id:
+        evidence_refs.append(f"session:{session_id}")
+    response = _shorten_inline(record.get("response"), limit=180)
+    observation = (
+        f"Auto pass executed {len(tools)} tool(s): {', '.join(names[:12])}."
+        + (f" Last model response: {response}" if response else "")
+    )
+    return checkpoint_auto_mode(
+        project=project,
+        status="active",
+        observation=observation,
+        decision=(
+            "Harness fallback checkpoint: model advanced the project with tool evidence but did not call "
+            "auto_mode_checkpoint before the turn ended."
+        ),
+        evidence_refs=evidence_refs,
+        next_focus="Inspect campaign/project status and continue from the latest persisted tool evidence.",
+        human_questions=[],
+    )
+
+
+def _auto_record_has_completion_signal(record: dict[str, Any]) -> bool:
+    """Return whether a tool-evidence turn is safe to consume a due intent.
+
+    A pass that only inspected state or built an intermediate slab should be
+    checkpointed but kept due so /auto can immediately continue.  Consuming the
+    due item is reserved for turns that persisted a decision/candidate/result,
+    submitted/updated work, wrote progress, or otherwise reached a durable
+    handoff.
+    """
+
+    tool_names = {str(item.get("name") or "") for item in (record.get("tool_executions") or []) if isinstance(item, dict)}
+    completion_tools = {
+        "auto_campaign_register_candidates",
+        "auto_campaign_update_candidate",
+        "auto_campaign_prune_plan",
+        "cluster_remote_submit",
+        "cluster_remote_monitor",
+        "cluster_remote_fetch",
+        "project_progress_append",
+        "research_progress_append",
+        "research_learning_capture",
+        "candidate_outcome_record",
+        "auto_mode_checkpoint",
+    }
+    return bool(tool_names & completion_tools)
+
+
+def _auto_register_manifest_if_present(*, project: str | None, record: dict[str, Any]) -> dict[str, Any]:
+    tools = [item for item in (record.get("tool_executions") or []) if isinstance(item, dict)]
+    if any(str(item.get("name") or "") == "auto_campaign_register_candidates" for item in tools):
+        return {"status": "skipped", "reason": "already_registered"}
+    manifest_path = ""
+    for item in reversed(tools):
+        if str(item.get("name") or "") != "adsorption_candidate_manifest_compose":
+            continue
+        result = item.get("result") if isinstance(item.get("result"), dict) else {}
+        if str(result.get("status") or "") in {"ok", "composed"}:
+            manifest_path = str(result.get("manifest_json") or result.get("manifest_path") or "").strip()
+            if manifest_path:
+                break
+    if not manifest_path:
+        return {"status": "skipped", "reason": "no_manifest"}
+    try:
+        from .auto_campaign import list_campaigns, register_candidates
+
+        campaign_id = ""
+        for item in tools:
+            if str(item.get("name") or "") != "auto_campaign_start":
+                continue
+            result = item.get("result") if isinstance(item.get("result"), dict) else {}
+            campaign = result.get("campaign") if isinstance(result.get("campaign"), dict) else {}
+            campaign_id = str(result.get("campaign_id") or campaign.get("campaign_id") or "").strip()
+            if campaign_id:
+                break
+        if not campaign_id and project:
+            campaigns = list_campaigns(project=str(project), include_closed=False, limit=1).get("campaigns") or []
+            if campaigns:
+                campaign_id = str(campaigns[0].get("campaign_id") or "").strip()
+        if not project or not campaign_id:
+            return {"status": "skipped", "reason": "missing_project_or_campaign", "manifest_path": manifest_path}
+        return register_candidates(
+            project=str(project),
+            campaign_id=campaign_id,
+            candidates=[],
+            source_manifest_path=manifest_path,
+            note="Harness auto-registered candidates from manifest evidence after model turn ended before campaign registration.",
+        )
+    except Exception as exc:
+        return {"status": "error", "message": str(exc), "manifest_path": manifest_path}
+
+
 def run_auto_due_once(
     *,
     args: argparse.Namespace,
@@ -1075,9 +1221,10 @@ def run_auto_due_once(
         titles = ", ".join(str(item.get("title") or item.get("id")) for item in (plan.get("followups") or [])[:3])
         print(f"\n{Colors.CYAN}[auto]{Colors.RESET} due: {titles or 'scheduled research work'}")
     runner = turn_runner or run_chat_model_turn
+    runner_args = auto_turn_args(args)
     ok, new_session_id = runner(
         str(plan.get("prompt") or ""),
-        args=args,
+        args=runner_args,
         session_store=session_store,
         session_id=session_ref.get("id"),
         failure_hint="auto 后台推进未完成；状态和 follow-up 已保留，下次到期会继续。",
@@ -1089,6 +1236,42 @@ def run_auto_due_once(
     after_checkpoint = load_auto_state(args.project).get("last_checkpoint") or {}
     after_checkpoint_at = str(after_checkpoint.get("updated_at") or "")
     if not after_checkpoint_at or after_checkpoint_at == before_checkpoint_at:
+        latest_record = _latest_session_record(session_store, session_ref.get("id"))
+        auto_register = _auto_register_manifest_if_present(project=args.project, record=latest_record)
+        if auto_register.get("status") == "ok":
+            latest_record = copy.deepcopy(latest_record)
+            latest_record.setdefault("tool_executions", []).append(
+                {"name": "auto_campaign_register_candidates", "result": auto_register}
+            )
+        fallback = _auto_fallback_checkpoint(project=args.project, session_id=session_ref.get("id"), record=latest_record)
+        if fallback.get("status") == "ok":
+            if not _auto_record_has_completion_signal(latest_record):
+                if not quiet:
+                    print(f"{Colors.DIM}[auto] wrote partial fallback checkpoint; keeping due intent open for immediate continuation.{Colors.RESET}")
+                return {
+                    "status": "partial_checkpoint",
+                    "ran": True,
+                    "completed": False,
+                    "plan": plan,
+                    "fallback_checkpoint": fallback,
+                    "message": "已写入部分进展 checkpoint，但本轮还没有候选/结果/提交/进展写回等完成信号；due intent 保留以便继续推进。",
+                }
+            completed = complete_due_auto_intents(
+                project=args.project,
+                followup_ids=plan.get("followup_ids") or [],
+                note="Processed by /auto autonomous loop with harness fallback checkpoint.",
+                reschedule=True,
+            )
+            if not quiet:
+                print(f"{Colors.DIM}[auto] wrote fallback checkpoint from executed tool evidence.{Colors.RESET}")
+            return {
+                "status": "ok",
+                "ran": True,
+                "completed": True,
+                "plan": plan,
+                "completion": completed,
+                "fallback_checkpoint": fallback,
+            }
         if not quiet:
             print(
                 f"{Colors.YELLOW}[auto] model turn ended without auto_mode_checkpoint; "
@@ -1208,13 +1391,22 @@ def handle_chat_auto_command(line: str, args: argparse.Namespace, session_store:
     print(f"{Colors.DIM}已创建立即推进、周期 monitor 和 daily-report follow-up；保持 chat 打开时，后台会自动推进到期事项。{Colors.RESET}")
     if result.get("status") == "ok":
         session_ref = {"id": session_id}
-        first = run_auto_due_once(
-            args=args,
-            session_store=session_store,
-            session_ref=session_ref,
-            quiet=False,
-        )
-        session_id = session_ref.get("id") or session_id
+        first: dict[str, Any] = {"status": "idle", "ran": False}
+        for attempt in range(1, AUTO_INITIAL_MAX_PASSES + 1):
+            first = run_auto_due_once(
+                args=args,
+                session_store=session_store,
+                session_ref=session_ref,
+                quiet=False,
+            )
+            session_id = session_ref.get("id") or session_id
+            status = str(first.get("status") or "")
+            if first.get("completed") or status in {"idle", "disabled"}:
+                break
+            if status == "partial_checkpoint" and attempt < AUTO_INITIAL_MAX_PASSES:
+                print(f"{Colors.DIM}/auto continuing from partial checkpoint ({attempt}/{AUTO_INITIAL_MAX_PASSES}).{Colors.RESET}")
+                continue
+            break
         if first.get("status") == "ok" and first.get("ran"):
             print(f"{Colors.DIM}/auto initial advance completed; later checks will follow the monitor/report schedule.{Colors.RESET}")
         elif first.get("status") not in {"idle", "disabled"}:

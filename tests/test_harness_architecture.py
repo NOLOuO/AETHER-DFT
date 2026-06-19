@@ -47,6 +47,30 @@ class FakeToolCallingAdapter:
         return {"content": "已读取项目状态，可以继续推进。", "finish_reason": "stop", "tool_calls": []}
 
 
+class TextToolCallingAdapter:
+    runtime = type("Runtime", (), {"model_id": "fake:deepseek-dsml"})()
+
+    def __init__(self):
+        self.calls: list[list[dict[str, Any]]] = []
+
+    def chat(self, messages, *, tools=None, tool_choice="auto", max_tokens=None):
+        self.calls.append(messages)
+        if len(self.calls) == 1:
+            return {
+                "content": (
+                    "我需要读取项目状态。\n"
+                    "<｜｜DSML｜｜tool_calls>\n"
+                    "<｜｜DSML｜｜invoke name=\"project_state_read\">\n"
+                    "<｜｜DSML｜｜parameter name=\"project\" string=\"true\">chem-demo</｜｜DSML｜｜parameter>\n"
+                    "</｜｜DSML｜｜invoke>\n"
+                ),
+                "finish_reason": "stop",
+                "tool_calls": [],
+            }
+        assert any(message.get("role") == "tool" and message.get("name") == "project_state_read" for message in messages)
+        return {"content": "文本工具调用已执行。", "finish_reason": "stop", "tool_calls": []}
+
+
 class InterruptingAdapter:
     runtime = type("Runtime", (), {"model_id": "fake:interrupt"})()
 
@@ -185,6 +209,27 @@ def test_agent_harness_executes_tool_loop_and_persists_session(tmp_path: Path, m
     resumed = sessions.store.resume_payload(session_id=record["session_id"])
     assert resumed["status"] == "ok"
     assert resumed["state"]["turn_count"] == 1
+
+
+def test_agent_harness_executes_dsml_text_tool_calls(tmp_path: Path, monkeypatch):
+    project_dir = tmp_path / "projects"
+    knowledge_dir = tmp_path / "knowledge_base"
+    runtime_dir = tmp_path / "runtime"
+    monkeypatch.setattr(paths, "PROJECTS_DIR", project_dir)
+    monkeypatch.setattr(paths, "KNOWLEDGE_BASE_DIR", knowledge_dir)
+    monkeypatch.setattr(paths, "RUNTIME_DIR", runtime_dir)
+    monkeypatch.setattr(project_state, "PROJECTS_DIR", project_dir)
+    monkeypatch.setattr(project_state, "KNOWLEDGE_BASE_DIR", knowledge_dir)
+
+    project_state.init_project("chem-demo", description="demo", overwrite=True)
+    sessions = HarnessSessionStore(tmp_path / "sessions")
+    harness = AgentHarness(adapter=TextToolCallingAdapter(), registry=ToolRegistry(), sessions=sessions)
+
+    record = harness.run_turn("继续推进这个课题", project="chem-demo", max_steps=3)
+
+    assert record["response"] == "文本工具调用已执行。"
+    assert record["finish_reason"] == "stop"
+    assert [item["name"] for item in record["tool_executions"]] == ["project_state_read"]
 
 
 def test_agent_harness_saves_partial_trace_on_keyboard_interrupt(tmp_path: Path):
