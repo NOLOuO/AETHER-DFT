@@ -323,6 +323,19 @@ def _ensure_auto_followups(state: dict[str, Any]) -> None:
         if isinstance(item, dict) and (item.get("metadata") or {}).get("auto_mode")
     }
     interval_hours = int(state.get("monitor_interval_hours") or DEFAULT_MONITOR_INTERVAL_HOURS)
+    if "initial_advance" not in kinds:
+        schedule_followup(
+            project=project,
+            title="Auto initial advance",
+            prompt=(
+                "AUTO MODE initial advance. Research goal: "
+                f"{goal}. Start from current project/session evidence and take the first useful autonomous scientific action. "
+                "Do not wait for a manual tick. If the goal is broad, create or inspect a multi-candidate campaign, gather immediate evidence, "
+                "build safe local structures when useful, and ask the human only if a blocking ambiguity or permission issue remains."
+            ),
+            due_at=_now_iso(),
+            metadata={"auto_mode": True, "auto_kind": "initial_advance"},
+        )
     if "monitor" not in kinds:
         schedule_followup(
             project=project,

@@ -1064,11 +1064,13 @@ def run_auto_due_once(
 ) -> dict[str, Any]:
     """Run one due autonomous model turn, if the durable queue says one is due."""
 
-    from .auto_mode import collect_due_auto_intents, complete_due_auto_intents
+    from .auto_mode import collect_due_auto_intents, complete_due_auto_intents, load_auto_state
 
     plan = collect_due_auto_intents(project=args.project, now=now, limit=5)
     if not plan.get("should_run"):
         return {"status": plan.get("status") or "idle", "ran": False, "plan": plan}
+    before_checkpoint = load_auto_state(args.project).get("last_checkpoint") or {}
+    before_checkpoint_at = str(before_checkpoint.get("updated_at") or "")
     if not quiet:
         titles = ", ".join(str(item.get("title") or item.get("id")) for item in (plan.get("followups") or [])[:3])
         print(f"\n{Colors.CYAN}[auto]{Colors.RESET} due: {titles or 'scheduled research work'}")
@@ -1084,6 +1086,21 @@ def run_auto_due_once(
         session_ref["id"] = new_session_id
     if not ok:
         return {"status": "error", "ran": True, "completed": False, "plan": plan}
+    after_checkpoint = load_auto_state(args.project).get("last_checkpoint") or {}
+    after_checkpoint_at = str(after_checkpoint.get("updated_at") or "")
+    if not after_checkpoint_at or after_checkpoint_at == before_checkpoint_at:
+        if not quiet:
+            print(
+                f"{Colors.YELLOW}[auto] model turn ended without auto_mode_checkpoint; "
+                f"leaving due intent open so the next auto pass can continue.{Colors.RESET}"
+            )
+        return {
+            "status": "needs_checkpoint",
+            "ran": True,
+            "completed": False,
+            "plan": plan,
+            "message": "模型本轮没有写入 auto_mode_checkpoint；未消费 due follow-up，后续会继续推进。",
+        }
     completed = complete_due_auto_intents(
         project=args.project,
         followup_ids=plan.get("followup_ids") or [],
@@ -1179,12 +1196,29 @@ def handle_chat_auto_command(line: str, args: argparse.Namespace, session_store:
         daily_report_time="18:00",
         allow_literature_search=True,
         allow_structure_build=True,
-        allow_cluster_submit=True,
+        # /auto is a switch, not an implicit permission escalation.  Keep the
+        # interactive path aligned with `aether auto on`: cluster submission is
+        # disabled unless the user explicitly enables it through the CLI/tool
+        # permission path.
+        allow_cluster_submit=False,
         allow_research_writeback=True,
         reset_questions=True,
     )
     print_auto_preview(result)
-    print(f"{Colors.DIM}已创建周期 monitor/daily-report follow-up；保持 chat 打开时，后台会在到期后自动推进。{Colors.RESET}")
+    print(f"{Colors.DIM}已创建立即推进、周期 monitor 和 daily-report follow-up；保持 chat 打开时，后台会自动推进到期事项。{Colors.RESET}")
+    if result.get("status") == "ok":
+        session_ref = {"id": session_id}
+        first = run_auto_due_once(
+            args=args,
+            session_store=session_store,
+            session_ref=session_ref,
+            quiet=False,
+        )
+        session_id = session_ref.get("id") or session_id
+        if first.get("status") == "ok" and first.get("ran"):
+            print(f"{Colors.DIM}/auto initial advance completed; later checks will follow the monitor/report schedule.{Colors.RESET}")
+        elif first.get("status") not in {"idle", "disabled"}:
+            print(f"{Colors.YELLOW}/auto initial advance did not complete: {first.get('status')}{Colors.RESET}")
     return True, session_id
 
 

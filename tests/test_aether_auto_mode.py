@@ -46,7 +46,10 @@ def test_auto_mode_configure_persists_goal_and_schedules_followups(tmp_path: Pat
 
     scheduled = auto_mode_status(project="demo")["scheduled_followups"]["followups"]
     auto_kinds = {(item.get("metadata") or {}).get("auto_kind") for item in scheduled}
-    assert {"monitor", "daily_report"}.issubset(auto_kinds)
+    assert {"initial_advance", "monitor", "daily_report"}.issubset(auto_kinds)
+    initial = next(item for item in scheduled if (item.get("metadata") or {}).get("auto_kind") == "initial_advance")
+    assert initial["interval_minutes"] is None
+    assert "Do not wait for a manual tick" in initial["prompt"]
 
     digest = build_auto_mode_digest(project="demo")
     assert "Auto mode is ON" in digest
@@ -183,6 +186,7 @@ def test_interactive_slash_auto_run_words_do_not_trigger_manual_model_turn(monke
 def test_auto_due_runner_invokes_model_and_reschedules_due_work(monkeypatch, tmp_path):
     from aether_dft.followups import schedule_followup
     from aether_dft.session_store import AetherSessionStore
+    from aether_dft.auto_mode import checkpoint_auto_mode
 
     _redirect_dirs(monkeypatch, tmp_path)
     configure_auto_mode(project="demo", enabled=True, research_goal="研究 MCH 在 Br/Pt 上脱氢路径")
@@ -200,6 +204,12 @@ def test_auto_due_runner_invokes_model_and_reschedules_due_work(monkeypatch, tmp
 
     def fake_runner(prompt, **kwargs):
         captured.append(prompt)
+        checkpoint_auto_mode(
+            project="demo",
+            observation="checked current evidence",
+            decision="continue campaign",
+            next_focus="build candidates",
+        )
         return True, session_id
 
     args = cli.argparse.Namespace(project="demo")
@@ -219,14 +229,53 @@ def test_auto_due_runner_invokes_model_and_reschedules_due_work(monkeypatch, tmp
     assert any(item["status"] == "rescheduled" for item in result["completion"]["results"])
 
 
+def test_auto_due_runner_keeps_due_open_without_checkpoint(monkeypatch, tmp_path):
+    from aether_dft.followups import due_followups
+    from aether_dft.session_store import AetherSessionStore
+
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="筛选 CO/Pt(111) 吸附构型")
+    store = AetherSessionStore(tmp_path / "sessions")
+    session_id = store.start_session(project="demo")
+
+    def fake_runner(prompt, **kwargs):
+        return True, session_id
+
+    args = cli.argparse.Namespace(project="demo")
+    result = cli.run_auto_due_once(
+        args=args,
+        session_store=store,
+        session_ref={"id": session_id},
+        now="2999-01-01T00:00:00+08:00",
+        turn_runner=fake_runner,
+        quiet=True,
+    )
+
+    assert result["status"] == "needs_checkpoint"
+    assert result["completed"] is False
+    assert due_followups(project="demo", now="2999-01-01T00:00:00+08:00")["count"] >= 1
+
+
 def test_interactive_slash_auto_enables_goal(monkeypatch, tmp_path, capsys):
     import aether_dft.paths as paths
     import aether_dft.project_state as project_state
+    from aether_dft.auto_mode import auto_mode_status
 
     monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path / "runtime")
     monkeypatch.setattr(paths, "PROJECTS_DIR", tmp_path / "projects")
     monkeypatch.setattr(project_state, "PROJECTS_DIR", tmp_path / "projects")
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    auto_prompts: list[str] = []
+
+    def fake_auto_turn(prompt, **kwargs):
+        auto_prompts.append(prompt)
+        auto_mode_status(project="demo")
+        from aether_dft.auto_mode import checkpoint_auto_mode
+
+        checkpoint_auto_mode(project="demo", observation="started", decision="continue", next_focus="candidate build")
+        return True, kwargs.get("session_id")
+
+    monkeypatch.setattr(cli, "run_chat_model_turn", fake_auto_turn)
     inputs = iter(["/auto 研究 CO 在 Pt(111) 的吸附与扩散", "/status", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
 
@@ -236,6 +285,9 @@ def test_interactive_slash_auto_enables_goal(monkeypatch, tmp_path, capsys):
     assert "ON" in out
     assert '"enabled": true' in out
     assert "CO 在 Pt(111)" in out
+    state = auto_mode_status(project="demo")["state"]
+    assert state["allow_cluster_submit"] is False
+    assert auto_prompts and "AUTO MODE DUE WORK" in auto_prompts[0]
 
 
 def test_interactive_slash_auto_toggles_and_infers_goal(monkeypatch, tmp_path, capsys):
@@ -252,6 +304,16 @@ def test_interactive_slash_auto_toggles_and_infers_goal(monkeypatch, tmp_path, c
     store.append_turn(existing, {"project": "demo", "prompt": "比较 top/hollow", "response": "继续算吸附能。"})
 
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    auto_prompts: list[str] = []
+
+    def fake_auto_turn(prompt, **kwargs):
+        auto_prompts.append(prompt)
+        from aether_dft.auto_mode import checkpoint_auto_mode
+
+        checkpoint_auto_mode(project="demo", observation="started", decision="continue", next_focus="candidate build")
+        return True, kwargs.get("session_id")
+
+    monkeypatch.setattr(cli, "run_chat_model_turn", fake_auto_turn)
     inputs = iter(["/auto", "/status", "/auto", "/status", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
 
@@ -261,3 +323,4 @@ def test_interactive_slash_auto_toggles_and_infers_goal(monkeypatch, tmp_path, c
     assert "H2O/Pt(111)" in out
     assert '"enabled": true' in out
     assert '"enabled": false' in out
+    assert auto_prompts and "AUTO MODE DUE WORK" in auto_prompts[0]
