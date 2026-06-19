@@ -361,10 +361,17 @@ def config_for_local_cluster_alias(alias: str) -> RemoteClusterConfig:
     if not parsed:
         raise ValueError(f"项目 SSH config 中未找到 Host {alias}")
     user = str(parsed.get("user") or alias)
+    local_profile = RemoteClusterConfig._load_local_profile()
+    active_alias = str(local_profile.get("ssh_host_alias") or "").strip()
+    remote_base_dir = (
+        str(local_profile.get("remote_base_dir") or "").strip()
+        if active_alias == alias
+        else ""
+    ) or f"/home/{user}/aether-dft-runs"
     return RemoteClusterConfig(
         host=str(parsed.get("hostname") or alias),
         user=user,
-        remote_base_dir=f"/home/{user}/aether-dft-runs",
+        remote_base_dir=remote_base_dir,
         port=int(str(parsed.get("port") or "22")),
         backend="openssh",
         ssh_key_path=str(parsed.get("identityfile") or "") or None,
@@ -372,6 +379,7 @@ def config_for_local_cluster_alias(alias: str) -> RemoteClusterConfig:
         ignore_local_ssh_config=False,
         ssh_config_path=str(ssh_config_path),
         ssh_host_alias=alias,
+        remote_potcar_roots=RemoteClusterConfig._remote_potcar_roots(local_profile),
     )
 
 

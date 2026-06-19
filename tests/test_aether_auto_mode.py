@@ -208,6 +208,15 @@ def test_auto_due_runner_invokes_model_and_reschedules_due_work(monkeypatch, tmp
     def fake_runner(prompt, **kwargs):
         captured.append(prompt)
         captured_args.append(kwargs["args"])
+        store.append_turn(
+            session_id,
+            {
+                "project": "demo",
+                "prompt": prompt,
+                "response": "已检查集群状态并记录 checkpoint。",
+                "tool_executions": [{"name": "cluster_remote_monitor", "result": {"status": "ok"}}],
+            },
+        )
         checkpoint_auto_mode(
             project="demo",
             observation="checked current evidence",
@@ -305,6 +314,53 @@ def test_auto_due_runner_partial_fallback_keeps_due_open(monkeypatch, tmp_path):
     assert "Auto initial advance" in due_titles
 
 
+def test_auto_due_runner_model_written_partial_checkpoint_keeps_due_open(monkeypatch, tmp_path):
+    from aether_dft.auto_mode import checkpoint_auto_mode
+    from aether_dft.followups import due_followups
+    from aether_dft.session_store import AetherSessionStore
+
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="筛选 CO/Pt(111) 吸附构型")
+    store = AetherSessionStore(tmp_path / "sessions")
+    session_id = store.start_session(project="demo")
+
+    def fake_runner(prompt, **kwargs):
+        store.append_turn(
+            session_id,
+            {
+                "project": "demo",
+                "prompt": prompt,
+                "response": "只完成了中间建模 checkpoint。",
+                "tool_executions": [
+                    {"name": "auto_campaign_start", "result": {"status": "ok"}},
+                    {"name": "structure_build_slab", "result": {"status": "ok"}},
+                    {"name": "auto_mode_checkpoint", "result": {"status": "ok"}},
+                ],
+            },
+        )
+        checkpoint_auto_mode(
+            project="demo",
+            observation="built an intermediate slab only",
+            decision="continue",
+            next_focus="register candidates",
+        )
+        return True, session_id
+
+    result = cli.run_auto_due_once(
+        args=cli.argparse.Namespace(project="demo", max_steps=2, max_tokens=500),
+        session_store=store,
+        session_ref={"id": session_id},
+        now="2999-01-01T00:00:00+08:00",
+        turn_runner=fake_runner,
+        quiet=True,
+    )
+
+    assert result["status"] == "partial_checkpoint"
+    assert result["completed"] is False
+    due_titles = {item["title"] for item in due_followups(project="demo", now="2999-01-01T00:00:00+08:00")["followups"]}
+    assert "Auto initial advance" in due_titles
+
+
 def test_auto_due_runner_fallback_consumes_due_after_candidate_registration(monkeypatch, tmp_path):
     from aether_dft.auto_mode import auto_mode_status
     from aether_dft.followups import due_followups
@@ -373,6 +429,65 @@ def test_auto_registers_manifest_before_fallback_checkpoint(monkeypatch, tmp_pat
     assert calls[0]["project"] == "demo"
     assert calls[0]["campaign_id"] == "campaign-1"
     assert calls[0]["source_manifest_path"].endswith("manifest.json")
+
+
+def test_auto_due_runner_registers_manifest_even_when_model_wrote_checkpoint(monkeypatch, tmp_path):
+    from aether_dft.auto_mode import checkpoint_auto_mode
+    from aether_dft.followups import due_followups
+    from aether_dft.session_store import AetherSessionStore
+
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="筛选 CO/Pt(111) 吸附构型")
+    store = AetherSessionStore(tmp_path / "sessions")
+    session_id = store.start_session(project="demo")
+    calls: list[dict[str, object]] = []
+
+    def fake_list_campaigns(**kwargs):
+        return {"status": "ok", "campaigns": [{"campaign_id": "campaign-1"}]}
+
+    def fake_register(**kwargs):
+        calls.append(kwargs)
+        return {"status": "ok", "added": [{"candidate_id": "c1"}], "campaign": {"campaign_id": kwargs["campaign_id"]}}
+
+    monkeypatch.setattr("aether_dft.auto_campaign.list_campaigns", fake_list_campaigns)
+    monkeypatch.setattr("aether_dft.auto_campaign.register_candidates", fake_register)
+
+    def fake_runner(prompt, **kwargs):
+        store.append_turn(
+            session_id,
+            {
+                "project": "demo",
+                "prompt": prompt,
+                "response": "manifest 已生成并 checkpoint，但模型忘了注册 campaign。",
+                "tool_executions": [
+                    {"name": "auto_campaign_start", "result": {"status": "ok", "campaign": {"campaign_id": "campaign-1"}}},
+                    {"name": "adsorption_candidate_manifest_compose", "result": {"status": "composed", "manifest_json": str(tmp_path / "manifest.json")}},
+                    {"name": "auto_mode_checkpoint", "result": {"status": "ok"}},
+                ],
+            },
+        )
+        checkpoint_auto_mode(
+            project="demo",
+            observation="composed a candidate manifest",
+            decision="continue",
+            next_focus="submit ready candidates",
+        )
+        return True, session_id
+
+    result = cli.run_auto_due_once(
+        args=cli.argparse.Namespace(project="demo", max_steps=2, max_tokens=500),
+        session_store=store,
+        session_ref={"id": session_id},
+        now="2999-01-01T00:00:00+08:00",
+        turn_runner=fake_runner,
+        quiet=True,
+    )
+
+    assert result["status"] == "ok"
+    assert result["completed"] is True
+    assert calls and calls[0]["source_manifest_path"].endswith("manifest.json")
+    due_titles = {item["title"] for item in due_followups(project="demo", now="2999-01-01T00:00:00+08:00")["followups"]}
+    assert "Auto initial advance" not in due_titles
 
 
 def test_interactive_slash_auto_enables_goal(monkeypatch, tmp_path, capsys):

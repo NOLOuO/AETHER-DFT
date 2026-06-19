@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from aether_dft.agent import run_agent_once
 from aether_dft.agent_tools import AetherToolRunner
 from dft_app.remote.config import (
@@ -142,6 +144,39 @@ def test_config_for_local_cluster_alias_does_not_mutate_active_alias(tmp_path, m
     assert config.ssh_host_alias == "rxqin"
     assert config.user == "rxqin"
     assert json.loads(profile_path.read_text(encoding="utf-8"))["ssh_host_alias"] == "szhang"
+
+
+def test_config_for_local_cluster_alias_preserves_remote_potcar_roots(tmp_path, monkeypatch):
+    config_path = tmp_path / "ssh_config"
+    profile_path = tmp_path / "cluster.local.json"
+    config_path.write_text(
+        "\n".join(
+            [
+                "Host szhang",
+                "    HostName 59.77.33.28",
+                "    User szhang",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    profile_path.write_text(
+        json.dumps(
+            {
+                "ssh_host_alias": "szhang",
+                "ssh_config_path": str(config_path),
+                "remote_base_dir": "/home/szhang/aether-dft-runs",
+                "remote_potcar_roots": ["/share/paw/pbe", "/home/szhang/potcars"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(RemoteClusterConfig, "_default_ssh_config_path", classmethod(lambda cls: config_path))
+    monkeypatch.setattr(RemoteClusterConfig, "_local_profile_path", classmethod(lambda cls: profile_path))
+
+    config = config_for_local_cluster_alias("szhang")
+
+    assert config.remote_base_dir == "/home/szhang/aether-dft-runs"
+    assert config.remote_potcar_roots == ("/share/paw/pbe", "/home/szhang/potcars")
 
 
 def test_registry_cluster_config_accepts_cluster_alias(tmp_path, monkeypatch):
@@ -393,6 +428,23 @@ def test_remote_potcar_script_uses_mapping_without_single_root_potcar_for_multi_
     assert '"$root/POTCAR"' not in script
     assert "missing POTCAR for $sym" in script
     assert "/home/szhang/aether-dft-runs/task/run/inputs/POTCAR" in script
+
+
+def test_remote_potcar_materialization_blocks_when_no_root_configured(tmp_path):
+    run_root = tmp_path / "run"
+    inputs = run_root / "inputs"
+    inputs.mkdir(parents=True)
+    (inputs / "POTCAR.mapping.json").write_text('{"Pt": "Pt"}\n', encoding="utf-8")
+    runner = SSHRemoteRunner()
+    config = RemoteClusterConfig(host="fake", user="szhang", remote_base_dir="/home/szhang/aether-dft-runs")
+
+    with pytest.raises(RuntimeError, match="remote_potcar_roots"):
+        runner._materialize_remote_potcar_if_needed(
+            config,
+            run_root,
+            "/home/szhang/aether-dft-runs/task/run",
+            "openssh",
+        )
 
 
 def test_remote_potcar_root_rejects_lateral_paths():

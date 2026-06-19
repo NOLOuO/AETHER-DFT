@@ -1150,7 +1150,6 @@ def _auto_record_has_completion_signal(record: dict[str, Any]) -> bool:
         "research_progress_append",
         "research_learning_capture",
         "candidate_outcome_record",
-        "auto_mode_checkpoint",
     }
     return bool(tool_names & completion_tools)
 
@@ -1199,6 +1198,21 @@ def _auto_register_manifest_if_present(*, project: str | None, record: dict[str,
         return {"status": "error", "message": str(exc), "manifest_path": manifest_path}
 
 
+def _auto_checkpoint_fingerprint(checkpoint: dict[str, Any]) -> str:
+    """Return a stable fingerprint for checkpoint change detection.
+
+    ``updated_at`` is second-resolution, so two legitimate checkpoints written in
+    the same second can otherwise look unchanged.  Fingerprinting the whole
+    payload keeps the due-loop decision tied to actual state, not wall-clock
+    granularity.
+    """
+
+    try:
+        return json.dumps(checkpoint or {}, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:
+        return repr(checkpoint)
+
+
 def run_auto_due_once(
     *,
     args: argparse.Namespace,
@@ -1216,7 +1230,7 @@ def run_auto_due_once(
     if not plan.get("should_run"):
         return {"status": plan.get("status") or "idle", "ran": False, "plan": plan}
     before_checkpoint = load_auto_state(args.project).get("last_checkpoint") or {}
-    before_checkpoint_at = str(before_checkpoint.get("updated_at") or "")
+    before_checkpoint_fingerprint = _auto_checkpoint_fingerprint(before_checkpoint)
     if not quiet:
         titles = ", ".join(str(item.get("title") or item.get("id")) for item in (plan.get("followups") or [])[:3])
         print(f"\n{Colors.CYAN}[auto]{Colors.RESET} due: {titles or 'scheduled research work'}")
@@ -1233,19 +1247,21 @@ def run_auto_due_once(
         session_ref["id"] = new_session_id
     if not ok:
         return {"status": "error", "ran": True, "completed": False, "plan": plan}
+    latest_record = _latest_session_record(session_store, session_ref.get("id"))
+    auto_register = _auto_register_manifest_if_present(project=args.project, record=latest_record)
+    if auto_register.get("status") == "ok":
+        latest_record = copy.deepcopy(latest_record)
+        latest_record.setdefault("tool_executions", []).append(
+            {"name": "auto_campaign_register_candidates", "result": auto_register}
+        )
     after_checkpoint = load_auto_state(args.project).get("last_checkpoint") or {}
-    after_checkpoint_at = str(after_checkpoint.get("updated_at") or "")
-    if not after_checkpoint_at or after_checkpoint_at == before_checkpoint_at:
-        latest_record = _latest_session_record(session_store, session_ref.get("id"))
-        auto_register = _auto_register_manifest_if_present(project=args.project, record=latest_record)
-        if auto_register.get("status") == "ok":
-            latest_record = copy.deepcopy(latest_record)
-            latest_record.setdefault("tool_executions", []).append(
-                {"name": "auto_campaign_register_candidates", "result": auto_register}
-            )
+    after_checkpoint_fingerprint = _auto_checkpoint_fingerprint(after_checkpoint)
+    checkpoint_changed = bool(after_checkpoint) and after_checkpoint_fingerprint != before_checkpoint_fingerprint
+    completion_signal = _auto_record_has_completion_signal(latest_record)
+    if not checkpoint_changed:
         fallback = _auto_fallback_checkpoint(project=args.project, session_id=session_ref.get("id"), record=latest_record)
         if fallback.get("status") == "ok":
-            if not _auto_record_has_completion_signal(latest_record):
+            if not completion_signal:
                 if not quiet:
                     print(f"{Colors.DIM}[auto] wrote partial fallback checkpoint; keeping due intent open for immediate continuation.{Colors.RESET}")
                 return {
@@ -1283,6 +1299,19 @@ def run_auto_due_once(
             "completed": False,
             "plan": plan,
             "message": "模型本轮没有写入 auto_mode_checkpoint；未消费 due follow-up，后续会继续推进。",
+        }
+    if not completion_signal:
+        if not quiet:
+            print(
+                f"{Colors.DIM}[auto] model wrote a partial checkpoint; "
+                f"keeping due intent open for the next autonomous pass.{Colors.RESET}"
+            )
+        return {
+            "status": "partial_checkpoint",
+            "ran": True,
+            "completed": False,
+            "plan": plan,
+            "message": "模型写入了 checkpoint，但本轮还没有候选/结果/提交/进展写回等完成信号；due intent 保留继续推进。",
         }
     completed = complete_due_auto_intents(
         project=args.project,

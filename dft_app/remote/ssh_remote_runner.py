@@ -166,7 +166,10 @@ class SSHRemoteRunner:
             run_record.block_phase(PipelinePhase.SUBMIT, tools_error)
             return RemoteExecutionResult("blocked", tools_error, {})
 
-        remote_run_root = config.remote_run_root(spec.task_id, run_record.run_id)
+        remote_run_root = self._safe_remote_run_root(
+            config.remote_run_root(spec.task_id, run_record.run_id),
+            config,
+        )
         run_record.start_phase(
             PipelinePhase.SUBMIT,
             message=f"正在准备远程提交环境，backend={backend}",
@@ -485,7 +488,10 @@ class SSHRemoteRunner:
         if local_potcar.exists() or not mapping_path.exists():
             return None
         if not config.remote_potcar_roots:
-            return None
+            raise RuntimeError(
+                "本地缺少 inputs/POTCAR，且集群配置没有 remote_potcar_roots；"
+                "为避免提交缺赝势的坏任务，已阻止 sbatch。"
+            )
         try:
             mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
         except Exception as exc:

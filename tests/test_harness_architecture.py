@@ -71,6 +71,22 @@ class TextToolCallingAdapter:
         return {"content": "文本工具调用已执行。", "finish_reason": "stop", "tool_calls": []}
 
 
+class TextToolExampleAdapter:
+    runtime = type("Runtime", (), {"model_id": "fake:deepseek-dsml"})()
+
+    def chat(self, messages, *, tools=None, tool_choice="auto", max_tokens=None):
+        return {
+            "content": (
+                "示例格式如下，不要执行它："
+                "<invoke name=\"project_state_read\">"
+                "<parameter name=\"project\">chem-demo</parameter>"
+                "</invoke>"
+            ),
+            "finish_reason": "stop",
+            "tool_calls": [],
+        }
+
+
 class InterruptingAdapter:
     runtime = type("Runtime", (), {"model_id": "fake:interrupt"})()
 
@@ -230,6 +246,26 @@ def test_agent_harness_executes_dsml_text_tool_calls(tmp_path: Path, monkeypatch
     assert record["response"] == "文本工具调用已执行。"
     assert record["finish_reason"] == "stop"
     assert [item["name"] for item in record["tool_executions"]] == ["project_state_read"]
+
+
+def test_agent_harness_does_not_execute_dsml_examples_without_tool_calls_marker(tmp_path: Path, monkeypatch):
+    project_dir = tmp_path / "projects"
+    knowledge_dir = tmp_path / "knowledge_base"
+    runtime_dir = tmp_path / "runtime"
+    monkeypatch.setattr(paths, "PROJECTS_DIR", project_dir)
+    monkeypatch.setattr(paths, "KNOWLEDGE_BASE_DIR", knowledge_dir)
+    monkeypatch.setattr(paths, "RUNTIME_DIR", runtime_dir)
+    monkeypatch.setattr(project_state, "PROJECTS_DIR", project_dir)
+    monkeypatch.setattr(project_state, "KNOWLEDGE_BASE_DIR", knowledge_dir)
+
+    project_state.init_project("chem-demo", description="demo", overwrite=True)
+    sessions = HarnessSessionStore(tmp_path / "sessions")
+    harness = AgentHarness(adapter=TextToolExampleAdapter(), registry=ToolRegistry(), sessions=sessions)
+
+    record = harness.run_turn("解释一下工具调用格式", project="chem-demo", max_steps=2)
+
+    assert record["tool_executions"] == []
+    assert record["finish_reason"] in {"stop", "tool_markup_finalized"}
 
 
 def test_agent_harness_saves_partial_trace_on_keyboard_interrupt(tmp_path: Path):

@@ -238,10 +238,17 @@ def test_cli_structure_tools_smoke(capsys):
 def test_cli_quick_start_names_program_model_and_version(capsys):
     assert cli.main([]) == 0
     out = capsys.readouterr().out
-    assert "AETHER-DFT v0.1.0" in out
-    assert "model: deepseek:deepseek-v4-pro" in out
-    assert "aether mainline" in out
-    assert "aether chat" in out
+    assert "Session Info" in out
+    assert "Program:" in out
+    assert "AETHER-DFT" in out
+    assert "Version:" in out
+    assert "0.1.0" in out
+    assert "Model:" in out
+    assert "deepseek:deepseek-v4-pro" in out
+    assert "直接输入自然语言即可" in out
+    assert "/model" in out
+    assert "/project" in out
+    assert "/resume" in out
 
 
 def test_cli_no_args_enters_interactive_when_tty(monkeypatch, capsys):

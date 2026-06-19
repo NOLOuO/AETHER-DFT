@@ -27,6 +27,11 @@ TOOL_HEARTBEAT_SECONDS = 1.5
 TOOL_VISIBLE_RESULT_LIMIT = 8_000
 TOKEN_GUARD_USAGE_RATIO = 0.88
 TOKEN_GUARD_MIN_STEPS = 2
+_TEXT_TOOL_CALL_MARKERS = (
+    "<｜｜DSML｜｜tool_calls",
+    "<ï½œï½œDSMLï½œï½œtool_calls",
+    "<|tool_calls|",
+)
 
 
 def _runtime_log_path() -> Path:
@@ -112,6 +117,8 @@ def _extract_text_tool_calls(value: str) -> list[dict[str, Any]]:
 
     text = str(value or "")
     if "invoke name=" not in text:
+        return []
+    if not any(marker in text for marker in _TEXT_TOOL_CALL_MARKERS):
         return []
     calls: list[dict[str, Any]] = []
     invoke_re = re.compile(r"<[^<>\n]*invoke\s+name=[\"']([^\"']+)[\"'][^>]*>(.*?)</[^<>\n]*invoke>", re.DOTALL)
