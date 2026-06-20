@@ -5,6 +5,8 @@ __pycache__/
 .tmp/
 
 # local runtime and secrets
+.venv/
+**/.aether_ready
 api_keys.local.json
 api_keys.json
 **/api_keys.json
