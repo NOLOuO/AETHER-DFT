@@ -130,7 +130,11 @@ def print_banner() -> None:
 
 
 def print_quick_start() -> None:
-    print_banner()
+    print("Session Info")
+    print(f"Program: {PROGRAM_NAME}")
+    print(f"Version: {__version__}")
+    print(f"Model: {program_model_id()}")
+    print("Role: conversational DFT research partner")
     print()
     print("Usage:")
     print("  aether                         # 进入持续交互式科研合伙人")
@@ -146,6 +150,9 @@ def print_quick_start() -> None:
     print("  aether outcar analyze --latest --project <slug> --write-learning")
     print("  aether doctor")
     print("  aether ssh")
+    print()
+    print("直接输入自然语言即可；模型会自己判断是否需要调用工具。")
+    print("交互式命令：/model、/project、/resume、/auto、/exit。")
     print()
     print("Long form:")
     print("  aether-dft agent \"...\"")
@@ -848,6 +855,7 @@ def run_chat_model_turn(
             status="in_progress",
         )
     stream_printer, stream_state = make_stream_printer()
+    interactive_cli_callbacks = bool(getattr(args, "auto_interactive_questions", True))
     allow_cluster_submit = False
     try:
         from .auto_mode import load_auto_state
@@ -867,8 +875,11 @@ def run_chat_model_turn(
             session_id=session_id,
             permission_mode=get_permission_mode(),
             progress_callback=make_chat_progress_printer(),
-            permission_prompt_callback=make_permission_prompt_callback(),
+            permission_prompt_callback=make_permission_prompt_callback() if interactive_cli_callbacks else None,
             stream_callback=stream_printer,
+            human_question_callback=answer_auto_human_question_from_cli
+            if interactive_cli_callbacks
+            else None,
         )
     except Exception as exc:
         if hasattr(session_store, "mark_pending_turn_failed"):
@@ -1057,6 +1068,79 @@ def print_auto_preview(payload: dict[str, Any]) -> None:
             print(f"   - {question}")
 
 
+def answer_auto_human_question_from_cli(payload: dict[str, Any]) -> dict[str, Any]:
+    """Ask one model-authored /auto question in the terminal and persist answer."""
+
+    from .auto_mode import answer_auto_human_question
+
+    question_record = payload.get("question") if isinstance(payload.get("question"), dict) else {}
+    project = str(payload.get("project") or question_record.get("project") or "").strip() or None
+    question_id = str(payload.get("question_id") or question_record.get("id") or "").strip() or None
+    question = str(question_record.get("question") or payload.get("question_text") or payload.get("question") or "").strip()
+    if not question:
+        return {"status": "error", "message": "auto_human_question 缺少 question。"}
+    print(f"\n{Colors.CYAN}[auto question]{Colors.RESET}")
+    why = str(question_record.get("why_needed") or payload.get("why_needed") or "").strip()
+    boundary = str(question_record.get("decision_boundary") or payload.get("decision_boundary") or "").strip()
+    if why:
+        print(f"  why: {why}")
+    if boundary:
+        print(f"  decision: {boundary}")
+    evidence = question_record.get("evidence_refs") or payload.get("evidence_refs") or []
+    if evidence:
+        print(f"  evidence: {', '.join(str(item) for item in evidence[:5])}")
+    print(f"  Q: {Colors.BOLD}{question}{Colors.RESET}")
+    options = [str(item).strip() for item in (question_record.get("options") or payload.get("options") or []) if str(item).strip()]
+    for index, option in enumerate(options, start=1):
+        print(f"   {index}. {option}")
+    default = str(question_record.get("default_if_unanswered") or payload.get("default_if_unanswered") or "").strip()
+    if default:
+        print(f"  default if blank: {default}")
+    if not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty()):
+        return {"status": "pending_human_answer", "question": question_record, "message": "非交互 stdin：问题已记录，稍后在 chat CLI 中回答。"}
+    try:
+        raw = input("answer> ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return {"status": "pending_human_answer", "question": question_record, "message": "用户暂未回答；问题保持 pending。"}
+    if raw.isdigit() and options and 1 <= int(raw) <= len(options):
+        raw = options[int(raw) - 1]
+    if not raw and default:
+        raw = default
+    if not raw:
+        return {"status": "pending_human_answer", "question": question_record, "message": "空答案未记录；问题保持 pending。"}
+    result = answer_auto_human_question(project=project, question_id=question_id, answer=raw, source="cli")
+    if result.get("status") == "answered":
+        print(f"{Colors.GREEN}[auto]{Colors.RESET} human answer recorded; AI can continue from it.")
+    return result
+
+
+def handle_pending_auto_question(
+    args: argparse.Namespace,
+    *,
+    session_store: Any,
+    session_ref: dict[str, str | None],
+) -> bool:
+    """Surface a queued /auto question before accepting the next user command."""
+
+    from .auto_mode import latest_pending_auto_human_question
+
+    pending = latest_pending_auto_human_question(project=args.project)
+    if not pending:
+        return False
+    result = answer_auto_human_question_from_cli({"project": args.project, "question": pending, "question_id": pending.get("id")})
+    if result.get("status") != "answered":
+        return False
+    follow = run_auto_due_once(
+        args=args,
+        session_store=session_store,
+        session_ref=session_ref,
+        quiet=False,
+        interactive_questions=True,
+    )
+    return bool(follow.get("ran"))
+
+
 def auto_turn_args(args: argparse.Namespace) -> argparse.Namespace:
     """Return a non-mutating args copy with enough budget for /auto work.
 
@@ -1150,6 +1234,7 @@ def _auto_record_has_completion_signal(record: dict[str, Any]) -> bool:
         "research_progress_append",
         "research_learning_capture",
         "candidate_outcome_record",
+        "auto_human_question",
     }
     return bool(tool_names & completion_tools)
 
@@ -1221,6 +1306,7 @@ def run_auto_due_once(
     now: str | None = None,
     turn_runner: Any | None = None,
     quiet: bool = False,
+    interactive_questions: bool = True,
 ) -> dict[str, Any]:
     """Run one due autonomous model turn, if the durable queue says one is due."""
 
@@ -1236,6 +1322,7 @@ def run_auto_due_once(
         print(f"\n{Colors.CYAN}[auto]{Colors.RESET} due: {titles or 'scheduled research work'}")
     runner = turn_runner or run_chat_model_turn
     runner_args = auto_turn_args(args)
+    runner_args.auto_interactive_questions = bool(interactive_questions)
     ok, new_session_id = runner(
         str(plan.get("prompt") or ""),
         args=runner_args,
@@ -1336,6 +1423,8 @@ def start_auto_background_loop(
     """
 
     stop_event = threading.Event()
+    wake_event = threading.Event()
+    setattr(args, "_auto_wake_event", wake_event)
     try:
         interval = max(10.0, float(os.getenv("AETHER_AUTO_LOOP_INTERVAL_SECONDS", "300")))
     except ValueError:
@@ -1345,12 +1434,16 @@ def start_auto_background_loop(
     def worker() -> None:
         # First wait keeps chat startup snappy and avoids firing immediately
         # after the user toggles /auto on; due work is handled by schedule time.
-        while not stop_event.wait(interval):
+        while not stop_event.is_set():
+            wake_event.wait(interval)
+            wake_event.clear()
+            if stop_event.is_set():
+                break
             if lock.locked():
                 continue
             with lock:
                 try:
-                    run_auto_due_once(args=args, session_store=session_store, session_ref=session_ref)
+                    run_auto_due_once(args=args, session_store=session_store, session_ref=session_ref, interactive_questions=False)
                 except Exception as exc:  # defensive UI guard; details are visible to the user.
                     print(f"\n{Colors.YELLOW}[auto] background loop paused after error: {exc}{Colors.RESET}")
 
@@ -1417,29 +1510,12 @@ def handle_chat_auto_command(line: str, args: argparse.Namespace, session_store:
         reset_questions=True,
     )
     print_auto_preview(result)
-    print(f"{Colors.DIM}已创建立即推进、周期 monitor 和 daily-report follow-up；保持 chat 打开时，后台会自动推进到期事项。{Colors.RESET}")
+    print(f"{Colors.DIM}/auto 已作为开关开启：已创建初始推进、周期 monitor 和 daily-report follow-up；后台会按目标自动推进。{Colors.RESET}")
     if result.get("status") == "ok":
-        session_ref = {"id": session_id}
-        first: dict[str, Any] = {"status": "idle", "ran": False}
-        for attempt in range(1, AUTO_INITIAL_MAX_PASSES + 1):
-            first = run_auto_due_once(
-                args=args,
-                session_store=session_store,
-                session_ref=session_ref,
-                quiet=False,
-            )
-            session_id = session_ref.get("id") or session_id
-            status = str(first.get("status") or "")
-            if first.get("completed") or status in {"idle", "disabled"}:
-                break
-            if status == "partial_checkpoint" and attempt < AUTO_INITIAL_MAX_PASSES:
-                print(f"{Colors.DIM}/auto continuing from partial checkpoint ({attempt}/{AUTO_INITIAL_MAX_PASSES}).{Colors.RESET}")
-                continue
-            break
-        if first.get("status") == "ok" and first.get("ran"):
-            print(f"{Colors.DIM}/auto initial advance completed; later checks will follow the monitor/report schedule.{Colors.RESET}")
-        elif first.get("status") not in {"idle", "disabled"}:
-            print(f"{Colors.YELLOW}/auto initial advance did not complete: {first.get('status')}{Colors.RESET}")
+        wake_event = getattr(args, "_auto_wake_event", None)
+        if wake_event is not None and hasattr(wake_event, "set"):
+            wake_event.set()
+            print(f"{Colors.DIM}后台已被唤醒；如 AI 需要人类判断，会直接在 CLI 里提出一个问题。{Colors.RESET}")
     return True, session_id
 
 
@@ -1994,6 +2070,9 @@ def handle_chat(args: argparse.Namespace) -> int:
     session_ref: dict[str, str | None] = {"id": session_id}
     auto_stop_event = start_auto_background_loop(args=args, session_store=session_store, session_ref=session_ref)
     while True:
+        if handle_pending_auto_question(args, session_store=session_store, session_ref=session_ref):
+            session_id = session_ref.get("id") or session_id
+            continue
         try:
             model_short = active_model_id(args).split(":", 1)[-1]
             project_short = args.project or "no-project"

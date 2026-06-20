@@ -280,7 +280,7 @@ class AetherSessionStore:
             if project and entry.get("project") != project:
                 continue
             session_id = str(entry.get("session_id") or "")
-            if session_id:
+            if session_id and self._state_path(session_id).exists():
                 return session_id
         return None
 
@@ -289,10 +289,13 @@ class AetherSessionStore:
         for entry in self._load_index():
             if project and entry.get("project") != project:
                 continue
+            session_id = str(entry.get("session_id") or "")
+            if not session_id or not self._state_path(session_id).exists():
+                continue
             pending = entry.get("pending_turn") if isinstance(entry.get("pending_turn"), dict) else {}
             summaries.append(
                 SessionSummary(
-                    session_id=str(entry.get("session_id") or ""),
+                    session_id=session_id,
                     project=entry.get("project"),
                     created_at=str(entry.get("created_at") or ""),
                     updated_at=str(entry.get("updated_at") or ""),
@@ -762,6 +765,8 @@ class AetherSessionStore:
         resolved = session_id or self.latest_session_id(project=project)
         if not resolved:
             return {"status": "empty", "session_id": None, "state": None, "recent_turns": []}
+        if not self._state_path(resolved).exists():
+            return {"status": "missing", "session_id": resolved, "state": None, "recent_turns": []}
         state = self.load_state(resolved)
         recent_turns, recovery = self._read_transcript_rows_with_recovery(resolved)
         recent_turns = recent_turns[-limit:]

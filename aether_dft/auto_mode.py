@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,38 @@ def _collapse(value: Any, *, limit: int = 260) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"
+
+
+def _question_id(question: str) -> str:
+    digest = hashlib.sha1(f"{_now_iso()}|{question}".encode("utf-8", errors="replace")).hexdigest()[:10]
+    return f"hq_{digest}"
+
+
+def _string_items(value: Any, *, limit: int = 20) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)):
+        items = [value]
+    elif isinstance(value, list):
+        items = value
+    else:
+        items = [value]
+    result: list[str] = []
+    for item in items[:limit]:
+        text = str(item or "").strip()
+        if text:
+            result.append(text)
+    return result
+
+
+def _refresh_human_question_summary(state: dict[str, Any]) -> None:
+    records = [item for item in (state.get("human_question_records") or []) if isinstance(item, dict)]
+    pending = [item for item in records if str(item.get("status") or "") == "pending"]
+    state["human_questions"] = [
+        str(item.get("question") or "").strip()
+        for item in pending
+        if str(item.get("question") or "").strip()
+    ]
 
 
 def _extract_goal_from_text(text: str) -> str:
@@ -221,6 +254,8 @@ def _default_state(project: str | None = None) -> dict[str, Any]:
         "allow_cluster_submit": False,
         "allow_research_writeback": True,
         "human_questions": [],
+        "human_question_records": [],
+        "human_answers": [],
         "open_questions": [],
         "last_checkpoint": {},
         "created_at": "",
@@ -240,6 +275,9 @@ def load_auto_state(project: str | None = None) -> dict[str, Any]:
     if isinstance(data, dict):
         state.update(data)
     state["project"] = _normalize_project(state.get("project") or project)
+    state.setdefault("human_question_records", [])
+    state.setdefault("human_answers", [])
+    _refresh_human_question_summary(state)
     return state
 
 
@@ -297,6 +335,8 @@ def configure_auto_mode(
         state["allow_research_writeback"] = bool(allow_research_writeback)
     if reset_questions:
         state["human_questions"] = []
+        state["human_question_records"] = []
+        state["human_answers"] = []
         state["open_questions"] = []
     saved = save_auto_state(state, project=project)
     if enabled:
@@ -309,6 +349,134 @@ def configure_auto_mode(
             "Default bias: convert uncertainty into candidate sets and let calculations filter them."
         ),
     }
+
+
+def request_auto_human_question(
+    *,
+    project: str | None = None,
+    question: str,
+    why_needed: str | None = None,
+    decision_boundary: str | None = None,
+    options: list[Any] | None = None,
+    default_if_unanswered: str | None = None,
+    evidence_refs: list[str] | None = None,
+) -> dict[str, Any]:
+    """Persist one model-authored question that needs human judgment.
+
+    This is deliberately a generic clarification channel, not a fixed
+    domain-specific decision tree.  The model decides *what* to ask after it
+    has inspected available evidence; the runtime only records the question and
+    lets the CLI collect the answer.
+    """
+
+    text = str(question or "").strip()
+    if not text:
+        return {"status": "error", "message": "question 不能为空。"}
+    state = load_auto_state(project)
+    record = {
+        "id": _question_id(text),
+        "status": "pending",
+        "project": _normalize_project(project or state.get("project")),
+        "question": text,
+        "why_needed": str(why_needed or "").strip(),
+        "decision_boundary": str(decision_boundary or "").strip(),
+        "options": _string_items(options),
+        "default_if_unanswered": str(default_if_unanswered or "").strip(),
+        "evidence_refs": _string_items(evidence_refs, limit=30),
+        "asked_at": _now_iso(),
+    }
+    records = [item for item in (state.get("human_question_records") or []) if isinstance(item, dict)]
+    # Keep the contract simple for humans: one pending blocker per project.
+    # The model can ask the next question after this one is answered.
+    for item in records:
+        if str(item.get("status") or "") == "pending":
+            return {
+                "status": "pending_human_answer",
+                "question": item,
+                "state": state,
+                "message": "已有一个待回答的人类问题；先回答该问题后再继续。",
+            }
+    records.append(record)
+    state["human_question_records"] = records[-50:]
+    state["status"] = "waiting_for_human"
+    _refresh_human_question_summary(state)
+    saved = save_auto_state(state, project=project)
+    return {"status": "pending_human_answer", "question": record, "state": saved["state"], "path": saved["path"]}
+
+
+def latest_pending_auto_human_question(*, project: str | None = None) -> dict[str, Any] | None:
+    state = load_auto_state(project)
+    records = [item for item in (state.get("human_question_records") or []) if isinstance(item, dict)]
+    for item in reversed(records):
+        if str(item.get("status") or "") == "pending":
+            return item
+    return None
+
+
+def answer_auto_human_question(
+    *,
+    project: str | None = None,
+    answer: str,
+    question_id: str | None = None,
+    source: str = "human",
+) -> dict[str, Any]:
+    text = str(answer or "").strip()
+    if not text:
+        return {"status": "empty", "message": "没有记录空答案。"}
+    state = load_auto_state(project)
+    records = [item for item in (state.get("human_question_records") or []) if isinstance(item, dict)]
+    target_index: int | None = None
+    wanted = str(question_id or "").strip()
+    if wanted:
+        for idx, item in enumerate(records):
+            if str(item.get("id") or "") == wanted:
+                target_index = idx
+                break
+    else:
+        for idx in range(len(records) - 1, -1, -1):
+            if str(records[idx].get("status") or "") == "pending":
+                target_index = idx
+                break
+    if target_index is None:
+        return {"status": "not_found", "message": "没有找到待回答的 /auto 问题。", "state": state}
+    record = dict(records[target_index])
+    if str(record.get("status") or "") != "pending":
+        return {"status": "already_answered", "question": record, "state": state}
+    record["status"] = "answered"
+    record["answer"] = text
+    record["answered_at"] = _now_iso()
+    record["answer_source"] = str(source or "human")
+    records[target_index] = record
+    state["human_question_records"] = records
+    answers = [item for item in (state.get("human_answers") or []) if isinstance(item, dict)]
+    answers.append(
+        {
+            "question_id": record.get("id"),
+            "question": record.get("question"),
+            "answer": text,
+            "answered_at": record["answered_at"],
+            "source": record["answer_source"],
+        }
+    )
+    state["human_answers"] = answers[-50:]
+    state["status"] = "active" if state.get("enabled") else state.get("status") or "idle"
+    _refresh_human_question_summary(state)
+    saved = save_auto_state(state, project=project)
+    # Answering a blocking question should immediately give /auto another due
+    # chance; otherwise the answer can sit idle until the next periodic monitor.
+    goal = str(saved["state"].get("research_goal") or "").strip()
+    if saved["state"].get("enabled"):
+        schedule_followup(
+            project=saved["state"].get("project") or project,
+            title="Auto continue after human answer",
+            prompt=(
+                "AUTO MODE human answer received. Continue toward the research goal using this answer as evidence. "
+                f"Question: {record.get('question')}. Answer: {text}. Goal: {goal}"
+            ),
+            due_at=_now_iso(),
+            metadata={"auto_mode": True, "auto_kind": "human_answer", "question_id": record.get("id")},
+        )
+    return {"status": "answered", "question": record, "state": saved["state"], "path": saved["path"]}
 
 
 def _ensure_auto_followups(state: dict[str, Any]) -> None:
@@ -497,6 +665,8 @@ def collect_due_auto_intents(
         "Use tools to inspect project/session/research/job evidence, then decide the smallest useful next scientific action toward the research goal.\n"
         "Do not follow a fixed pipeline. Literature search, structure building, cluster submission, monitoring, parsing, writeback, or asking one human question are all optional and evidence-driven.\n"
         f"{AUTO_COMPUTATIONAL_STRATEGY}\n"
+        "Human-question contract: before asking, inspect evidence that is available through tools. Ask only for human judgment, success criteria, costly branch choice, missing permission/credentials, or destructive/irreversible actions. "
+        "When blocked by such ambiguity, call auto_human_question with exactly one concise question, why_needed, decision_boundary, options when useful, and evidence_refs; do not merely put the question in final prose.\n"
         "Campaign state board: first inspect auto_campaign_status/list for this project; start one if the goal needs multi-candidate exploration and none exists. Register generated candidates, bind run_id/job_id after build/submit, update results after monitor/fetch/parse, and use prune_plan/next_batch to manage compute resources.\n"
         "Candidate persistence rule: when a structure/candidate manifest is created, do not manually retype candidate fields. Call auto_campaign_register_candidates with source_manifest_path so paths, material, adsorbate, motif, orientation, and scores are imported from evidence.\n"
         "Operational bias: if several adsorption sites, orientations, conformers, spin/charge states, coverages, or pathways are plausible, build/rank a candidate set instead of arguing for one perfect choice. Use preflight/quality checks to avoid obviously bad jobs, then let DFT results prune.\n"
@@ -507,6 +677,8 @@ def collect_due_auto_intents(
         f"Auto status: {state.get('status') or 'idle'}\n"
         f"Allowed actions: literature={state.get('allow_literature_search')}, structure_build={state.get('allow_structure_build')}, "
         f"cluster_submit={state.get('allow_cluster_submit')}, research_writeback={state.get('allow_research_writeback')}\n"
+        "Pending/answered human-question records JSON:\n"
+        f"{json.dumps((state.get('human_question_records') or [])[-10:], ensure_ascii=False, indent=2)}\n"
         "Due intents JSON:\n"
         f"{json.dumps(safe_followups, ensure_ascii=False, indent=2)}"
     )
@@ -567,6 +739,7 @@ def build_auto_mode_digest(*, project: str | None = None) -> str:
         "",
         "Autonomy contract: human sets/adjusts the research goal and answers blocking questions; AI decides the next evidence/action step.",
         "Ask the human only for ambiguity, materially branching costly choices, missing credentials/permissions, or destructive/irreversible actions.",
+        "When blocked, call auto_human_question; the CLI will ask the human inline and store the answer for the next autonomous pass.",
         "Do not follow a fixed literature→structure→submit pipeline; choose the smallest evidence/action loop that advances the goal.",
         AUTO_COMPUTATIONAL_STRATEGY,
         "Default execution pattern under uncertainty: enumerate candidates → cheap quality/preflight filters → batch calculations when allowed → parse/prune/refine → report only decisions and blockers.",
@@ -587,6 +760,11 @@ def build_auto_mode_digest(*, project: str | None = None) -> str:
     if questions:
         lines.extend(["", "Questions currently blocking/benefiting from human answer:"])
         lines.extend(f"- {item}" for item in questions[:5])
+    answers = [item for item in (state.get("human_answers") or []) if isinstance(item, dict)]
+    if answers:
+        lines.extend(["", "Recent human answers:"])
+        for item in answers[-5:]:
+            lines.append(f"- Q: {item.get('question') or ''} | A: {item.get('answer') or ''}")
     due = ((status.get("due_followups") or {}).get("followups") or [])[:5]
     if due:
         lines.extend(["", "Due auto/follow-up intents:"])

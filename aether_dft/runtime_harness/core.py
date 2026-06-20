@@ -473,9 +473,14 @@ class AgentHarness:
         sessions: Any | None = None,
         allow_cluster_submit: bool = False,
         permission_mode: str | None = None,
+        human_question_handler: Any | None = None,
     ):
         self.adapter = adapter
-        self.registry = registry or ToolRegistry(allow_cluster_submit=allow_cluster_submit, permission_mode=permission_mode)
+        self.registry = registry or ToolRegistry(
+            allow_cluster_submit=allow_cluster_submit,
+            permission_mode=permission_mode,
+            human_question_handler=human_question_handler,
+        )
         self.sessions = sessions or HarnessSessionStore()
         self.allow_cluster_submit = allow_cluster_submit
 
@@ -615,6 +620,7 @@ class AgentHarness:
                     messages.append(assistant_message)
                     messages = _clean_messages(messages)
                     read_only_checker = getattr(self.registry, "is_read_only_tool", lambda _name: True)
+                    parallel_safe_checker = getattr(self.registry, "is_parallel_safe_tool", lambda _name: True)
                     parsed_calls: list[tuple[int, dict[str, Any], str, Any, bool]] = []
                     for call_index, call in enumerate(tool_calls):
                         func = call.get("function") or {}
@@ -622,9 +628,56 @@ class AgentHarness:
                         raw_args = func.get("arguments") or "{}"
                         parsed_calls.append((call_index, call, name, raw_args, bool(read_only_checker(name))))
                     executable_count = min(len(parsed_calls), MAX_TOOL_CALLS_PER_STEP)
+                    human_question_indexes = [
+                        idx for idx, item in enumerate(parsed_calls[:executable_count]) if item[2] == "auto_human_question"
+                    ]
+                    if human_question_indexes:
+                        step_number = step_index + 1
+                        first_question_index = human_question_indexes[0]
+                        for parsed_index, (call_index, call, name, raw_args, _read_only) in enumerate(parsed_calls[:executable_count]):
+                            if parsed_index == first_question_index:
+                                if progress_callback:
+                                    progress_callback({"event": "tool_start", "step": step_number, "name": name, "arguments": raw_args})
+                                result = _run_registry_tool_with_heartbeat(
+                                    self.registry,
+                                    name,
+                                    raw_args,
+                                    step=step_number,
+                                    progress_callback=progress_callback,
+                                )
+                            else:
+                                result = {
+                                    "name": name,
+                                    "arguments": raw_args,
+                                    "result": {
+                                        "status": "deferred_until_human_answer",
+                                        "message": (
+                                            "同一轮包含 auto_human_question；harness 已优先提问并延后其他工具，"
+                                            "避免在关键人类判断前执行写入/提交/并行查询。请等待答案后在下一轮继续。"
+                                        ),
+                                    },
+                                }
+                            append_tool_result(call, name, result, step_number)
+                        for call_index, call, name, raw_args, _read_only in parsed_calls[executable_count:]:
+                            append_tool_result(
+                                call,
+                                name,
+                                {
+                                    "name": name,
+                                    "arguments": raw_args,
+                                    "result": {
+                                        "status": "blocked",
+                                        "message": "auto_human_question 已优先执行；超出本轮工具上限的调用未执行。",
+                                    },
+                                },
+                                step_number,
+                            )
+                        messages = _clean_messages(messages)
+                        continue
                     parallel_read_only = (
                         executable_count > 1
                         and all(item[4] for item in parsed_calls[:executable_count])
+                        and all(bool(parallel_safe_checker(item[2])) for item in parsed_calls[:executable_count])
                     )
                     if parallel_read_only:
                         step_number = step_index + 1

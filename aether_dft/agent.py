@@ -71,6 +71,7 @@ def run_agent_once(
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     permission_prompt_callback: Callable[[dict[str, Any]], bool] | None = None,
     stream_callback: Callable[[dict[str, Any]], None] | None = None,
+    human_question_callback: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run one Codex-like AETHER harness turn.
 
@@ -82,6 +83,7 @@ def run_agent_once(
         adapter=_ModuleAdapter(model_id),
         allow_cluster_submit=allow_cluster_submit,
         permission_mode=permission_mode,
+        human_question_handler=human_question_callback,
     )
     record = harness.run_turn(
         prompt,

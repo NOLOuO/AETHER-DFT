@@ -10,7 +10,9 @@ from aether_dft.auto_mode import (
     complete_due_auto_intents,
     configure_auto_mode,
     auto_mode_status,
+    answer_auto_human_question,
     infer_research_goal,
+    latest_pending_auto_human_question,
 )
 from aether_dft.runtime_harness.tool_registry import ToolRegistry
 
@@ -92,6 +94,8 @@ def test_auto_mode_collects_due_work_for_background_loop(tmp_path: Path, monkeyp
     assert "Register generated candidates" in plan["prompt"]
     assert "source_manifest_path" in plan["prompt"]
     assert "Completion condition" in plan["prompt"]
+    assert "auto_human_question" in plan["prompt"]
+    assert "exactly one concise question" in plan["prompt"]
     assert "H2O/Pt(111)" in plan["prompt"]
 
     completed = complete_due_auto_intents(project="demo", followup_ids=plan["followup_ids"], note="tested")
@@ -129,16 +133,151 @@ def test_auto_mode_tools_are_model_visible_and_permissioned(tmp_path: Path, monk
     registry = ToolRegistry(permission_mode="never")
     names = {item["name"] for item in registry.list_tools()}
 
-    assert {"auto_mode_status", "auto_mode_configure", "auto_mode_checkpoint"}.issubset(names)
+    assert {"auto_mode_status", "auto_mode_configure", "auto_mode_checkpoint", "auto_human_question"}.issubset(names)
     discussion_names = {item["function"]["name"] for item in registry.openai_tool_schemas(interaction_mode="discussion")}
     assert "auto_mode_status" in discussion_names
     assert "auto_mode_checkpoint" in discussion_names
+    assert "auto_human_question" in discussion_names
 
     blocked = ToolRegistry(permission_mode="ask").run_tool(
         "auto_mode_configure",
         {"project": "demo", "enabled": True, "research_goal": "test"},
     )
     assert blocked["result"]["status"] == "permission_required"
+
+
+def test_auto_human_question_tool_records_pending_and_answer(tmp_path: Path, monkeypatch):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="筛选 H2O/Pt(111) 吸附候选")
+
+    result = ToolRegistry(permission_mode="ask").run_tool(
+        "auto_human_question",
+        {
+            "project": "demo",
+            "question": "优先目标是最稳定吸附能，还是同时筛选扩散路径？",
+            "why_needed": "两个目标会改变候选空间和计算批次。",
+            "decision_boundary": "稳定构型 vs 扩散路径",
+            "options": ["先稳定吸附", "同时看扩散"],
+            "evidence_refs": ["auto:goal"],
+        },
+    )
+
+    assert result["result"]["status"] == "pending_human_answer"
+    pending = latest_pending_auto_human_question(project="demo")
+    assert pending and "优先目标" in pending["question"]
+    duplicate = ToolRegistry(permission_mode="ask").run_tool(
+        "auto_human_question",
+        {"project": "demo", "question": "另一个问题应该被延后吗？"},
+    )
+    assert duplicate["result"]["question"]["id"] == pending["id"]
+    state = auto_mode_status(project="demo")["state"]
+    assert state["status"] == "waiting_for_human"
+    assert state["human_questions"]
+
+    answered = answer_auto_human_question(project="demo", question_id=pending["id"], answer="先稳定吸附")
+
+    assert answered["status"] == "answered"
+    state = auto_mode_status(project="demo")["state"]
+    assert state["status"] == "active"
+    assert state["human_questions"] == []
+    assert state["human_answers"][-1]["answer"] == "先稳定吸附"
+    repeated = answer_auto_human_question(project="demo", question_id=pending["id"], answer="覆盖答案不应生效")
+    assert repeated["status"] == "already_answered"
+    assert auto_mode_status(project="demo")["state"]["human_answers"][-1]["answer"] == "先稳定吸附"
+
+
+def test_auto_human_question_tool_uses_cli_handler(tmp_path: Path, monkeypatch):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="筛选 CO/Pt(111) 吸附构型")
+    seen: list[dict[str, object]] = []
+
+    def fake_handler(payload):
+        seen.append(payload)
+        return answer_auto_human_question(
+            project="demo",
+            question_id=str(payload["question_id"]),
+            answer="先用小批量候选验证",
+            source="test",
+        )
+
+    result = ToolRegistry(permission_mode="ask", human_question_handler=fake_handler).run_tool(
+        "auto_human_question",
+        {"project": "demo", "question": "候选空间很大，要先小批量还是全量？"},
+    )
+
+    assert result["result"]["status"] == "answered"
+    assert seen and seen[0]["question_id"]
+    state = auto_mode_status(project="demo")["state"]
+    assert state["human_answers"][-1]["answer"] == "先用小批量候选验证"
+
+
+def test_auto_human_question_is_not_parallel_safe(tmp_path: Path, monkeypatch):
+    _redirect_dirs(monkeypatch, tmp_path)
+
+    registry = ToolRegistry(permission_mode="ask")
+    specs = {item["name"]: item for item in registry.list_tools()}
+
+    assert specs["auto_human_question"]["read_only"] is True
+    assert specs["auto_human_question"]["parallel_safe"] is False
+    assert registry.is_parallel_safe_tool("auto_human_question") is False
+
+
+def test_background_auto_turn_disables_cli_prompts(monkeypatch, tmp_path):
+    _redirect_dirs(monkeypatch, tmp_path)
+    from aether_dft.session_store import AetherSessionStore
+
+    store = AetherSessionStore(tmp_path / "sessions")
+    session_id = store.start_session(project="demo")
+    callbacks: list[object] = []
+
+    def fake_ask_once(prompt, **kwargs):
+        callbacks.append(kwargs.get("permission_prompt_callback"))
+        callbacks.append(kwargs.get("human_question_callback"))
+        return {"response": "ok", "tool_executions": [], "progress": {}, "record_path": str(tmp_path / "r.jsonl")}
+
+    monkeypatch.setattr(cli, "ask_once", fake_ask_once)
+    args = cli.argparse.Namespace(
+        project="demo",
+        model=None,
+        max_tokens=100,
+        max_steps=2,
+        auto_interactive_questions=False,
+    )
+
+    ok, returned = cli.run_chat_model_turn(
+        "background",
+        args=args,
+        session_store=store,
+        session_id=session_id,
+        failure_hint="x",
+    )
+
+    assert ok is True
+    assert returned == session_id
+    assert callbacks == [None, None]
+
+
+def test_cli_human_question_handler_reads_answer(monkeypatch, tmp_path, capsys):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="筛选 CO/Pt(111) 吸附构型")
+    pending = ToolRegistry(permission_mode="ask").run_tool(
+        "auto_human_question",
+        {
+            "project": "demo",
+            "question": "先筛选吸附构型还是扩散路径？",
+            "options": ["吸附构型", "扩散路径"],
+        },
+    )["result"]["question"]
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "1")
+
+    result = cli.answer_auto_human_question_from_cli(
+        {"project": "demo", "question": pending, "question_id": pending["id"]}
+    )
+
+    assert result["status"] == "answered"
+    assert auto_mode_status(project="demo")["state"]["human_answers"][-1]["answer"] == "吸附构型"
+    assert "[auto question]" in capsys.readouterr().out
 
 
 def test_auto_cli_on_status_off(tmp_path: Path, monkeypatch, capsys):
@@ -499,17 +638,12 @@ def test_interactive_slash_auto_enables_goal(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(paths, "PROJECTS_DIR", tmp_path / "projects")
     monkeypatch.setattr(project_state, "PROJECTS_DIR", tmp_path / "projects")
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    auto_prompts: list[str] = []
 
-    def fake_auto_turn(prompt, **kwargs):
-        auto_prompts.append(prompt)
-        auto_mode_status(project="demo")
-        from aether_dft.auto_mode import checkpoint_auto_mode
+    def fake_background_loop(*, args, session_store, session_ref):
+        args._auto_wake_event = cli.threading.Event()
+        return cli.threading.Event()
 
-        checkpoint_auto_mode(project="demo", observation="started", decision="continue", next_focus="candidate build")
-        return True, kwargs.get("session_id")
-
-    monkeypatch.setattr(cli, "run_chat_model_turn", fake_auto_turn)
+    monkeypatch.setattr(cli, "start_auto_background_loop", fake_background_loop)
     inputs = iter(["/auto 研究 CO 在 Pt(111) 的吸附与扩散", "/status", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
 
@@ -521,7 +655,7 @@ def test_interactive_slash_auto_enables_goal(monkeypatch, tmp_path, capsys):
     assert "CO 在 Pt(111)" in out
     state = auto_mode_status(project="demo")["state"]
     assert state["allow_cluster_submit"] is False
-    assert auto_prompts and "AUTO MODE DUE WORK" in auto_prompts[0]
+    assert "后台已被唤醒" in out
 
 
 def test_interactive_slash_auto_toggles_and_infers_goal(monkeypatch, tmp_path, capsys):
@@ -538,16 +672,12 @@ def test_interactive_slash_auto_toggles_and_infers_goal(monkeypatch, tmp_path, c
     store.append_turn(existing, {"project": "demo", "prompt": "比较 top/hollow", "response": "继续算吸附能。"})
 
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    auto_prompts: list[str] = []
 
-    def fake_auto_turn(prompt, **kwargs):
-        auto_prompts.append(prompt)
-        from aether_dft.auto_mode import checkpoint_auto_mode
+    def fake_background_loop(*, args, session_store, session_ref):
+        args._auto_wake_event = cli.threading.Event()
+        return cli.threading.Event()
 
-        checkpoint_auto_mode(project="demo", observation="started", decision="continue", next_focus="candidate build")
-        return True, kwargs.get("session_id")
-
-    monkeypatch.setattr(cli, "run_chat_model_turn", fake_auto_turn)
+    monkeypatch.setattr(cli, "start_auto_background_loop", fake_background_loop)
     inputs = iter(["/auto", "/status", "/auto", "/status", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
 
@@ -557,4 +687,3 @@ def test_interactive_slash_auto_toggles_and_infers_goal(monkeypatch, tmp_path, c
     assert "H2O/Pt(111)" in out
     assert '"enabled": true' in out
     assert '"enabled": false' in out
-    assert auto_prompts and "AUTO MODE DUE WORK" in auto_prompts[0]
