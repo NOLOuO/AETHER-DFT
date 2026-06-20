@@ -50,8 +50,8 @@
 ## 常用入口
 
 ```powershell
-D:/miniconda3/Scripts/activate
-conda activate p312env
+# 第一次：双击 aether.cmd 或在项目根目录运行
+.\aether.cmd
 
 # 启动前查看会预加载哪些项目设定
 aether preload --project MCH-Pt-Br
@@ -79,10 +79,8 @@ aether outcar analyze --latest --project MCH-Pt-Br --write-learning
 默认测试跳过真实 API。需要本地有 `api_keys.local.json` 或环境变量，并显式开启：
 
 ```powershell
-D:/miniconda3/Scripts/activate
-conda activate p312env
 $env:AETHER_RUN_LLM_TESTS='1'
-python -m pytest tests/test_llm_authored_adsorption_e2e.py -q -s
+.\.venv\Scripts\python.exe -m pytest tests/test_llm_authored_adsorption_e2e.py -q -s
 ```
 
 最近一次手动验证（2026-06-06）：`1 passed`，模型 `deepseek:deepseek-v4-pro` 能真实调用工具生成 adsorption candidate plan。该测试默认跳过，只有显式设置 `AETHER_RUN_LLM_TESTS=1` 才会访问真实 API。
@@ -90,9 +88,7 @@ python -m pytest tests/test_llm_authored_adsorption_e2e.py -q -s
 ## 全量回归
 
 ```powershell
-D:/miniconda3/Scripts/activate
-conda activate p312env
-python -m pytest -q
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
 本轮回归结果：`242 passed, 1 skipped`。

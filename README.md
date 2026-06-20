@@ -27,8 +27,8 @@ AETHER-DFT 是面向计算化学 / DFT 的对话式科研合伙人骨架。
 ## 最常用入口
 
 ```powershell
+.\aether.cmd                    # 第一次/双击启动：自动创建项目 .venv 并进入对话
 aether                         # 进入持续交互式科研合伙人
-python -m aether_dft           # 同上
 aether "帮我看一下现在该做什么"  # 单轮自然语言；模型自己决定是否调用工具
 aether project list            # 查看 research/ 课题项目
 aether preload --project MCH-Pt-Br
@@ -51,7 +51,7 @@ aether adsorption plan "计算 H2O 在 Pt(111) 上的吸附" --adsorbate H2O --m
 - 交互方式：自然语言优先；模型自己决定是否调用工具，不要求用户记工具名
 - 会话能力：支持 `resume`、上下文压缩与项目级持续回写
 - 权限模式：`dev / 完全开发` 与 `ask / 需要用户同意`
-- Python/pytest/pip：先 `D:/miniconda3/Scripts/activate`，再 `conda activate p312env`
+- Python/pytest/pip：发布入口使用项目内 `.venv/`；第一次运行 `aether.cmd` 会自动创建和安装
 - 结构/执行能力：`dft_app/` + `dft_shared/`
 - 编排/提示/工具：`aether_dft/runtime_harness/`、`aether_dft/prompt_assets/`、`aether_dft/tool_specs/`
 - 项目状态：用户面对的是 `research/<project>/`；`.aether/` 保存会话、运行记录、索引和兼容元数据。
