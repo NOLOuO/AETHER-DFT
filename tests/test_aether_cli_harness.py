@@ -238,10 +238,7 @@ def test_cli_structure_tools_smoke(capsys):
 def test_cli_quick_start_names_program_model_and_version(capsys):
     assert cli.main([]) == 0
     out = capsys.readouterr().out
-    assert "Session Info" in out
-    assert "Program:" in out
     assert "AETHER-DFT" in out
-    assert "Version:" in out
     assert "0.1.0" in out
     assert "Model:" in out
     assert "deepseek:deepseek-v4-pro" in out
@@ -261,6 +258,16 @@ def test_cli_no_args_enters_interactive_when_tty(monkeypatch, capsys):
     assert "Program: " in out
     assert "Resume this session with:" in out
     assert "aether chat --resume --session-id" in out
+    assert "resumed:" not in out
+
+
+def test_cli_chat_help_is_product_friendly(capsys):
+    assert cli.main(["chat", "--help"]) == 0
+    out = capsys.readouterr().out
+    assert "Just type natural language" in out
+    assert "/auto" in out
+    assert "--material" not in out
+    assert "--preferred-site" not in out
 
 
 def test_cli_natural_language_resume_inherits_session_project(monkeypatch, tmp_path, capsys):

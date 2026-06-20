@@ -130,32 +130,47 @@ def print_banner() -> None:
 
 
 def print_quick_start() -> None:
-    print("Session Info")
-    print(f"Program: {PROGRAM_NAME}")
-    print(f"Version: {__version__}")
-    print(f"Model: {program_model_id()}")
+    print(f"{Colors.BOLD}{Colors.CYAN}AETHER-DFT{Colors.RESET} v{Colors.GREEN}{__version__}{Colors.RESET}")
+    print(f"Model: {Colors.YELLOW}{program_model_id()}{Colors.RESET}")
     print("Role: conversational DFT research partner")
     print()
-    print("Usage:")
-    print("  aether                         # 进入持续交互式科研合伙人")
-    print("  aether \"帮我看下现在该做什么\"  # 自然语言单轮；模型自行调用工具")
-    print("  aether chat --resume           # 续接最近 session")
-    print("  aether chat --model qwen       # 进入交互并切换模型")
-    print("  aether mainline --resume       # 显式进入科研主线入口")
-    print("  aether model current")
-    print("  aether project list")
-    print("  aether recommend --project <slug>")
-    print("  aether preload --project <slug>")
-    print("  aether outcar find --limit 5")
-    print("  aether outcar analyze --latest --project <slug> --write-learning")
-    print("  aether doctor")
-    print("  aether ssh")
+    print("Start:")
+    print("  aether                         # 打开交互式科研合伙人")
+    print("  aether \"看看这个课题现在差什么证据\"")
+    print("  aether chat --resume           # 明确续接最近 session")
     print()
     print("直接输入自然语言即可；模型会自己判断是否需要调用工具。")
-    print("交互式命令：/model、/project、/resume、/auto、/exit。")
+    print("常用 slash command：/model、/project、/resume、/auto、/status、/exit。")
     print()
-    print("Long form:")
-    print("  aether-dft agent \"...\"")
+    print("Research shortcuts:")
+    print("  aether auto status --project <slug>")
+    print("  aether auto on \"研究目标\" --project <slug>")
+    print("  aether outcar analyze --latest --project <slug>")
+    print()
+    print(f"{Colors.DIM}Advanced: aether chat --help-advanced | aether tools list | aether doctor{Colors.RESET}")
+
+
+def print_chat_cli_help() -> None:
+    print(f"{Colors.BOLD}{Colors.CYAN}aether chat{Colors.RESET} — conversational DFT partner")
+    print()
+    print("Just type natural language:")
+    print("  aether chat --project MCH-Pt-Br")
+    print("  aether chat --project MCH-Pt-Br \"看看现在离目标还差什么证据\"")
+    print("  aether chat --resume")
+    print()
+    print("Inside chat:")
+    print("  /model     switch DeepSeek/Qwen/other OpenAI-compatible backend")
+    print("  /project   switch research project from research/.aether state")
+    print("  /resume    choose a conversation in the current project")
+    print("  /auto      toggle goal-driven autonomous research")
+    print("  /status    current session/model/permission/project")
+    print()
+    print("Examples:")
+    print("  /auto 验证 MCH 在 Br/Pt 上脱氢的最低能路径")
+    print("  看看集群上哪些任务在跑，收敛怎么样")
+    print("  根据 OUTCAR 判断这个候选是否可以进入下一轮")
+    print()
+    print(f"{Colors.DIM}Need every internal flag? Use: aether chat --help-advanced{Colors.RESET}")
 
 
 def print_demo_home(run_root: str | None = None) -> None:
@@ -1055,17 +1070,56 @@ def print_auto_preview(payload: dict[str, Any]) -> None:
         return
     enabled = bool(state.get("enabled"))
     label = f"{Colors.GREEN}ON{Colors.RESET}" if enabled else f"{Colors.YELLOW}OFF{Colors.RESET}"
-    print(f"{Colors.CYAN}auto mode{Colors.RESET}: {label}")
-    print(f"  goal: {_shorten_inline(state.get('research_goal'), limit=140) or 'none'}")
-    print(f"  project: {state.get('project') or 'none'}")
-    print(f"  status: {state.get('status') or 'idle'}")
-    print(f"  monitor: every {state.get('monitor_interval_hours')}h | daily report: {state.get('daily_report_time')}")
-    print(f"  cluster submit: {'allowed by auto state' if state.get('allow_cluster_submit') else 'not allowed by auto state'}")
+    print(f"{Colors.BOLD}{Colors.CYAN}/auto{Colors.RESET}: {label}")
+    print(f"  project : {state.get('project') or 'none'}")
+    print(f"  goal    : {_shorten_inline(state.get('research_goal'), limit=150) or 'none'}")
+    print(f"  phase   : {state.get('current_phase') or state.get('status') or 'idle'}")
+    print(f"  rounds  : {state.get('iteration_count') or 0}")
+    print(f"  monitor : every {state.get('monitor_interval_hours')}h | daily report {state.get('daily_report_time')}")
+    submit = f"{Colors.GREEN}allowed{Colors.RESET}" if state.get("allow_cluster_submit") else f"{Colors.YELLOW}off{Colors.RESET} — AI can prepare jobs and ask before submit"
+    print(f"  cluster : {submit}")
+    print(
+        f"  policy  : literature={'on' if state.get('allow_literature_search') else 'off'}, "
+        f"structure={'on' if state.get('allow_structure_build') else 'off'}, "
+        f"writeback={'on' if state.get('allow_research_writeback') else 'off'}"
+    )
+    criteria = [str(item) for item in (state.get("success_criteria") or []) if str(item).strip()]
+    if criteria:
+        print(f"  {Colors.CYAN}success criteria{Colors.RESET}:")
+        for item in criteria[:5]:
+            print(f"   - {_shorten_inline(item, limit=150)}")
+    audit = state.get("convergence_audit") if isinstance(state.get("convergence_audit"), dict) else {}
+    if audit:
+        verdict = audit.get("verdict") or "none"
+        print(f"  {Colors.CYAN}convergence audit{Colors.RESET}: {verdict}")
+        completed = [str(item) for item in (audit.get("completed_items") or []) if str(item).strip()]
+        missing = [str(item) for item in (audit.get("missing_evidence") or []) if str(item).strip()]
+        if completed:
+            print("   completed:")
+            for item in completed[:4]:
+                print(f"    ✓ {_shorten_inline(item, limit=145)}")
+        if missing:
+            print("   missing evidence:")
+            for item in missing[:4]:
+                print(f"    ! {_shorten_inline(item, limit=145)}")
+        next_focus = str(audit.get("next_focus") or "").strip()
+        if next_focus:
+            print(f"   next: {_shorten_inline(next_focus, limit=150)}")
+    due = ((payload.get("due_followups") or {}).get("followups") or []) if isinstance(payload.get("due_followups"), dict) else []
+    scheduled = ((payload.get("scheduled_followups") or {}).get("followups") or []) if isinstance(payload.get("scheduled_followups"), dict) else []
+    campaigns = ((payload.get("active_campaigns") or {}).get("campaigns") or []) if isinstance(payload.get("active_campaigns"), dict) else []
+    if due or scheduled or campaigns:
+        print(f"  {Colors.CYAN}DFT board{Colors.RESET}: due={len(due)} scheduled={len(scheduled)} campaigns={len(campaigns)}")
+        for item in due[:3]:
+            print(f"   due now: {item.get('title') or item.get('id')}")
     questions = state.get("human_questions") or []
     if questions:
         print(f"  {Colors.YELLOW}questions for human{Colors.RESET}:")
         for question in questions[:5]:
             print(f"   - {question}")
+    if not enabled and not state.get("research_goal"):
+        project_hint = f" --project {state.get('project')}" if state.get("project") else ""
+        print(f"{Colors.DIM}  next: /auto <研究目标>  或  aether auto on \"研究目标\"{project_hint}{Colors.RESET}")
 
 
 def answer_auto_human_question_from_cli(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2293,7 +2347,11 @@ def handle_followup_complete(args: argparse.Namespace) -> int:
 def handle_auto_status(args: argparse.Namespace) -> int:
     from .auto_mode import auto_mode_status
 
-    print_json(auto_mode_status(project=args.project, include_due=True))
+    payload = auto_mode_status(project=args.project, include_due=True)
+    if getattr(args, "json", False):
+        print_json(payload)
+    else:
+        print_auto_preview(payload)
     return 0
 
 
@@ -2312,7 +2370,12 @@ def handle_auto_on(args: argparse.Namespace) -> int:
         allow_research_writeback=not args.no_writeback,
         reset_questions=True,
     )
-    print_json(result)
+    if getattr(args, "json", False):
+        print_json(result)
+    else:
+        print_auto_preview(result)
+        if result.get("status") == "ok":
+            print(f"{Colors.DIM}  scheduled: initial advance now, monitor every {result['state'].get('monitor_interval_hours')}h, daily report {result['state'].get('daily_report_time')}{Colors.RESET}")
     return 0 if result.get("status") == "ok" else 1
 
 
@@ -2320,7 +2383,10 @@ def handle_auto_off(args: argparse.Namespace) -> int:
     from .auto_mode import configure_auto_mode
 
     result = configure_auto_mode(project=args.project, enabled=False)
-    print_json(result)
+    if getattr(args, "json", False):
+        print_json(result)
+    else:
+        print_auto_preview(result)
     return 0 if result.get("status") == "ok" else 1
 
 
@@ -2989,6 +3055,7 @@ def build_parser() -> argparse.ArgumentParser:
     auto_sub = auto_parser.add_subparsers(dest="auto_command")
     auto_status = auto_sub.add_parser("status", help="查看 /auto 状态。")
     auto_status.add_argument("--project")
+    auto_status.add_argument("--json", action="store_true", help="输出原始 JSON，供脚本/测试使用。")
     auto_status.set_defaults(func=handle_auto_status)
     auto_on = auto_sub.add_parser("on", help="开启 /auto 并设置明确研究目标。")
     auto_on.add_argument("goal")
@@ -2999,9 +3066,11 @@ def build_parser() -> argparse.ArgumentParser:
     auto_on.add_argument("--no-structure-build", action="store_true")
     auto_on.add_argument("--no-literature", action="store_true")
     auto_on.add_argument("--no-writeback", action="store_true")
+    auto_on.add_argument("--json", action="store_true", help="输出原始 JSON，供脚本/测试使用。")
     auto_on.set_defaults(func=handle_auto_on)
     auto_off = auto_sub.add_parser("off", help="关闭 /auto。")
     auto_off.add_argument("--project")
+    auto_off.add_argument("--json", action="store_true", help="输出原始 JSON，供脚本/测试使用。")
     auto_off.set_defaults(func=handle_auto_off)
     tools_parser = sub.add_parser("tools", help="AETHER harness 工具注册表。")
     tools_sub = tools_parser.add_subparsers(dest="tools_command")
@@ -3202,7 +3271,7 @@ def main(argv: list[str] | None = None) -> int:
                     model=None,
                     max_tokens=None,
                     max_steps=6,
-                    resume=True,
+                    resume=False,
                     session_id=None,
                     task_plan=False,
                     task_run=False,
@@ -3219,6 +3288,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         print_quick_start()
         return 0
+    if raw_args[:2] == ["chat", "--help"]:
+        print_chat_cli_help()
+        return 0
+    if raw_args[:2] == ["chat", "--help-advanced"]:
+        raw_args = ["chat", "--help", *raw_args[2:]]
     if raw_args and raw_args[0] == "run":
         return handle_run(argparse.Namespace(dft_args=raw_args[1:]))
     if raw_args and raw_args[0] == "dft":

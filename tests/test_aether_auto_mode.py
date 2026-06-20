@@ -330,18 +330,39 @@ def test_cli_human_question_handler_reads_answer(monkeypatch, tmp_path, capsys):
 def test_auto_cli_on_status_off(tmp_path: Path, monkeypatch, capsys):
     _redirect_dirs(monkeypatch, tmp_path)
 
-    assert cli.main(["auto", "on", "研究 MCH 在 Br/Pt 上脱氢路径", "--project", "demo", "--allow-cluster-submit"]) == 0
+    assert cli.main(["auto", "on", "研究 MCH 在 Br/Pt 上脱氢路径", "--project", "demo", "--allow-cluster-submit", "--json"]) == 0
     enabled = json.loads(capsys.readouterr().out)
     assert enabled["state"]["enabled"] is True
 
-    assert cli.main(["auto", "status", "--project", "demo"]) == 0
+    assert cli.main(["auto", "status", "--project", "demo", "--json"]) == 0
     status = json.loads(capsys.readouterr().out)
     assert status["state"]["research_goal"] == "研究 MCH 在 Br/Pt 上脱氢路径"
     assert status["state"]["allow_cluster_submit"] is True
 
-    assert cli.main(["auto", "off", "--project", "demo"]) == 0
+    assert cli.main(["auto", "off", "--project", "demo", "--json"]) == 0
     disabled = json.loads(capsys.readouterr().out)
     assert disabled["state"]["enabled"] is False
+
+
+def test_auto_cli_default_status_is_human_card(tmp_path: Path, monkeypatch, capsys):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="验证 CO/Pt(111) 吸附构型")
+    audit_auto_research_progress(
+        project="demo",
+        verdict="needs_more_evidence",
+        success_criteria=["至少两个候选结构通过质量检查"],
+        missing_evidence=["还没有 OUTCAR 解析证据"],
+        next_focus="提交最小候选批次",
+    )
+
+    assert cli.main(["auto", "status", "--project", "demo"]) == 0
+
+    out = capsys.readouterr().out
+    assert "/auto" in out
+    assert "goal" in out
+    assert "convergence audit" in out
+    assert "missing evidence" in out
+    assert "OUTCAR" in out
 
 
 def test_interactive_slash_auto_run_words_do_not_trigger_manual_model_turn(monkeypatch, tmp_path, capsys):
@@ -696,9 +717,9 @@ def test_interactive_slash_auto_enables_goal(monkeypatch, tmp_path, capsys):
 
     assert cli.main(["chat", "--project", "demo"]) == 0
     out = capsys.readouterr().out
-    assert "auto mode" in out
+    assert "/auto" in out
     assert "ON" in out
-    assert '"enabled": true' in out
+    assert "goal" in out
     assert "CO 在 Pt(111)" in out
     state = auto_mode_status(project="demo")["state"]
     assert state["allow_cluster_submit"] is False
@@ -732,5 +753,5 @@ def test_interactive_slash_auto_toggles_and_infers_goal(monkeypatch, tmp_path, c
     out = capsys.readouterr().out
     assert "auto goal inferred" in out
     assert "H2O/Pt(111)" in out
-    assert '"enabled": true' in out
-    assert '"enabled": false' in out
+    assert "ON" in out
+    assert "OFF" in out
