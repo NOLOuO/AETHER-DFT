@@ -247,6 +247,9 @@ def _default_state(project: str | None = None) -> dict[str, Any]:
         "project": _normalize_project(project),
         "research_goal": "",
         "status": "idle",
+        "current_phase": "idle",
+        "iteration_count": 0,
+        "success_criteria": [],
         "monitor_interval_hours": DEFAULT_MONITOR_INTERVAL_HOURS,
         "daily_report_time": DEFAULT_DAILY_REPORT_TIME,
         "allow_literature_search": True,
@@ -258,6 +261,7 @@ def _default_state(project: str | None = None) -> dict[str, Any]:
         "human_answers": [],
         "open_questions": [],
         "last_checkpoint": {},
+        "convergence_audit": {},
         "created_at": "",
         "updated_at": "",
     }
@@ -277,6 +281,10 @@ def load_auto_state(project: str | None = None) -> dict[str, Any]:
     state["project"] = _normalize_project(state.get("project") or project)
     state.setdefault("human_question_records", [])
     state.setdefault("human_answers", [])
+    state.setdefault("success_criteria", [])
+    state.setdefault("convergence_audit", {})
+    state.setdefault("iteration_count", 0)
+    state.setdefault("current_phase", state.get("status") or "idle")
     _refresh_human_question_summary(state)
     return state
 
@@ -316,6 +324,7 @@ def configure_auto_mode(
         }
     state["enabled"] = bool(enabled)
     state["status"] = "active" if enabled else "paused"
+    state["current_phase"] = "goal_driven_loop" if enabled else "paused"
     if goal:
         state["research_goal"] = goal
     if monitor_interval_hours is not None:
@@ -542,10 +551,13 @@ def checkpoint_auto_mode(
     next_focus: str | None = None,
     open_questions: list[str] | None = None,
     human_questions: list[str] | None = None,
+    current_phase: str | None = None,
 ) -> dict[str, Any]:
     state = load_auto_state(project)
     if status:
         state["status"] = str(status)
+    if current_phase:
+        state["current_phase"] = str(current_phase).strip()
     if open_questions is not None:
         state["open_questions"] = [str(item).strip() for item in open_questions if str(item).strip()]
     if human_questions is not None:
@@ -558,6 +570,78 @@ def checkpoint_auto_mode(
         "next_focus": str(next_focus or "").strip(),
     }
     state["last_checkpoint"] = checkpoint
+    try:
+        state["iteration_count"] = max(0, int(state.get("iteration_count") or 0)) + 1
+    except (TypeError, ValueError):
+        state["iteration_count"] = 1
+    return save_auto_state(state, project=project)
+
+
+def audit_auto_research_progress(
+    *,
+    project: str | None = None,
+    verdict: str,
+    success_criteria: list[str] | None = None,
+    evidence_refs: list[str] | None = None,
+    completed_items: list[str] | None = None,
+    missing_evidence: list[str] | None = None,
+    calculation_status: dict[str, Any] | None = None,
+    literature_status: dict[str, Any] | None = None,
+    uncertainty: str | None = None,
+    next_focus: str | None = None,
+    confidence: Any | None = None,
+) -> dict[str, Any]:
+    """Persist a professional convergence audit for the autonomous research loop.
+
+    This is Ralph-inspired only in the sense of requiring a real completion
+    audit before claiming success.  The domain contract is AETHER-specific:
+    computational chemistry goals converge only when structures, calculations,
+    parsed outputs, literature/context, and uncertainty are mapped to evidence.
+    """
+
+    allowed = {
+        "converged",
+        "needs_more_evidence",
+        "waiting_for_cluster",
+        "waiting_for_human",
+        "blocked",
+    }
+    clean_verdict = str(verdict or "").strip() or "needs_more_evidence"
+    if clean_verdict not in allowed:
+        clean_verdict = "needs_more_evidence"
+    state = load_auto_state(project)
+    criteria = _string_items(success_criteria, limit=30)
+    if criteria:
+        state["success_criteria"] = criteria
+    audit = {
+        "updated_at": _now_iso(),
+        "verdict": clean_verdict,
+        "success_criteria": state.get("success_criteria") or [],
+        "evidence_refs": _string_items(evidence_refs, limit=50),
+        "completed_items": _string_items(completed_items, limit=50),
+        "missing_evidence": _string_items(missing_evidence, limit=50),
+        "calculation_status": calculation_status if isinstance(calculation_status, dict) else {},
+        "literature_status": literature_status if isinstance(literature_status, dict) else {},
+        "uncertainty": str(uncertainty or "").strip(),
+        "next_focus": str(next_focus or "").strip(),
+        "confidence": confidence,
+    }
+    state["convergence_audit"] = audit
+    if clean_verdict == "converged":
+        state["status"] = "converged"
+        state["current_phase"] = "complete_with_evidence"
+    elif clean_verdict == "waiting_for_cluster":
+        state["status"] = "waiting_for_cluster"
+        state["current_phase"] = "monitoring_calculations"
+    elif clean_verdict == "waiting_for_human":
+        state["status"] = "waiting_for_human"
+        state["current_phase"] = "waiting_for_human"
+    elif clean_verdict == "blocked":
+        state["status"] = "blocked"
+        state["current_phase"] = "blocked"
+    else:
+        state["status"] = "active"
+        state["current_phase"] = "needs_more_evidence"
     return save_auto_state(state, project=project)
 
 
@@ -577,6 +661,17 @@ def auto_mode_status(*, project: str | None = None, include_due: bool = True) ->
                 "a destructive/irreversible action is needed",
             ],
             "not_fixed_workflow": True,
+            "completion_contract": {
+                "principle": "Do not declare a research goal complete from vibes or a single intermediate artifact.",
+                "required_audit_tool": "auto_mode_convergence_audit",
+                "domain_evidence": [
+                    "explicit success criteria or a human answer defining them",
+                    "structure/candidate provenance for modeled systems",
+                    "DFT input/preflight/cluster/job evidence when calculations are part of the goal",
+                    "parsed output/result interpretation evidence for scientific claims",
+                    "remaining uncertainty and next experiment if not converged",
+                ],
+            },
             "computational_strategy": {
                 "principle": "Human supplies the end-to-end research objective; AI turns uncertainty into computable candidate spaces.",
                 "default_bias": "Enumerate diverse plausible candidates, cheaply filter, batch calculate, then refine from results.",
@@ -665,6 +760,9 @@ def collect_due_auto_intents(
         "Use tools to inspect project/session/research/job evidence, then decide the smallest useful next scientific action toward the research goal.\n"
         "Do not follow a fixed pipeline. Literature search, structure building, cluster submission, monitoring, parsing, writeback, or asking one human question are all optional and evidence-driven.\n"
         f"{AUTO_COMPUTATIONAL_STRATEGY}\n"
+        "Persistent research-loop discipline: keep working across scheduled passes until the research goal is converged or blocked by explicit human/cluster/credential evidence. "
+        "Before claiming convergence or issuing a daily status, call auto_mode_convergence_audit to map success criteria, completed evidence, missing evidence, calculation status, uncertainty, and next_focus. "
+        "If success criteria are unclear, ask with auto_human_question instead of inventing them.\n"
         "Human-question contract: before asking, inspect evidence that is available through tools. Ask only for human judgment, success criteria, costly branch choice, missing permission/credentials, or destructive/irreversible actions. "
         "When blocked by such ambiguity, call auto_human_question with exactly one concise question, why_needed, decision_boundary, options when useful, and evidence_refs; do not merely put the question in final prose.\n"
         "Campaign state board: first inspect auto_campaign_status/list for this project; start one if the goal needs multi-candidate exploration and none exists. Register generated candidates, bind run_id/job_id after build/submit, update results after monitor/fetch/parse, and use prune_plan/next_batch to manage compute resources.\n"
@@ -675,6 +773,9 @@ def collect_due_auto_intents(
         f"Project: {project_name or 'none'}\n"
         f"Research goal: {state.get('research_goal') or ''}\n"
         f"Auto status: {state.get('status') or 'idle'}\n"
+        f"Current phase: {state.get('current_phase') or 'idle'} | iteration_count={state.get('iteration_count') or 0}\n"
+        f"Success criteria JSON: {json.dumps(state.get('success_criteria') or [], ensure_ascii=False)}\n"
+        f"Last convergence audit JSON: {json.dumps(state.get('convergence_audit') or {}, ensure_ascii=False, indent=2)}\n"
         f"Allowed actions: literature={state.get('allow_literature_search')}, structure_build={state.get('allow_structure_build')}, "
         f"cluster_submit={state.get('allow_cluster_submit')}, research_writeback={state.get('allow_research_writeback')}\n"
         "Pending/answered human-question records JSON:\n"
@@ -730,6 +831,8 @@ def build_auto_mode_digest(*, project: str | None = None) -> str:
         f"- project: {state.get('project') or project or 'none'}",
         f"- research_goal: {state.get('research_goal')}",
         f"- status: {state.get('status')}",
+        f"- current_phase: {state.get('current_phase')}",
+        f"- iteration_count: {state.get('iteration_count')}",
         f"- monitor_interval_hours: {state.get('monitor_interval_hours')}",
         f"- daily_report_time: {state.get('daily_report_time')}",
         f"- allow_literature_search: {state.get('allow_literature_search')}",
@@ -740,6 +843,7 @@ def build_auto_mode_digest(*, project: str | None = None) -> str:
         "Autonomy contract: human sets/adjusts the research goal and answers blocking questions; AI decides the next evidence/action step.",
         "Ask the human only for ambiguity, materially branching costly choices, missing credentials/permissions, or destructive/irreversible actions.",
         "When blocked, call auto_human_question; the CLI will ask the human inline and store the answer for the next autonomous pass.",
+        "Before saying the project goal is achieved, call auto_mode_convergence_audit and map success criteria to concrete structure/DFT/literature/result evidence.",
         "Do not follow a fixed literature→structure→submit pipeline; choose the smallest evidence/action loop that advances the goal.",
         AUTO_COMPUTATIONAL_STRATEGY,
         "Default execution pattern under uncertainty: enumerate candidates → cheap quality/preflight filters → batch calculations when allowed → parse/prune/refine → report only decisions and blockers.",
@@ -754,6 +858,18 @@ def build_auto_mode_digest(*, project: str | None = None) -> str:
                 f"- observation: {last.get('observation') or ''}",
                 f"- decision: {last.get('decision') or ''}",
                 f"- next_focus: {last.get('next_focus') or ''}",
+            ]
+        )
+    audit = state.get("convergence_audit") if isinstance(state.get("convergence_audit"), dict) else {}
+    if audit:
+        lines.extend(
+            [
+                "",
+                "Last convergence audit:",
+                f"- verdict: {audit.get('verdict') or ''}",
+                f"- completed_items: {', '.join((audit.get('completed_items') or [])[:5])}",
+                f"- missing_evidence: {', '.join((audit.get('missing_evidence') or [])[:5])}",
+                f"- next_focus: {audit.get('next_focus') or ''}",
             ]
         )
     questions = state.get("human_questions") or []

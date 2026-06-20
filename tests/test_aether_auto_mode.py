@@ -11,6 +11,7 @@ from aether_dft.auto_mode import (
     configure_auto_mode,
     auto_mode_status,
     answer_auto_human_question,
+    audit_auto_research_progress,
     infer_research_goal,
     latest_pending_auto_human_question,
 )
@@ -43,8 +44,11 @@ def test_auto_mode_configure_persists_goal_and_schedules_followups(tmp_path: Pat
     assert state["enabled"] is True
     assert state["monitor_interval_hours"] == 3
     assert state["allow_cluster_submit"] is True
+    assert state["current_phase"] == "goal_driven_loop"
+    assert state["iteration_count"] == 0
     assert "H2O" in state["research_goal"]
     assert policy["computational_strategy"]["default_bias"].startswith("Enumerate diverse plausible candidates")
+    assert policy["completion_contract"]["required_audit_tool"] == "auto_mode_convergence_audit"
 
     scheduled = auto_mode_status(project="demo")["scheduled_followups"]["followups"]
     auto_kinds = {(item.get("metadata") or {}).get("auto_kind") for item in scheduled}
@@ -56,6 +60,7 @@ def test_auto_mode_configure_persists_goal_and_schedules_followups(tmp_path: Pat
     digest = build_auto_mode_digest(project="demo")
     assert "Auto mode is ON" in digest
     assert "Autonomy contract" in digest
+    assert "auto_mode_convergence_audit" in digest
     assert "Human time is scarce; compute is the lever" in digest
     assert "enumerate candidates" in digest
     assert "H2O" in digest
@@ -94,6 +99,8 @@ def test_auto_mode_collects_due_work_for_background_loop(tmp_path: Path, monkeyp
     assert "Register generated candidates" in plan["prompt"]
     assert "source_manifest_path" in plan["prompt"]
     assert "Completion condition" in plan["prompt"]
+    assert "auto_mode_convergence_audit" in plan["prompt"]
+    assert "Persistent research-loop discipline" in plan["prompt"]
     assert "auto_human_question" in plan["prompt"]
     assert "exactly one concise question" in plan["prompt"]
     assert "H2O/Pt(111)" in plan["prompt"]
@@ -110,6 +117,39 @@ def test_auto_mode_requires_goal_when_enabled(tmp_path: Path, monkeypatch):
 
     assert result["status"] == "needs_goal"
     assert result["state"]["enabled"] is False
+
+
+def test_auto_mode_convergence_audit_persists_professional_evidence(tmp_path: Path, monkeypatch):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="验证 H2O/Pt(111) 最稳定吸附构型")
+
+    audit = audit_auto_research_progress(
+        project="demo",
+        verdict="needs_more_evidence",
+        success_criteria=[
+            "至少 3 个吸附位点候选完成结构质量检查",
+            "最优候选完成 DFT 收敛并解析吸附能",
+        ],
+        evidence_refs=["campaign:h2o-pt", "run:demo-001"],
+        completed_items=["top/hollow/bridge 候选已登记"],
+        missing_evidence=["缺少收敛 OUTCAR 和吸附能"],
+        calculation_status={"running": 1, "completed": 0},
+        literature_status={"checked": False},
+        uncertainty="H-up/H-down 取向尚未比较",
+        next_focus="提交或监控最小候选批次",
+        confidence=0.55,
+    )
+
+    assert audit["status"] == "ok"
+    state = auto_mode_status(project="demo", include_due=False)["state"]
+    assert state["status"] == "active"
+    assert state["current_phase"] == "needs_more_evidence"
+    assert state["success_criteria"][0].startswith("至少 3 个")
+    assert state["convergence_audit"]["verdict"] == "needs_more_evidence"
+    assert "缺少收敛 OUTCAR" in state["convergence_audit"]["missing_evidence"][0]
+    digest = build_auto_mode_digest(project="demo")
+    assert "Last convergence audit" in digest
+    assert "needs_more_evidence" in digest
 
 
 def test_auto_goal_can_be_inferred_from_existing_session(tmp_path: Path, monkeypatch):
@@ -133,10 +173,17 @@ def test_auto_mode_tools_are_model_visible_and_permissioned(tmp_path: Path, monk
     registry = ToolRegistry(permission_mode="never")
     names = {item["name"] for item in registry.list_tools()}
 
-    assert {"auto_mode_status", "auto_mode_configure", "auto_mode_checkpoint", "auto_human_question"}.issubset(names)
+    assert {
+        "auto_mode_status",
+        "auto_mode_configure",
+        "auto_mode_checkpoint",
+        "auto_mode_convergence_audit",
+        "auto_human_question",
+    }.issubset(names)
     discussion_names = {item["function"]["name"] for item in registry.openai_tool_schemas(interaction_mode="discussion")}
     assert "auto_mode_status" in discussion_names
     assert "auto_mode_checkpoint" in discussion_names
+    assert "auto_mode_convergence_audit" in discussion_names
     assert "auto_human_question" in discussion_names
 
     blocked = ToolRegistry(permission_mode="ask").run_tool(

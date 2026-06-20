@@ -48,7 +48,13 @@ from aether_dft.auto_campaign import (
     start_campaign as auto_campaign_start,
     update_candidate as auto_campaign_update_candidate,
 )
-from aether_dft.auto_mode import auto_mode_status, checkpoint_auto_mode, configure_auto_mode, request_auto_human_question
+from aether_dft.auto_mode import (
+    audit_auto_research_progress,
+    auto_mode_status,
+    checkpoint_auto_mode,
+    configure_auto_mode,
+    request_auto_human_question,
+)
 from aether_dft.prompt_engine import load_architecture_live_doc_snapshot
 from aether_dft.permissions import get_permission_mode, permission_mode_label, should_allow_tool
 from aether_dft.project_state import append_progress, project_paths, read_project_context, write_project_state
@@ -406,7 +412,8 @@ class ToolRegistry:
         self._register(ToolSpec("research_cycle_checkpoint", "把当前科研循环的目标、决定、证据、开放问题、blocker、下一步持久化到项目 checkpoint/progress/state。", {"project": {"type": "string"}, "goal": {"type": "string"}, "current_decision": {"type": "string"}, "evidence_refs": {"type": "array", "items": {"type": "string"}}, "open_questions": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}, "run_ids": {"type": "array", "items": {"type": "string"}}, "candidate_ids": {"type": "array", "items": {"type": "string"}}, "update_project_state": {"type": "boolean"}}, False, ("project", "goal", "current_decision")), self._research_cycle_checkpoint)
         self._register(ToolSpec("auto_mode_status", "读取 /auto 目标驱动科研模式状态、到期 follow-up 和自主策略；这是目标/证据地图，不是固定流程。", {"project": {"type": "string"}, "include_due": {"type": "boolean"}}, True), self._auto_mode_status)
         self._register(ToolSpec("auto_mode_configure", "开启/关闭或调整 /auto 模式。开启时必须有 research_goal；会创建周期 monitor/daily report follow-up 意图，但不会自动运行集群动作。", {"project": {"type": "string"}, "enabled": {"type": "boolean"}, "research_goal": {"type": "string"}, "monitor_interval_hours": {"type": "integer"}, "daily_report_time": {"type": "string"}, "allow_cluster_submit": {"type": "boolean"}, "allow_structure_build": {"type": "boolean"}, "allow_literature_search": {"type": "boolean"}, "allow_research_writeback": {"type": "boolean"}, "reset_questions": {"type": "boolean"}}, False, ("enabled",)), self._auto_mode_configure)
-        self._register(ToolSpec("auto_mode_checkpoint", "记录 auto 模式本轮观察、决策、证据、下一关注点和需要问人类的问题；用于长期目标闭环。", {"project": {"type": "string"}, "status": {"type": "string"}, "observation": {"type": "string"}, "decision": {"type": "string"}, "evidence_refs": {"type": "array", "items": {"type": "string"}}, "next_focus": {"type": "string"}, "open_questions": {"type": "array", "items": {"type": "string"}}, "human_questions": {"type": "array", "items": {"type": "string"}}}, False), self._auto_mode_checkpoint)
+        self._register(ToolSpec("auto_mode_checkpoint", "记录 auto 模式本轮观察、决策、证据、下一关注点和需要问人类的问题；用于长期目标闭环。", {"project": {"type": "string"}, "status": {"type": "string"}, "current_phase": {"type": "string"}, "observation": {"type": "string"}, "decision": {"type": "string"}, "evidence_refs": {"type": "array", "items": {"type": "string"}}, "next_focus": {"type": "string"}, "open_questions": {"type": "array", "items": {"type": "string"}}, "human_questions": {"type": "array", "items": {"type": "string"}}}, False), self._auto_mode_checkpoint)
+        self._register(ToolSpec("auto_mode_convergence_audit", "专业计算化学收敛审计：把研究目标/成功标准映射到结构、候选、DFT 输入/任务、解析结果、文献和不确定性证据。用于判断 /auto 是继续、等集群、问人、阻塞还是有证据地完成；不是固定流程。", {"project": {"type": "string"}, "verdict": {"type": "string"}, "success_criteria": {"type": "array", "items": {"type": "string"}}, "evidence_refs": {"type": "array", "items": {"type": "string"}}, "completed_items": {"type": "array", "items": {"type": "string"}}, "missing_evidence": {"type": "array", "items": {"type": "string"}}, "calculation_status": {"type": "object"}, "literature_status": {"type": "object"}, "uncertainty": {"type": "string"}, "next_focus": {"type": "string"}, "confidence": {"type": "number"}}, False, ("verdict",)), self._auto_mode_convergence_audit)
         self._register(ToolSpec("auto_human_question", "在 /auto 自主推进遇到不可由工具查明的人类判断时，向 CLI 用户提出一个阻塞问题。先查证据；只问目标/成功标准/昂贵分支/权限/不可逆动作；每次只问一个问题。", {"project": {"type": "string"}, "question": {"type": "string"}, "why_needed": {"type": "string"}, "decision_boundary": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}, "default_if_unanswered": {"type": "string"}, "evidence_refs": {"type": "array", "items": {"type": "string"}}}, True, ("question",), False), self._auto_human_question)
         self._register(ToolSpec("auto_campaign_start", "为当前研究目标开启一个批量候选 campaign。它只建立状态板，不固定流程；模型仍需自己枚举候选、过滤、提交和剪枝。", {"project": {"type": "string"}, "goal": {"type": "string"}, "campaign_id": {"type": "string"}, "strategy": {"type": "string"}, "metadata": {"type": "object"}}, False, ("project", "goal")), self._auto_campaign_start)
         self._register(ToolSpec("auto_campaign_list", "列出项目中的自动化 campaign 摘要，帮助模型续接批量候选/批量计算状态。", {"project": {"type": "string"}, "include_closed": {"type": "boolean"}, "limit": {"type": "integer"}}, True, ("project",)), self._auto_campaign_list)
@@ -523,6 +530,7 @@ class ToolRegistry:
             "research_cycle_checkpoint",
             "auto_mode_status",
             "auto_mode_checkpoint",
+            "auto_mode_convergence_audit",
             "auto_human_question",
             "auto_campaign_list",
             "auto_campaign_status",
@@ -730,7 +738,7 @@ class ToolRegistry:
             "status": "ok",
             "principle": "能力地图不是固定流程；模型应根据 research/session/tool evidence 自主选择最小必要工具。",
             "capability_stages": [
-                {"category": "project_context", "tools": ["project_continuity_digest", "web_search", "literature_search", "evidence_claim_audit", "chemistry_compute", "image_understand", "discussion_state_snapshot", "research_cycle_checkpoint", "auto_mode_status", "auto_mode_checkpoint", "auto_human_question", "research_followup_list", "research_followup_due", "research_followup_schedule", "research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
+                {"category": "project_context", "tools": ["project_continuity_digest", "web_search", "literature_search", "evidence_claim_audit", "chemistry_compute", "image_understand", "discussion_state_snapshot", "research_cycle_checkpoint", "auto_mode_status", "auto_mode_checkpoint", "auto_mode_convergence_audit", "auto_human_question", "research_followup_list", "research_followup_due", "research_followup_schedule", "research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
                 {"category": "auto_campaign", "tools": ["auto_campaign_start", "auto_campaign_list", "auto_campaign_status", "auto_campaign_register_candidates", "auto_campaign_update_candidate", "auto_campaign_next_batch", "auto_campaign_prune_plan"]},
                 {"category": "structure_modeling", "tools": ["structure_modeling_tool_status", "structure_modeling_intent_plan", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
                 {"category": "dft_execution", "tools": ["cluster_execution_intent_plan", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_profile_list", "cluster_probe", "cluster_config", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "cluster_job_cancel"]},
@@ -2339,12 +2347,28 @@ class ToolRegistry:
         return checkpoint_auto_mode(
             project=str(payload.get("project") or "").strip() or None,
             status=str(payload.get("status") or "").strip() or None,
+            current_phase=str(payload.get("current_phase") or "").strip() or None,
             observation=str(payload.get("observation") or "").strip() or None,
             decision=str(payload.get("decision") or "").strip() or None,
             evidence_refs=_string_list(payload.get("evidence_refs")),
             next_focus=str(payload.get("next_focus") or "").strip() or None,
             open_questions=_string_list(payload.get("open_questions")) if "open_questions" in payload else None,
             human_questions=_string_list(payload.get("human_questions")) if "human_questions" in payload else None,
+        )
+
+    def _auto_mode_convergence_audit(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return audit_auto_research_progress(
+            project=str(payload.get("project") or "").strip() or None,
+            verdict=str(payload.get("verdict") or "").strip() or "needs_more_evidence",
+            success_criteria=_string_list(payload.get("success_criteria")),
+            evidence_refs=_string_list(payload.get("evidence_refs")),
+            completed_items=_string_list(payload.get("completed_items")),
+            missing_evidence=_string_list(payload.get("missing_evidence")),
+            calculation_status=payload.get("calculation_status") if isinstance(payload.get("calculation_status"), dict) else None,
+            literature_status=payload.get("literature_status") if isinstance(payload.get("literature_status"), dict) else None,
+            uncertainty=str(payload.get("uncertainty") or "").strip() or None,
+            next_focus=str(payload.get("next_focus") or "").strip() or None,
+            confidence=payload.get("confidence"),
         )
 
     def _auto_human_question(self, payload: dict[str, Any]) -> dict[str, Any]:

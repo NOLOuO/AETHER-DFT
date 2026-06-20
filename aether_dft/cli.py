@@ -1235,6 +1235,7 @@ def _auto_record_has_completion_signal(record: dict[str, Any]) -> bool:
         "research_learning_capture",
         "candidate_outcome_record",
         "auto_human_question",
+        "auto_mode_convergence_audit",
     }
     return bool(tool_names & completion_tools)
 
