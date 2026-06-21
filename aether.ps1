@@ -16,7 +16,7 @@ $Venv = Join-Path $Root ".venv"
 $VenvPy = Join-Path $Venv "Scripts\python.exe"
 $Stamp = Join-Path $Venv ".aether_ready"
 $MinMajor = 3
-$MinMinor = 11
+$MinMinor = 12
 
 function Write-Step([string]$Message) {
     Write-Host $Message -ForegroundColor Cyan
@@ -31,8 +31,10 @@ function Fail([string]$Message) {
     Write-Host "AETHER-DFT 启动失败" -ForegroundColor Red
     Write-Host $Message -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "按任意键退出..." -ForegroundColor DarkGray
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    if (-not [Console]::IsInputRedirected) {
+        Write-Host "按任意键退出..." -ForegroundColor DarkGray
+        try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { $null = $_ }
+    }
     exit 1
 }
 
@@ -52,8 +54,8 @@ function Test-PythonVersion([string]$PythonExe, [string[]]$PythonArgs) {
 
 function Find-BasePython {
     $candidates = @(
+        @{ exe = "py"; args = @("-3.13") },
         @{ exe = "py"; args = @("-3.12") },
-        @{ exe = "py"; args = @("-3.11") },
         @{ exe = "python"; args = @() },
         @{ exe = "python3"; args = @() }
     )
@@ -65,6 +67,12 @@ function Find-BasePython {
         }
     }
     return $null
+}
+
+function Test-AetherInstall {
+    if (-not (Test-Path $VenvPy)) { return $false }
+    & $VenvPy -c "import aether_dft.cli; import ase.io; import openai; import pymatgen" 2>$null
+    return ($LASTEXITCODE -eq 0)
 }
 
 function Register-GlobalAether {
@@ -91,10 +99,20 @@ function Register-GlobalAether {
 function Bootstrap-Aether {
     if (Test-Path $Stamp) { return }
 
+    if (Test-AetherInstall) {
+        New-Item -ItemType File -Path $Stamp -Force | Out-Null
+        return
+    }
+
     Write-Step "首次启动：正在配置 AETHER-DFT 运行环境（仅此一次，约 3-5 分钟）..."
     $base = Find-BasePython
     if (-not $base) {
-        Fail "未找到 Python $MinMajor.$MinMinor 或更高版本。请安装 Python 3.11+ 后重试：https://www.python.org/downloads/"
+        Fail "未找到 Python 3.12 或更高版本。请安装 Python 3.12+ 后重试：https://www.python.org/downloads/"
+    }
+
+    if ((Test-Path $VenvPy) -and -not (Test-PythonVersion $VenvPy @())) {
+        Write-Info "检测到现有 .venv 的 Python 版本低于 3.12，正在重建项目虚拟环境..."
+        Remove-Item -LiteralPath $Venv -Recurse -Force
     }
 
     if (-not (Test-Path $VenvPy)) {
@@ -110,19 +128,16 @@ function Bootstrap-Aether {
     & $VenvPy -m pip install --upgrade pip --quiet
     if ($LASTEXITCODE -ne 0) { Fail "pip 升级失败。请检查网络或 Python 安装。" }
 
-    $useUv = $false
-    Write-Info "尝试安装 uv 加速器..."
-    & $VenvPy -m pip install uv --quiet
-    if ($LASTEXITCODE -eq 0) { $useUv = $true }
-
-    Write-Info "安装 AETHER-DFT 及依赖（pymatgen/rdkit 等较大，请耐心）..."
-    if ($useUv) {
-        & $VenvPy -m uv pip install -e $Root
-    } else {
-        & $VenvPy -m pip install -e $Root
-    }
+    Write-Info "安装 AETHER-DFT 及依赖（pymatgen 等较大，请耐心；安装日志会直接显示）..."
+    & $VenvPy -m pip install -e $Root
     if ($LASTEXITCODE -ne 0) {
         Fail "依赖安装失败。请检查网络；修复后重新双击 aether.cmd 即可继续。"
+    }
+
+    Write-Info "验证交互入口和关键科学依赖..."
+    & $VenvPy -c "import aether_dft.cli; import ase.io; import openai; import pymatgen; print('AETHER import smoke OK')"
+    if ($LASTEXITCODE -ne 0) {
+        Fail "依赖验证失败：AETHER 或 ase/openai/pymatgen 未能正常导入。请重新运行 aether.cmd。"
     }
 
     New-Item -ItemType File -Path $Stamp -Force | Out-Null
@@ -156,7 +171,7 @@ $isPlainConsole = ($Host.Name -match "ConsoleHost")
 if ($env:WT_SESSION -or $env:TERM_PROGRAM) {
     $isPlainConsole = $false
 }
-if ($isPlainConsole) {
+if ($isPlainConsole -and $Args.Count -eq 0 -and -not [Console]::IsInputRedirected) {
     Write-Host ""
     Write-Host "AETHER 已退出。按任意键关闭窗口..." -ForegroundColor DarkGray
     try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { $null = $_ }

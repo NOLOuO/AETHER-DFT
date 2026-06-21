@@ -25,3 +25,4 @@ projects/*/runs/
 
 # literature PDFs are local reference material; avoid uploading copyrighted/heavy files
 research/**/*.pdf
+*.egg-info/
