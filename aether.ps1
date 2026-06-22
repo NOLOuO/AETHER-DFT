@@ -17,6 +17,14 @@ $VenvPy = Join-Path $Venv "Scripts\python.exe"
 $Stamp = Join-Path $Venv ".aether_ready"
 $RequiredMajor = 3
 $RequiredMinor = 12
+$env:PYTHONIOENCODING = "utf-8"
+try {
+    $utf8 = [System.Text.UTF8Encoding]::new($false)
+    [Console]::OutputEncoding = $utf8
+    $OutputEncoding = $utf8
+} catch {
+    # Console encoding is best-effort; Python also reconfigures stdio on entry.
+}
 
 function Write-Step([string]$Message) {
     Write-Host $Message -ForegroundColor Cyan

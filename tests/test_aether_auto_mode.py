@@ -66,6 +66,45 @@ def test_auto_mode_configure_persists_goal_and_schedules_followups(tmp_path: Pat
     assert "H2O" in digest
 
 
+def test_auto_human_question_uses_current_project_when_model_omits_project(tmp_path: Path, monkeypatch):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="验证 CO/Pt 吸附构型")
+
+    registry = ToolRegistry()
+    registry.default_project = "demo"
+    result = registry.run_tool(
+        "auto_human_question",
+        {
+            "question": "请确认优先研究 CO 吸附还是扩散？",
+            "why_needed": "两个方向都会产生不同的候选空间。",
+        },
+    )
+
+    assert result["result"]["status"] == "pending_human_answer"
+    pending = latest_pending_auto_human_question(project="demo")
+    assert pending is not None
+    assert pending["project"] == "demo"
+    assert "CO 吸附" in pending["question"]
+
+
+def test_auto_convergence_audit_accepts_completed_synonym(tmp_path: Path, monkeypatch):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="验证 /auto 行为")
+
+    result = audit_auto_research_progress(
+        project="demo",
+        verdict="completed",
+        success_criteria=["向人类提问并记录答案"],
+        completed_items=["auto_human_question 已记录答案"],
+        missing_evidence=[],
+    )
+
+    state = result["state"]
+    assert state["convergence_audit"]["verdict"] == "converged"
+    assert state["status"] == "converged"
+    assert state["current_phase"] == "complete_with_evidence"
+
+
 def test_auto_mode_collects_due_work_for_background_loop(tmp_path: Path, monkeypatch):
     from aether_dft.followups import schedule_followup
 

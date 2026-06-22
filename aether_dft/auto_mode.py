@@ -607,6 +607,15 @@ def audit_auto_research_progress(
         "blocked",
     }
     clean_verdict = str(verdict or "").strip() or "needs_more_evidence"
+    aliases = {
+        "complete": "converged",
+        "completed": "converged",
+        "done": "converged",
+        "finished": "converged",
+        "success": "converged",
+        "succeeded": "converged",
+    }
+    clean_verdict = aliases.get(clean_verdict, clean_verdict)
     if clean_verdict not in allowed:
         clean_verdict = "needs_more_evidence"
     state = load_auto_state(project)

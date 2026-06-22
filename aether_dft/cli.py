@@ -1152,8 +1152,6 @@ def answer_auto_human_question_from_cli(payload: dict[str, Any]) -> dict[str, An
     default = str(question_record.get("default_if_unanswered") or payload.get("default_if_unanswered") or "").strip()
     if default:
         print(f"  default if blank: {default}")
-    if not (hasattr(sys.stdin, "isatty") and sys.stdin.isatty()):
-        return {"status": "pending_human_answer", "question": question_record, "message": "非交互 stdin：问题已记录，稍后在 chat CLI 中回答。"}
     try:
         raw = input("answer> ").strip()
     except (EOFError, KeyboardInterrupt):
@@ -1366,6 +1364,8 @@ def run_auto_due_once(
     interactive_questions: bool = True,
 ) -> dict[str, Any]:
     """Run one due autonomous model turn, if the durable queue says one is due."""
+
+    ensure_console_utf8()
 
     from .auto_mode import collect_due_auto_intents, complete_due_auto_intents, load_auto_state
 

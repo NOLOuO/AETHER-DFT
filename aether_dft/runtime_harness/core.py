@@ -497,6 +497,8 @@ class AgentHarness:
         stream_callback: Any | None = None,
     ) -> dict[str, Any]:
         session_store = self.sessions.store if hasattr(self.sessions, "store") else self.sessions
+        if hasattr(self.registry, "default_project"):
+            self.registry.default_project = project
         interaction_mode = infer_turn_mode(prompt)
         if max_steps is None:
             max_steps = EXECUTION_MAX_STEPS if interaction_mode == "execution" else DISCUSSION_MAX_STEPS

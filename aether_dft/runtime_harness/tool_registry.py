@@ -393,6 +393,7 @@ class ToolRegistry:
         self.allow_cluster_submit = allow_cluster_submit
         self.permission_mode = permission_mode or get_permission_mode()
         self.human_question_handler = human_question_handler
+        self.default_project: str | None = None
         self._tools: dict[str, tuple[ToolSpec, Callable[[dict[str, Any]], dict[str, Any]]]] = {}
         self._register_all()
 
@@ -711,6 +712,13 @@ class ToolRegistry:
             result = {"status": "error", "message": f"未知工具: {name}"}
         else:
             spec, handler = self._tools[name]
+            if (
+                isinstance(payload, dict)
+                and self.default_project
+                and "project" in (spec.parameters or {})
+                and not str(payload.get("project") or "").strip()
+            ):
+                payload["project"] = self.default_project
             allowed, reason = should_allow_tool(
                 read_only=spec.read_only,
                 mode=self.permission_mode,
