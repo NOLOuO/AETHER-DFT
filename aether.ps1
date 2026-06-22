@@ -15,8 +15,8 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Venv = Join-Path $Root ".venv"
 $VenvPy = Join-Path $Venv "Scripts\python.exe"
 $Stamp = Join-Path $Venv ".aether_ready"
-$MinMajor = 3
-$MinMinor = 12
+$RequiredMajor = 3
+$RequiredMinor = 12
 
 function Write-Step([string]$Message) {
     Write-Host $Message -ForegroundColor Cyan
@@ -48,7 +48,7 @@ function Test-PythonVersion([string]$PythonExe, [string[]]$PythonArgs) {
         if (Test-UnsupportedPythonPath ([string]$info.executable)) { return $false }
         $maj = [int]$info.major
         $min = [int]$info.minor
-        return ($maj -gt $MinMajor -or ($maj -eq $MinMajor -and $min -ge $MinMinor))
+        return ($maj -eq $RequiredMajor -and $min -eq $RequiredMinor)
     } catch {
         return $false
     }
@@ -68,7 +68,6 @@ function Test-VenvUsesUnsupportedBase {
 
 function Find-BasePython {
     $candidates = @(
-        @{ exe = "py"; args = @("-3.13") },
         @{ exe = "py"; args = @("-3.12") },
         @{ exe = "python"; args = @() },
         @{ exe = "python3"; args = @() }
@@ -123,11 +122,11 @@ function Bootstrap-Aether {
     Write-Step "首次启动：正在配置 AETHER-DFT 运行环境（仅此一次，约 3-5 分钟）..."
     $base = Find-BasePython
     if (-not $base) {
-        Fail "未找到本机普通 Python 3.12+。请安装官方 Python 3.12+ 后重新运行 aether.cmd；AETHER 不会使用 Conda，也不会自动下载 uv/Astral 托管 Python。"
+        Fail "未找到本机普通 Python 3.12。请安装官方 Python 3.12 后重新运行 aether.cmd；AETHER 不会使用 Conda，也不会自动下载 uv/Astral 托管 Python。"
     }
 
     if ((Test-Path $VenvPy) -and ((Test-VenvUsesUnsupportedBase) -or -not (Test-PythonVersion $VenvPy @()))) {
-        Write-Info "检测到现有 .venv 使用 Conda/uv 托管 Python 或 Python 版本低于 3.12，正在重建项目虚拟环境..."
+        Write-Info "检测到现有 .venv 不是基于普通 Python 3.12，正在重建项目虚拟环境..."
         Remove-Item -LiteralPath $Venv -Recurse -Force
     }
 

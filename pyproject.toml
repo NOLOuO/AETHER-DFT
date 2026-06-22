@@ -7,7 +7,7 @@ name = "aether-dft"
 version = "0.1.0"
 description = "A conversational computational-chemistry research partner built from local DFT automation references."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "pydantic>=2.12",
     "pydantic-settings>=2.13",

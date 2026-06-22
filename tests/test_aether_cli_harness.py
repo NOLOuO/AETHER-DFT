@@ -662,3 +662,8 @@ def test_doctor_payload_names_program_model_and_version(capsys):
     assert payload["program"]["version"] == "0.1.0"
     assert payload["effective_model"]["model_id"] == "deepseek:deepseek-v4-pro"
     assert payload["effective_model"]["context_window"] == 1000000
+    assert payload["python"]["required"] == "3.12.x"
+    assert payload["python"]["ok"] is True
+    assert "executable" not in payload["python"]
+    assert "conda" not in out.lower()
+    assert "uv" not in out.lower()

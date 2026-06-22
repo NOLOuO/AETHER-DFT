@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -34,6 +35,7 @@ PROGRAM_COMMAND = "aether"
 AUTO_TURN_MIN_STEPS = 12
 AUTO_TURN_MIN_TOKENS = 1400
 AUTO_INITIAL_MAX_PASSES = 3
+REQUIRED_PYTHON = (3, 12)
 TOP_LEVEL_COMMANDS = {
     "adsorption",
     "agent",
@@ -1674,12 +1676,37 @@ def doctor(args: argparse.Namespace) -> int:
 
         has_key = bool(os.getenv(str(config["api_key_env"]), "").strip())
     has_base_url = bool(str(config.get("base_url", "") or "").strip())
+    python_ok = sys.version_info[:2] == REQUIRED_PYTHON
+    venv_root = Path.cwd() / ".venv"
+    dependency_modules = {
+        "aether_dft": "aether_dft",
+        "ase": "ase.io",
+        "openai": "openai",
+        "pymatgen": "pymatgen",
+    }
+    dependencies = {
+        label: {"module": module, "available": importlib.util.find_spec(module) is not None}
+        for label, module in dependency_modules.items()
+    }
+    dependencies_ok = all(item["available"] for item in dependencies.values())
     payload = {
         "program": {
             "name": PROGRAM_NAME,
             "command": PROGRAM_COMMAND,
             "version": __version__,
         },
+        "python": {
+            "required": "3.12.x",
+            "current": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+            "ok": python_ok,
+        },
+        "project_venv": {
+            "path": str(venv_root),
+            "exists": venv_root.exists(),
+            "ready_marker": (venv_root / ".aether_ready").exists(),
+            "python": str(venv_root / "Scripts" / "python.exe"),
+        },
+        "dependencies": dependencies,
         "runtime": runtime,
         "effective_model": {
             "model_id": f"{provider_id}:{model_name}",
@@ -1697,6 +1724,13 @@ def doctor(args: argparse.Namespace) -> int:
     }
     print("AETHER-DFT doctor")
     print_json(payload)
+    if not python_ok:
+        print("ERROR: AETHER requires Python 3.12.x. Please install Python 3.12 and recreate the project .venv.")
+        return 1
+    if not dependencies_ok:
+        missing = ", ".join(label for label, info in dependencies.items() if not info["available"])
+        print(f"ERROR: Missing required Python packages: {missing}. Re-run aether.cmd after fixing installation.")
+        return 1
     if not has_base_url:
         print("WARN: 当前 OpenAI-compatible provider 未配置 base_url")
         return 1
