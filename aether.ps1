@@ -2,7 +2,7 @@
 # AETHER-DFT launcher
 # - Double-click aether.cmd or run .\aether.ps1 to enter the chat UI.
 # - First launch creates a project-local .venv and installs AETHER-DFT.
-# - Uses this computer's non-Conda Python/py launcher first; falls back to uv-managed CPython.
+# - Uses this computer's non-Conda Python/py launcher to create the project .venv.
 
 [CmdletBinding()]
 param(
@@ -45,7 +45,7 @@ function Test-PythonVersion([string]$PythonExe, [string[]]$PythonArgs) {
         $out = & $PythonExe @verArgs 2>$null
         if ($LASTEXITCODE -ne 0 -or -not $out) { return $false }
         $info = $out | Select-Object -First 1 | ConvertFrom-Json
-        if (Test-CondaPythonPath ([string]$info.executable)) { return $false }
+        if (Test-UnsupportedPythonPath ([string]$info.executable)) { return $false }
         $maj = [int]$info.major
         $min = [int]$info.minor
         return ($maj -gt $MinMajor -or ($maj -eq $MinMajor -and $min -ge $MinMinor))
@@ -54,34 +54,16 @@ function Test-PythonVersion([string]$PythonExe, [string[]]$PythonArgs) {
     }
 }
 
-function Test-CondaPythonPath([string]$PythonExe) {
+function Test-UnsupportedPythonPath([string]$PythonExe) {
     if (-not $PythonExe) { return $false }
-    return ($PythonExe -match "(?i)[\\/]miniconda|[\\/]anaconda|[\\/]conda")
+    return ($PythonExe -match "(?i)[\\/]miniconda|[\\/]anaconda|[\\/]conda|[\\/]uv[\\/]python|[\\/]Astral[\\/]")
 }
 
-function Test-VenvUsesConda {
+function Test-VenvUsesUnsupportedBase {
     $cfg = Join-Path $Venv "pyvenv.cfg"
     if (-not (Test-Path $cfg)) { return $false }
     $text = Get-Content $cfg -Raw -ErrorAction SilentlyContinue
-    return ($text -match "(?i)miniconda|anaconda|conda")
-}
-
-function Find-UvManagedPython {
-    $uv = Get-Command "uv" -ErrorAction SilentlyContinue
-    if (-not $uv) { return $null }
-    try {
-        & $uv.Source python install "3.12" --managed-python
-        if ($LASTEXITCODE -ne 0) { return $null }
-        $managed = & $uv.Source python find "3.12" --managed-python
-        if ($LASTEXITCODE -ne 0 -or -not $managed) { return $null }
-        $managedPath = ($managed | Select-Object -First 1).Trim()
-        if (Test-PythonVersion $managedPath @()) {
-            return @{ Source = $managedPath; Args = [string[]]@() }
-        }
-    } catch {
-        return $null
-    }
-    return $null
+    return ($text -match "(?i)miniconda|anaconda|conda|[\\/]uv[\\/]python|Astral")
 }
 
 function Find-BasePython {
@@ -94,17 +76,17 @@ function Find-BasePython {
     foreach ($candidate in $candidates) {
         $cmd = Get-Command $candidate.exe -ErrorAction SilentlyContinue
         if (-not $cmd) { continue }
-        if (Test-CondaPythonPath $cmd.Source) { continue }
+        if (Test-UnsupportedPythonPath $cmd.Source) { continue }
         if (Test-PythonVersion $cmd.Source $candidate.args) {
             return @{ Source = $cmd.Source; Args = [string[]]$candidate.args }
         }
     }
-    return Find-UvManagedPython
+    return $null
 }
 
 function Test-AetherInstall {
     if (-not (Test-Path $VenvPy)) { return $false }
-    if (Test-VenvUsesConda) { return $false }
+    if (Test-VenvUsesUnsupportedBase) { return $false }
     & $VenvPy -c "import aether_dft.cli; import ase.io; import openai; import pymatgen" 2>$null
     return ($LASTEXITCODE -eq 0)
 }
@@ -141,11 +123,11 @@ function Bootstrap-Aether {
     Write-Step "首次启动：正在配置 AETHER-DFT 运行环境（仅此一次，约 3-5 分钟）..."
     $base = Find-BasePython
     if (-not $base) {
-        Fail "未找到非 Conda 的 Python 3.12+，且 uv managed Python 不可用。请安装 Python 3.12+ 或 uv 后重试；AETHER 不会使用 Conda 作为发布运行环境。"
+        Fail "未找到本机普通 Python 3.12+。请安装官方 Python 3.12+ 后重新运行 aether.cmd；AETHER 不会使用 Conda，也不会自动下载 uv/Astral 托管 Python。"
     }
 
-    if ((Test-Path $VenvPy) -and ((Test-VenvUsesConda) -or -not (Test-PythonVersion $VenvPy @()))) {
-        Write-Info "检测到现有 .venv 使用 Conda 或 Python 版本低于 3.12，正在重建项目虚拟环境..."
+    if ((Test-Path $VenvPy) -and ((Test-VenvUsesUnsupportedBase) -or -not (Test-PythonVersion $VenvPy @()))) {
+        Write-Info "检测到现有 .venv 使用 Conda/uv 托管 Python 或 Python 版本低于 3.12，正在重建项目虚拟环境..."
         Remove-Item -LiteralPath $Venv -Recurse -Force
     }
 
