@@ -2,7 +2,7 @@
 # AETHER-DFT launcher
 # - Double-click aether.cmd or run .\aether.ps1 to enter the chat UI.
 # - First launch creates a project-local .venv and installs AETHER-DFT.
-# - Uses this computer's non-Conda Python/py launcher to create the project .venv.
+# - Uses this computer's existing Python 3.12 to create the project .venv.
 
 [CmdletBinding()]
 param(
@@ -56,14 +56,67 @@ function Test-PythonVersion([string]$PythonExe, [string[]]$PythonArgs) {
 
 function Test-UnsupportedPythonPath([string]$PythonExe) {
     if (-not $PythonExe) { return $false }
-    return ($PythonExe -match "(?i)[\\/]miniconda|[\\/]anaconda|[\\/]conda|[\\/]uv[\\/]python|[\\/]Astral[\\/]")
+    return ($PythonExe -match "(?i)[\\/]uv[\\/]python|[\\/]Astral[\\/]")
+}
+
+function Test-CondaPythonPath([string]$PythonExe) {
+    if (-not $PythonExe) { return $false }
+    return ($PythonExe -match "(?i)[\\/]miniconda|[\\/]anaconda|[\\/]conda")
 }
 
 function Test-VenvUsesUnsupportedBase {
     $cfg = Join-Path $Venv "pyvenv.cfg"
     if (-not (Test-Path $cfg)) { return $false }
     $text = Get-Content $cfg -Raw -ErrorAction SilentlyContinue
-    return ($text -match "(?i)miniconda|anaconda|conda|[\\/]uv[\\/]python|Astral")
+    return ($text -match "(?i)[\\/]uv[\\/]python|Astral")
+}
+
+function Find-CondaEnvPythons {
+    $roots = @()
+    if ($env:CONDA_PREFIX) {
+        $roots += $env:CONDA_PREFIX
+    }
+    $conda = Get-Command "conda" -ErrorAction SilentlyContinue
+    if ($conda) {
+        $condaPath = $conda.Source
+        $root = Split-Path -Parent (Split-Path -Parent $condaPath)
+        if ($root) { $roots += $root }
+    }
+    foreach ($path in @(
+        "$env:USERPROFILE\miniconda3",
+        "$env:USERPROFILE\anaconda3",
+        "D:\miniconda3",
+        "C:\miniconda3",
+        "C:\ProgramData\miniconda3",
+        "C:\ProgramData\anaconda3"
+    )) {
+        if ($path) { $roots += $path }
+    }
+    foreach ($root in ($roots | Where-Object { $_ } | Select-Object -Unique)) {
+        $basePy = Join-Path $root "python.exe"
+        if (Test-Path $basePy) { $basePy }
+        $envRoot = Join-Path $root "envs"
+        if (Test-Path $envRoot) {
+            Get-ChildItem $envRoot -Directory -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                    $py = Join-Path $_.FullName "python.exe"
+                    if (Test-Path $py) { $py }
+                }
+        }
+    }
+}
+
+function Reset-ProjectVenv {
+    if (-not (Test-Path $Venv)) { return }
+    try {
+        Remove-Item -LiteralPath $Venv -Recurse -Force
+        return
+    } catch {
+        $suffix = Get-Date -Format "yyyyMMddHHmmss"
+        $backup = Join-Path $Root ".venv.old-$suffix"
+        Write-Host "旧 .venv 暂时无法完整删除，改名隔离为 $backup" -ForegroundColor Yellow
+        Rename-Item -LiteralPath $Venv -NewName (Split-Path -Leaf $backup) -Force
+    }
 }
 
 function Find-BasePython {
@@ -77,7 +130,16 @@ function Find-BasePython {
         if (-not $cmd) { continue }
         if (Test-UnsupportedPythonPath $cmd.Source) { continue }
         if (Test-PythonVersion $cmd.Source $candidate.args) {
-            return @{ Source = $cmd.Source; Args = [string[]]$candidate.args }
+            return @{
+                Source = $cmd.Source
+                Args = [string[]]$candidate.args
+                IsConda = (Test-CondaPythonPath $cmd.Source)
+            }
+        }
+    }
+    foreach ($condaPython in (Find-CondaEnvPythons)) {
+        if (Test-PythonVersion $condaPython @()) {
+            return @{ Source = $condaPython; Args = [string[]]@(); IsConda = $true }
         }
     }
     return $null
@@ -122,12 +184,12 @@ function Bootstrap-Aether {
     Write-Step "首次启动：正在配置 AETHER-DFT 运行环境（仅此一次，约 3-5 分钟）..."
     $base = Find-BasePython
     if (-not $base) {
-        Fail "未找到本机普通 Python 3.12。请安装官方 Python 3.12 后重新运行 aether.cmd；AETHER 不会使用 Conda，也不会自动下载 uv/Astral 托管 Python。"
+        Fail "未找到本机 Python 3.12。请安装 Python 3.12 后重新运行 aether.cmd；AETHER 会把依赖安装到项目 .venv，不污染原 Python 环境。"
     }
 
     if ((Test-Path $VenvPy) -and ((Test-VenvUsesUnsupportedBase) -or -not (Test-PythonVersion $VenvPy @()))) {
-        Write-Info "检测到现有 .venv 不是基于普通 Python 3.12，正在重建项目虚拟环境..."
-        Remove-Item -LiteralPath $Venv -Recurse -Force
+        Write-Info "检测到现有 .venv 不是基于本机 Python 3.12，正在重建项目虚拟环境..."
+        Reset-ProjectVenv
     }
 
     if (-not (Test-Path $VenvPy)) {
@@ -135,6 +197,9 @@ function Bootstrap-Aether {
         $venvArgs = @()
         $venvArgs += $base.Args
         $venvArgs += @("-m", "venv", $Venv)
+        if ($base.IsConda) {
+            $venvArgs += "--system-site-packages"
+        }
         & $base.Source @venvArgs
         if ($LASTEXITCODE -ne 0) { Fail "venv 创建失败。请确认 Python venv 模块可用。" }
     }
@@ -143,10 +208,31 @@ function Bootstrap-Aether {
     & $VenvPy -m pip install --upgrade pip --quiet
     if ($LASTEXITCODE -ne 0) { Fail "pip 升级失败。请检查网络或 Python 安装。" }
 
-    Write-Info "安装 AETHER-DFT 及依赖（pymatgen 等较大，请耐心；安装日志会直接显示）..."
-    & $VenvPy -m pip install -e $Root
+    if (-not $base.IsConda) {
+        Write-Info "安装 AETHER-DFT 运行依赖（pymatgen 等较大，请耐心；安装日志会直接显示）..."
+        & $VenvPy -m pip install `
+            "pydantic>=2.12" `
+            "pydantic-settings>=2.13" `
+            "typer>=0.24" `
+            "rich>=14.3" `
+            "rapidfuzz>=3.14" `
+            "tenacity>=9.1" `
+            "jinja2>=3.1" `
+            "openai>=1.57.4" `
+            "ase>=3.23" `
+            "pymatgen>=2025.10" `
+            "mp-api>=0.46"
+        if ($LASTEXITCODE -ne 0) {
+            Fail "依赖安装失败。请检查网络；修复后重新双击 aether.cmd 即可继续。"
+        }
+    } else {
+        Write-Info "检测到 Conda Python 3.12：复用其已安装科学依赖，仅把 AETHER 本体安装到项目 .venv。"
+    }
+
+    Write-Info "安装 AETHER-DFT 项目本体..."
+    & $VenvPy -m pip install -e $Root --no-deps
     if ($LASTEXITCODE -ne 0) {
-        Fail "依赖安装失败。请检查网络；修复后重新双击 aether.cmd 即可继续。"
+        Fail "AETHER-DFT 项目安装失败。请修复后重新双击 aether.cmd。"
     }
 
     Write-Info "验证交互入口和关键科学依赖..."
