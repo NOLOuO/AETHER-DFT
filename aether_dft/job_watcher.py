@@ -86,6 +86,7 @@ def update_job_state(job_id: str, *, state: str, details: dict[str, Any] | None 
 
 def _job_followup_options(row: dict[str, Any]) -> list[dict[str, Any]]:
     state = str(row.get("last_known_state") or "").strip().upper()
+    normalized_state = state.split()[0] if state else ""
     options: list[dict[str, Any]] = [
         {
             "goal": "refresh_scheduler_state",
@@ -94,7 +95,7 @@ def _job_followup_options(row: dict[str, Any]) -> list[dict[str, Any]]:
             "candidate_tools": ["job_watch_snapshot(live_check=true)", "cluster_job_status_brief"],
         }
     ]
-    if state in {"SUBMITTED", "PENDING", "CONFIGURING", "RUNNING", "COMPLETING", "R"} or not state:
+    if normalized_state in {"SUBMITTED", "PENDING", "CONFIGURING", "RUNNING", "COMPLETING", "R"} or not normalized_state:
         options.append(
             {
                 "goal": "inspect_running_or_queued_job",
@@ -112,7 +113,7 @@ def _job_followup_options(row: dict[str, Any]) -> list[dict[str, Any]]:
                     "candidate_tools": ["cluster_job_progress_estimate", "cluster_job_partial_outcar"],
                 }
             )
-    elif state in {"COMPLETED", "COMPLETE", "DONE", "CD"}:
+    elif normalized_state in {"COMPLETED", "COMPLETE", "DONE", "CD"}:
         if row.get("remote_run_root"):
             options.append(
                 {
@@ -131,7 +132,7 @@ def _job_followup_options(row: dict[str, Any]) -> list[dict[str, Any]]:
                     "candidate_tools": ["cluster_job_status_brief", "cluster_remote_fetch"],
                 }
             )
-    elif state in {"FAILED", "CANCELLED", "CANCELED", "TIMEOUT", "NODE_FAIL", "OUT_OF_MEMORY", "F", "CA"}:
+    elif normalized_state in {"FAILED", "CANCELLED", "CANCELED", "TIMEOUT", "NODE_FAIL", "OUT_OF_MEMORY", "F", "CA"}:
         options.append(
             {
                 "goal": "diagnose_stopped_job",

@@ -201,6 +201,24 @@ def test_result_interpret_and_next_experiment_tools(tmp_path: Path):
     assert len(proposed["proposals"]) == 3
 
 
+def test_result_interpret_does_not_treat_synthetic_smoke_as_science(tmp_path: Path):
+    (tmp_path / "OUTCAR").write_text(
+        "AETHER synthetic VASP-like output for smoke-test validation\n"
+        "free  energy   TOTEN  =      -123.456 eV\n"
+        "reached required accuracy\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "OSZICAR").write_text("1 F= -123.0\n", encoding="utf-8")
+    (tmp_path / "CONTCAR").write_text("placeholder", encoding="utf-8")
+
+    interpreted = ToolRegistry().run_tool("result_interpret", {"run_root": str(tmp_path)})["result"]
+
+    assert interpreted["status"] == "ok"
+    assert interpreted["verdict"] == "test_output_detected"
+    assert interpreted["synthetic_output"]["detected"] is True
+    assert any("不能作为真实 VASP 科学结果" in warning for warning in interpreted["warnings"])
+
+
 def test_result_interpret_recognizes_finished_frequency_without_imaginary_modes(tmp_path: Path):
     (tmp_path / "OUTCAR").write_text(
         "\n".join(

@@ -1626,6 +1626,70 @@ def test_vasp_scan_does_not_claim_completion_without_convergence(tmp_path: Path)
     assert scanned["result"]["outcar"]["last_toten"] == -6.123456
 
 
+def test_vasp_scan_flags_synthetic_smoke_output(tmp_path: Path):
+    root = tmp_path / "run"
+    root.mkdir()
+    (root / "OUTCAR").write_text(
+        "AETHER synthetic VASP-like output for smoke-test validation\n"
+        "free  energy   TOTEN  =      -6.123456 eV\n"
+        "reached required accuracy\n",
+        encoding="utf-8",
+    )
+    (root / "OSZICAR").write_text(" 1 F= -.61234560E+01 E0= -.61234560E+01\n", encoding="utf-8")
+
+    scanned = ToolRegistry().run_tool("vasp_output_scan", {"run_root": str(root)})["result"]
+
+    assert scanned["status"] == "test_output"
+    assert scanned["outcar"]["is_synthetic_output"] is True
+    assert scanned["synthetic_output"]["detected"] is True
+    assert "不能作为真实 VASP 科学结果" in scanned["warnings"][0]
+
+
+def test_vasp_input_summary_distinguishes_remote_materialized_potcar(tmp_path: Path):
+    run_root = tmp_path / "run"
+    inputs = run_root / "inputs"
+    metadata = run_root / "metadata"
+    inputs.mkdir(parents=True)
+    metadata.mkdir()
+    (inputs / "INCAR").write_text("ENCUT = 520\n", encoding="utf-8")
+    (inputs / "KPOINTS").write_text("Gamma\n0\nGamma\n1 1 1\n0 0 0\n", encoding="utf-8")
+    write(inputs / "POSCAR", Atoms("Pt", positions=[[0, 0, 0]], cell=[4, 4, 4], pbc=True), format="vasp")
+    (inputs / "POTCAR.mapping.json").write_text('{"Pt": "/home/user/POTCAR/Pt/POTCAR"}', encoding="utf-8")
+    (metadata / "run_record.json").write_text(
+        json.dumps(
+            {
+                "notes": {
+                    "remote": {
+                        "uploaded_files": [
+                            "/home/user/aether/run/inputs/INCAR",
+                            "/home/user/aether/run/inputs/POTCAR",
+                        ]
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = ToolRegistry().run_tool("vasp_input_summary", {"run_root": str(run_root)})["result"]
+
+    assert summary["status"] == "ok"
+    assert summary["files"]["POTCAR"] is False
+    assert summary["potcar_status"]["mapping_exists"] is True
+    assert summary["potcar_status"]["remote_uploaded"] is True
+    assert "不要仅凭本地缺失判断远程会失败" in summary["potcar_status"]["guidance"]
+
+
+def test_job_watcher_understands_slurm_cancelled_by_user_state():
+    from aether_dft.job_watcher import _job_followup_options
+
+    options = _job_followup_options({"last_known_state": "CANCELLED BY 20020"})
+    goals = {item["goal"] for item in options}
+
+    assert "diagnose_stopped_job" in goals
+    assert "clarify_unknown_state" not in goals
+
+
 def test_dft_run_step_does_not_pretend_execution():
     registry = ToolRegistry()
     result = registry.run_tool("dft_run_step", {"phase": "submit"})

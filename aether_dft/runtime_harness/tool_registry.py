@@ -76,7 +76,7 @@ from aether_dft.general_agent_tools import (
 )
 from aether_dft.followups import complete_followup, due_followups, list_followups, schedule_followup
 from aether_dft.knowledge import add_note, list_notes, search_for_system, search_notes, show_note
-from aether_dft.job_watcher import register_run_record, snapshot as job_watch_snapshot
+from aether_dft.job_watcher import register_run_record, snapshot as job_watch_snapshot, update_job_state
 from aether_dft.paths import PROJECT_ROOT
 from aether_dft.recommendations import recommend_next_tasks
 from aether_dft.research_sync import (
@@ -93,7 +93,7 @@ from aether_dft.research_continuity import (
 )
 from aether_dft.research_vasp_templates import resolve_research_vasp_template
 from aether_dft.research_workspace import append_research_progress, build_research_proposal, read_research_onboarding_context
-from aether_dft.result_insight import interpret_result, propose_next_experiments
+from aether_dft.result_insight import detect_synthetic_vasp_output, interpret_result, propose_next_experiments
 from aether_dft.task_bridge import create_task_plan, run_dft_task
 
 
@@ -2168,8 +2168,11 @@ class ToolRegistry:
         last_toten = float(toten_matches[-1]) if toten_matches else None
         has_required_accuracy = "reached required accuracy" in text.lower()
         has_energy = last_toten is not None
+        synthetic = detect_synthetic_vasp_output(text)
         if outcar is None:
             status = "missing"
+        elif synthetic["detected"]:
+            status = "test_output"
         elif has_required_accuracy and has_energy:
             status = "completed"
         else:
@@ -2183,7 +2186,10 @@ class ToolRegistry:
                 "last_toten": last_toten,
                 "has_required_accuracy": has_required_accuracy,
                 "has_energy": has_energy,
+                "is_synthetic_output": synthetic["detected"],
             },
+            "synthetic_output": synthetic,
+            "warnings": [synthetic["warning"]] if synthetic["detected"] else [],
             "oszicar_exists": oszicar is not None,
             "oszicar_path": str(oszicar) if oszicar else None,
         }
@@ -2203,6 +2209,26 @@ class ToolRegistry:
                 poscar_data["n_sites"] = len(read(poscar))
             except Exception:
                 pass
+        potcar = inputs_dir / "POTCAR"
+        potcar_mapping = inputs_dir / "POTCAR.mapping.json"
+        remote_uploaded_potcar = False
+        if run_root is not None:
+            run_record_path = run_root / "metadata" / "run_record.json"
+            try:
+                record_data = json.loads(run_record_path.read_text(encoding="utf-8"))
+                remote = (record_data.get("notes") or {}).get("remote") or {}
+                uploaded = remote.get("uploaded_files") or []
+                remote_uploaded_potcar = any(str(item).replace("\\", "/").endswith("/inputs/POTCAR") for item in uploaded)
+            except Exception:
+                remote_uploaded_potcar = False
+        if potcar.exists():
+            potcar_guidance = "本地 inputs/POTCAR 存在。"
+        elif remote_uploaded_potcar:
+            potcar_guidance = "本地 inputs/POTCAR 不存在，但提交记录显示远程 inputs/POTCAR 已 materialize/upload；不要仅凭本地缺失判断远程会失败。"
+        elif potcar_mapping.exists():
+            potcar_guidance = "本地只有 POTCAR.mapping.json；提交前/提交时需要通过 cluster POTCAR roots materialize，应用 preflight/submit 证据判断。"
+        else:
+            potcar_guidance = "未发现本地 POTCAR 或 mapping；真实 VASP 提交前必须补齐赝势证据。"
         return {
             "status": "ok",
             "run_root": str(run_root) if run_root is not None else None,
@@ -2215,7 +2241,13 @@ class ToolRegistry:
                 "KPOINTS": kpoints.exists(),
                 "job.slurm": slurm.exists(),
                 "POTCAR": (inputs_dir / "POTCAR").exists(),
-                "POTCAR.mapping.json": (inputs_dir / "POTCAR.mapping.json").exists(),
+                "POTCAR.mapping.json": potcar_mapping.exists(),
+            },
+            "potcar_status": {
+                "local_exists": potcar.exists(),
+                "mapping_exists": potcar_mapping.exists(),
+                "remote_uploaded": remote_uploaded_potcar,
+                "guidance": potcar_guidance,
             },
         }
 
@@ -2246,10 +2278,14 @@ class ToolRegistry:
 
     def _cluster_job_cancel(self, payload: dict[str, Any]) -> dict[str, Any]:
         from dft_app.remote.realtime import job_cancel
-        return job_cancel(
+        result = job_cancel(
             str(payload.get("job_id") or "").strip(),
             cluster_alias=str(payload.get("cluster_alias") or "").strip() or None,
         )
+        job_id = str(result.get("job_id") or payload.get("job_id") or "").strip()
+        if job_id and str(result.get("status") or "") in {"canceled", "pending_verification", "submitted_cancel"}:
+            update_job_state(job_id, state=str(result.get("status") or "cancel_requested"), details=result)
+        return result
 
     def _cluster_job_partial_outcar(self, payload: dict[str, Any]) -> dict[str, Any]:
         from dft_app.remote.realtime import job_partial_outcar

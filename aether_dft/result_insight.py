@@ -19,6 +19,38 @@ def _read(path: Path, limit: int = 500_000) -> str:
     return text[-limit:]
 
 
+def detect_synthetic_vasp_output(text: str) -> dict[str, Any]:
+    """Detect smoke-test / synthetic markers that must not be treated as science.
+
+    Real VASP output can contain many generic words, so keep this deliberately
+    narrow: markers must indicate AETHER validation, synthetic output, or an
+    explicit smoke-test banner.  This protects the agent from turning a harness
+    fixture into a scientific conclusion.
+    """
+
+    lowered = text.lower()
+    markers = [
+        "aether synthetic",
+        "synthetic vasp",
+        "synthetic vasp-like",
+        "cluster smoke outcar",
+        "smoke outcar",
+        "smoke-test outcar",
+        "smoke test outcar",
+    ]
+    matched = [marker for marker in markers if marker in lowered]
+    return {
+        "detected": bool(matched),
+        "markers": matched[:5],
+        "warning": (
+            "输出包含 synthetic/smoke-test 标记；这只能用于验证管道可用性，"
+            "不能作为真实 VASP 科学结果。"
+            if matched
+            else ""
+        ),
+    }
+
+
 def _parse_float_tail(pattern: str, text: str) -> list[float]:
     values: list[float] = []
     for match in re.findall(pattern, text):
@@ -129,6 +161,7 @@ def interpret_result(run_root: str | Path) -> dict[str, Any]:
     poscar = _first_existing(root, "POSCAR", "inputs/POSCAR")
     outcar_text = _read(outcar_path)
     oszicar_text = _read(oszicar_path, limit=120_000)
+    synthetic = detect_synthetic_vasp_output(outcar_text + "\n" + oszicar_text)
     if not outcar_text and not oszicar_text:
         return {
             "status": "no_outputs",
@@ -144,6 +177,9 @@ def interpret_result(run_root: str | Path) -> dict[str, Any]:
     frequency = _frequency_summary(outcar_text)
     warnings: list[str] = []
     suggestions: list[str] = []
+    if synthetic["detected"]:
+        warnings.append(synthetic["warning"])
+        suggestions.append("若需要科研结论，重新提交真实 VASP 任务并等待真实 OUTCAR/OSZICAR 回拉后再解释。")
     if frequency.get("detected") and frequency.get("imaginary_mode_count", 0):
         warnings.append("频率输出包含虚频；若目标是稳定中间体，需要检查构型是否为极小点。")
         suggestions.append("对虚频模式做位移可视化；稳定中间体需重新优化，TS 则需确认是否只有目标反应坐标一个虚频。")
@@ -169,7 +205,10 @@ def interpret_result(run_root: str | Path) -> dict[str, Any]:
             warnings.append("吸附物整体漂移较大，可能脱附或迁移；不能直接当作原目标构型的吸附能。")
         elif verdict_hint == "bonding_changed_review_geometry":
             suggestions.append("存在成键/断键变化，建议先做 bond/位移 review 再记录 outcome。")
-    if frequency.get("detected") and stopped and toten:
+    if synthetic["detected"]:
+        verdict = "test_output_detected"
+        headline = "输出含 synthetic/smoke-test 标记；管道解析成功，但不能当作真实 VASP 科学结果。"
+    elif frequency.get("detected") and stopped and toten:
         if frequency.get("imaginary_mode_count", 0):
             verdict = "frequency_finished_with_imaginary_modes"
             headline = "频率任务已正常结束并产生频率，但包含虚频；需要结合任务目标判断是 TS 还是未稳定构型。"
@@ -197,6 +236,7 @@ def interpret_result(run_root: str | Path) -> dict[str, Any]:
             "oscillating": oscillating,
         },
         "frequency": frequency,
+        "synthetic_output": synthetic,
         "files": {"OUTCAR": bool(outcar_text), "OSZICAR": bool(oszicar_text), "CONTCAR": contcar.exists(), "POSCAR": poscar.exists()},
         "structure_change": structure_change,
         "adsorption_interpretation": structure_change.get("adsorption_verdict") if structure_change.get("status") == "ok" else "unavailable",
