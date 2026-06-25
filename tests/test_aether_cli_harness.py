@@ -99,7 +99,14 @@ def test_cli_doctor_json_is_machine_readable(capsys):
     assert cli.main(["doctor", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["program"]["name"] == "AETHER-DFT"
-    assert payload["python"]["required"] == "3.12.x"
+    assert payload["python"]["required"] == "3.12.x or 3.13.x"
+
+
+def test_launcher_keeps_project_venv_dependency_isolated():
+    launcher = Path("aether.ps1").read_text(encoding="utf-8")
+    assert '+= "--system-site-packages"' not in launcher
+    assert "Test-VenvUsesSharedSitePackages" in launcher
+    assert "安装 AETHER-DFT 运行依赖到项目 .venv" in launcher
 
 
 def test_cli_model_list_alias(capsys):
@@ -266,6 +273,14 @@ def test_cli_no_args_enters_interactive_when_tty(monkeypatch, capsys):
     assert "Resume this session with:" in out
     assert "aether chat --resume --session-id" in out
     assert "resumed:" not in out
+
+
+def test_cli_demo_is_display_only_not_second_repl(capsys):
+    assert cli.main(["demo"]) == 0
+    out = capsys.readouterr().out
+    assert "Session Info" in out
+    assert "display-only" in out
+    assert "aether" in out
 
 
 def test_cli_chat_help_is_product_friendly(capsys):
@@ -669,7 +684,7 @@ def test_doctor_payload_names_program_model_and_version(capsys):
     assert payload["program"]["version"] == "0.1.0"
     assert payload["effective_model"]["model_id"] == "deepseek:deepseek-v4-pro"
     assert payload["effective_model"]["context_window"] == 1000000
-    assert payload["python"]["required"] == "3.12.x"
+    assert payload["python"]["required"] == "3.12.x or 3.13.x"
     assert payload["python"]["ok"] is True
     assert "executable" not in payload["python"]
     assert "conda" not in out.lower()

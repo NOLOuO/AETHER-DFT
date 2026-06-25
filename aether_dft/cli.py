@@ -35,7 +35,8 @@ PROGRAM_COMMAND = "aether"
 AUTO_TURN_MIN_STEPS = 12
 AUTO_TURN_MIN_TOKENS = 1400
 AUTO_INITIAL_MAX_PASSES = 3
-REQUIRED_PYTHON = (3, 12)
+SUPPORTED_PYTHON_MAJOR = 3
+SUPPORTED_PYTHON_MINORS = {12, 13}
 TOP_LEVEL_COMMANDS = {
     "adsorption",
     "agent",
@@ -1576,94 +1577,13 @@ def handle_chat_auto_command(line: str, args: argparse.Namespace, session_store:
     return True, session_id
 
 
-def print_demo_help() -> None:
-    print(f"\n{Colors.BOLD}{Colors.CYAN}Commands{Colors.RESET}")
-    print(f"{Colors.DIM}{'─' * 36}{Colors.RESET}")
-    print(f"  {Colors.GREEN}/help{Colors.RESET}    show commands")
-    print(f"  {Colors.GREEN}/model{Colors.RESET}   show program/model/version")
-    print(f"  {Colors.GREEN}/ssh{Colors.RESET}     probe cluster")
-    print(f"  {Colors.GREEN}/status{Colors.RESET}  show current adsorption workflow status")
-    print(f"  {Colors.GREEN}/project{Colors.RESET} project state summary")
-    print(f"  {Colors.GREEN}/recommend{Colors.RESET} next research step")
-    print(f"  {Colors.GREEN}/clear{Colors.RESET}   clear screen")
-    print(f"  {Colors.GREEN}/exit{Colors.RESET}    quit")
-    print(f"{Colors.DIM}{'─' * 36}{Colors.RESET}\n")
-
-
-def run_demo_repl(run_root: str | None = None) -> int:
-    run_root = run_root or r"F:\AETHER-DFT\runs\task_0a4a1ddd\run_a295c506"
-    print_demo_home(run_root)
-    while True:
-        try:
-            line = input(f"\n{Colors.CYAN}aether>{Colors.RESET} ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return 0
-        if not line:
-            continue
-        if line in {"/exit", "exit", "quit", ":q"}:
-            return 0
-        if line == "/help":
-            print_demo_help()
-            continue
-        if line == "/clear":
-            os.system("cls" if os.name == "nt" else "clear")
-            print_demo_home(run_root)
-            continue
-        if line == "/model":
-            print(f"{Colors.CYAN}{PROGRAM_NAME}{Colors.RESET} v{Colors.GREEN}{__version__}{Colors.RESET} | model: {Colors.YELLOW}{program_model_id()}{Colors.RESET}")
-            continue
-        if line == "/ssh":
-            from dft_app.remote import SSHRemoteRunner
-
-            print(f"{Colors.DIM}probing cluster...{Colors.RESET}")
-            result = SSHRemoteRunner().probe()
-            color = Colors.GREEN if result.status == "ok" else Colors.YELLOW
-            print(f"{color}{result.status}{Colors.RESET}: {result.message}")
-            probe = result.details.get("probe", {}) if isinstance(result.details, dict) else {}
-            if probe:
-                print(f"  hostname: {probe.get('hostname', '')}")
-                print(f"  sbatch  : {probe.get('sbatch', '')}")
-                print(f"  squeue  : {probe.get('squeue', '')}")
-            continue
-        if line == "/status":
-            from dft_app.cli.main import execute_adsorption_workflow
-
-            result = execute_adsorption_workflow(run_root=Path(run_root), status=True)
-            status = result["workflow_status"]["status"]
-            color = Colors.GREEN if status in {"prepared", "completed", "aggregated"} else Colors.YELLOW
-            print(f"workflow: {color}{status}{Colors.RESET}")
-            print(f"monitor_pending: {result['workflow_status'].get('monitor_pending', [])}")
-            print(f"submit_ready    : {result['workflow_status'].get('submit_ready', [])}")
-            continue
-        if line == "/project":
-            print_json({"projects": list_projects()})
-            continue
-        if line.startswith("/recommend"):
-            from .recommendations import recommend_next_tasks
-
-            focus = line[len("/recommend") :].strip() or None
-            print_json({"recommendations": recommend_next_tasks(None, focus=focus)})
-            continue
-
-        from .agent import run_agent_once
-
-        stream_printer, stream_state = make_stream_printer()
-        record = run_agent_once(
-            line,
-            max_tokens=1000,
-            max_steps=4,
-            allow_cluster_submit=False,
-            progress_callback=make_chat_progress_printer(),
-            permission_prompt_callback=make_permission_prompt_callback(),
-            stream_callback=stream_printer,
-        )
-        print_streamed_or_final_response(record, stream_state)
-
-
 def _current_model_config(model_id: str | None = None) -> tuple[str, str, dict[str, Any]]:
     provider_id, model_name = split_model_id(model_id or resolve_effective_model_id())
     return provider_id, model_name, build_provider_model_config(provider_id, model_name)
+
+
+def python_version_supported() -> bool:
+    return sys.version_info.major == SUPPORTED_PYTHON_MAJOR and sys.version_info.minor in SUPPORTED_PYTHON_MINORS
 
 
 def doctor(args: argparse.Namespace) -> int:
@@ -1676,7 +1596,7 @@ def doctor(args: argparse.Namespace) -> int:
 
         has_key = bool(os.getenv(str(config["api_key_env"]), "").strip())
     has_base_url = bool(str(config.get("base_url", "") or "").strip())
-    python_ok = sys.version_info[:2] == REQUIRED_PYTHON
+    python_ok = python_version_supported()
     venv_root = Path.cwd() / ".venv"
     dependency_modules = {
         "aether_dft": "aether_dft",
@@ -1696,7 +1616,7 @@ def doctor(args: argparse.Namespace) -> int:
             "version": __version__,
         },
         "python": {
-            "required": "3.12.x",
+            "required": "3.12.x or 3.13.x",
             "current": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
             "ok": python_ok,
         },
@@ -1729,7 +1649,7 @@ def doctor(args: argparse.Namespace) -> int:
         print_json(payload)
     if not python_ok:
         if not getattr(args, "json", False):
-            print("ERROR: AETHER requires Python 3.12.x. Please install Python 3.12 and recreate the project .venv.")
+            print("ERROR: AETHER requires Python 3.12.x or 3.13.x. Please install a supported Python and recreate the project .venv.")
         return 1
     if not dependencies_ok:
         missing = ", ".join(label for label, info in dependencies.items() if not info["available"])
@@ -2895,10 +2815,10 @@ def handle_agent_run(args: argparse.Namespace) -> int:
 
 
 def handle_demo(args: argparse.Namespace) -> int:
-    if args.once:
-        print_demo_home(args.run_root)
-        return 0
-    return run_demo_repl(args.run_root)
+    print_demo_home(args.run_root)
+    print()
+    print(f"{Colors.DIM}Demo is display-only. Start the real Codex-like chat with: {Colors.GREEN}aether{Colors.RESET}")
+    return 0
 
 
 def handle_workflow_short(args: argparse.Namespace) -> int:
@@ -2978,7 +2898,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     demo_parser = sub.add_parser("demo", help="组会展示用极简首页，不提交、不联网。")
     demo_parser.add_argument("--run-root")
-    demo_parser.add_argument("--once", action="store_true", help="只打印首页，不进入交互。")
     demo_parser.set_defaults(func=handle_demo)
 
     model_parser = sub.add_parser("model", help="查看或切换当前模型。")
