@@ -109,6 +109,13 @@ def test_launcher_keeps_project_venv_dependency_isolated():
     assert "安装 AETHER-DFT 运行依赖到项目 .venv" in launcher
 
 
+def test_launcher_accepts_312_or_313_without_forcing_313():
+    launcher = Path("aether.ps1").read_text(encoding="utf-8")
+    assert "$SupportedMinors = @(12, 13)" in launcher
+    assert "$env:AETHER_PYTHON" in launcher
+    assert launcher.index('@{ exe = "python"; args = @() }') < launcher.index('@{ exe = "py"; args = @("-3.13") }')
+
+
 def test_cli_model_list_alias(capsys):
     assert cli.main(["model", "list", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)

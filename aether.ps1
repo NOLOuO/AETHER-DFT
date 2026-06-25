@@ -141,10 +141,21 @@ function Reset-ProjectVenv {
 }
 
 function Find-BasePython {
+    if ($env:AETHER_PYTHON) {
+        if (Test-Path $env:AETHER_PYTHON) {
+            if (Test-PythonVersion $env:AETHER_PYTHON @()) {
+                return @{
+                    Source = $env:AETHER_PYTHON
+                    Args = [string[]]@()
+                    IsConda = (Test-CondaPythonPath $env:AETHER_PYTHON)
+                }
+            }
+        }
+    }
     $candidates = @(
-        @{ exe = "py"; args = @("-3.13") },
-        @{ exe = "py"; args = @("-3.12") },
         @{ exe = "python"; args = @() },
+        @{ exe = "py"; args = @("-3.12") },
+        @{ exe = "py"; args = @("-3.13") },
         @{ exe = "python3"; args = @() }
     )
     foreach ($candidate in $candidates) {
