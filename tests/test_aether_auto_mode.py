@@ -412,6 +412,34 @@ def test_auto_cli_no_subcommand_behaves_as_switch(tmp_path: Path, monkeypatch, c
     assert disabled["state"]["enabled"] is False
 
 
+def test_auto_cli_goal_starts_initial_due_pass_unless_json_or_no_start(tmp_path: Path, monkeypatch, capsys):
+    _redirect_dirs(monkeypatch, tmp_path)
+    calls: list[dict[str, object]] = []
+
+    def fake_run_auto_due_once(**kwargs):
+        calls.append(kwargs)
+        return {"status": "ok", "ran": True, "completed": False}
+
+    monkeypatch.setattr(cli, "run_auto_due_once", fake_run_auto_due_once)
+
+    assert cli.main(["auto", "研究", "CO/Pt(111)", "吸附构型", "--project", "demo"]) == 0
+    out = capsys.readouterr().out
+    assert "[auto]" in out
+    assert calls
+    assert calls[0]["args"].project == "demo"
+    assert calls[0]["args"].max_steps >= cli.AUTO_TURN_MIN_STEPS
+
+    calls.clear()
+    assert cli.main(["auto", "研究", "H2O/Pt(111)", "吸附构型", "--project", "demo-json", "--json"]) == 0
+    capsys.readouterr()
+    assert calls == []
+
+    assert cli.main(["auto", "研究", "NH3/Pt(111)", "吸附构型", "--project", "demo-nostart", "--no-start"]) == 0
+    out = capsys.readouterr().out
+    assert "--no-start" in out
+    assert calls == []
+
+
 def test_auto_cli_default_status_is_human_card(tmp_path: Path, monkeypatch, capsys):
     _redirect_dirs(monkeypatch, tmp_path)
     configure_auto_mode(project="demo", enabled=True, research_goal="验证 CO/Pt(111) 吸附构型")

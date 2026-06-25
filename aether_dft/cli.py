@@ -2389,6 +2389,49 @@ def handle_auto_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _prepare_auto_launcher_turn_args(args: argparse.Namespace) -> argparse.Namespace:
+    turn_args = copy.copy(args)
+    defaults = {
+        "model": None,
+        "max_tokens": None,
+        "max_steps": 6,
+    }
+    for name, value in defaults.items():
+        if not hasattr(turn_args, name):
+            setattr(turn_args, name, value)
+    return turn_args
+
+
+def run_auto_initial_due_from_launcher(args: argparse.Namespace) -> dict[str, Any]:
+    """Run the just-scheduled first /auto pass from the top-level launcher."""
+
+    from .session_store import AetherSessionStore
+
+    turn_args = auto_turn_args(_prepare_auto_launcher_turn_args(args))
+    session_store = AetherSessionStore()
+    resumed = session_store.resume_payload(project=args.project)
+    session_ref = {"id": resumed.get("session_id") if resumed.get("status") == "ok" else None}
+    return run_auto_due_once(
+        args=turn_args,
+        session_store=session_store,
+        session_ref=session_ref,
+        quiet=False,
+        interactive_questions=True,
+    )
+
+
+def maybe_start_auto_after_enable(args: argparse.Namespace, result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("status") != "ok":
+        return {"status": "skipped", "reason": "configure_failed"}
+    if getattr(args, "json", False):
+        return {"status": "skipped", "reason": "json_mode"}
+    if getattr(args, "no_start", False):
+        print(f"{Colors.DIM}  auto start skipped (--no-start); scheduled follow-up remains due.{Colors.RESET}")
+        return {"status": "skipped", "reason": "no_start"}
+    print(f"{Colors.CYAN}[auto]{Colors.RESET} starting first autonomous pass now…")
+    return run_auto_initial_due_from_launcher(args)
+
+
 def handle_auto_switch(args: argparse.Namespace) -> int:
     """Top-level ``aether auto`` switch.
 
@@ -2453,6 +2496,9 @@ def handle_auto_switch(args: argparse.Namespace) -> int:
         print_auto_preview(result)
         if result.get("status") == "ok":
             print(f"{Colors.DIM}  scheduled: initial advance now, monitor every {result['state'].get('monitor_interval_hours')}h, daily report {result['state'].get('daily_report_time')}{Colors.RESET}")
+            started = maybe_start_auto_after_enable(args, result)
+            if started.get("status") == "error":
+                return 1
     return 0 if result.get("status") == "ok" else 1
 
 
@@ -2477,6 +2523,9 @@ def handle_auto_on(args: argparse.Namespace) -> int:
         print_auto_preview(result)
         if result.get("status") == "ok":
             print(f"{Colors.DIM}  scheduled: initial advance now, monitor every {result['state'].get('monitor_interval_hours')}h, daily report {result['state'].get('daily_report_time')}{Colors.RESET}")
+            started = maybe_start_auto_after_enable(args, result)
+            if started.get("status") == "error":
+                return 1
     return 0 if result.get("status") == "ok" else 1
 
 
@@ -3168,6 +3217,10 @@ def build_parser() -> argparse.ArgumentParser:
     auto_parser.add_argument("--no-structure-build", action="store_true")
     auto_parser.add_argument("--no-literature", action="store_true")
     auto_parser.add_argument("--no-writeback", action="store_true")
+    auto_parser.add_argument("--no-start", action="store_true", help="只开启/切换状态，不立即运行首轮 autonomous pass。")
+    auto_parser.add_argument("--model", help="首轮 autonomous pass 临时使用的模型；支持 qwen/deepseek 或完整模型 ID。")
+    auto_parser.add_argument("--max-steps", type=int, default=6)
+    auto_parser.add_argument("--max-tokens", type=int)
     auto_parser.add_argument("--json", action="store_true", help="输出原始 JSON，供脚本/测试使用。")
     auto_parser.set_defaults(func=handle_auto_switch)
     auto_parser.epilog = (
@@ -3188,6 +3241,10 @@ def build_parser() -> argparse.ArgumentParser:
     auto_on.add_argument("--no-structure-build", action="store_true")
     auto_on.add_argument("--no-literature", action="store_true")
     auto_on.add_argument("--no-writeback", action="store_true")
+    auto_on.add_argument("--no-start", action="store_true", help="只开启/排程，不立即运行首轮 autonomous pass。")
+    auto_on.add_argument("--model", help="首轮 autonomous pass 临时使用的模型；支持 qwen/deepseek 或完整模型 ID。")
+    auto_on.add_argument("--max-steps", type=int, default=6)
+    auto_on.add_argument("--max-tokens", type=int)
     auto_on.add_argument("--json", action="store_true", help="输出原始 JSON，供脚本/测试使用。")
     auto_on.set_defaults(func=handle_auto_on)
     auto_off = auto_sub.add_parser("off", help="关闭 /auto。")
