@@ -356,3 +356,10 @@ def test_cli_session_and_tools_smoke(tmp_path: Path, monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["arguments"]["focus"] == "cluster"
     assert payload["result"]["status"] == "ok"
+
+
+def test_tools_run_reports_invalid_json_arguments(capsys):
+    assert cli.main(["tools", "run", "recommend_next_tasks", "--arguments", "{bad json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert "合法 JSON" in payload["message"]

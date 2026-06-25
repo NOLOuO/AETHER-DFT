@@ -1540,6 +1540,41 @@ def test_submit_runner_blocks_when_current_inputs_do_not_match_research_gate(tmp
     assert (run_root / "metadata" / "pre_submit_gate.json").exists()
 
 
+def test_local_submit_runner_requires_real_potcar_not_only_mapping(tmp_path: Path):
+    from dft_app.models import ExperimentSpec, PipelinePhase, RunRecord, TaskType
+    from dft_app.runner import SlurmRunner
+
+    run_root = tmp_path / "local_submit"
+    inputs = run_root / "inputs"
+    inputs.mkdir(parents=True)
+    atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.74]], cell=[8, 8, 8], pbc=False)
+    write(inputs / "POSCAR", atoms, format="vasp")
+    (inputs / "INCAR").write_text("IBRION = 2\nNSW = 50\nMAGMOM = 2*0\n", encoding="utf-8")
+    (inputs / "KPOINTS").write_text("Gamma\n0\nGamma\n1 1 1\n0 0 0\n", encoding="utf-8")
+    (inputs / "job.slurm").write_text("#!/bin/bash\nmpirun vasp_std > vasp.out\n", encoding="utf-8")
+    (inputs / "POTCAR.mapping.json").write_text('{"H": "H"}\n', encoding="utf-8")
+    spec = ExperimentSpec(
+        task_id="task_local_potcar",
+        task_type=TaskType.RELAX,
+        material_name="H2",
+        source_prompt="relax",
+        structure_path=str(inputs / "POSCAR"),
+    )
+    record = RunRecord(
+        task_id="task_local_potcar",
+        run_id="run_local_potcar",
+        run_root=str(run_root),
+        checkpoint_path=str(run_root / "outputs" / ".pipeline_checkpoint.json"),
+    )
+    record.complete_phase(PipelinePhase.BUILD, artifacts=[str(inputs / "POSCAR")])
+    record.mark_ready()
+
+    result = SlurmRunner().submit(spec, record)
+
+    assert result.status == "blocked"
+    assert any("真实 POTCAR" in item for item in result.details["blockers"])
+
+
 def test_experiment_spec_from_dict_accepts_legacy_minimal_metadata():
     from dft_app.models import experiment_spec_from_dict
 

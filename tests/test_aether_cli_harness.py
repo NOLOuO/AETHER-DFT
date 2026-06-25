@@ -95,6 +95,13 @@ def test_cli_model_current_smoke(capsys):
     assert payload["model_id"] in {"deepseek:deepseek-v4-pro", "bailian:qwen3.7-max"}
 
 
+def test_cli_doctor_json_is_machine_readable(capsys):
+    assert cli.main(["doctor", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["program"]["name"] == "AETHER-DFT"
+    assert payload["python"]["required"] == "3.12.x"
+
+
 def test_cli_model_list_alias(capsys):
     assert cli.main(["model", "list", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)

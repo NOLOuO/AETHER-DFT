@@ -35,7 +35,14 @@ from dft_app.storage import RecordStore
 
 
 SUPPORTED_TASK_TYPES = [task_type.value for task_type in TaskType]
-SUPPORTED_STEP_PHASES = [phase.value for phase in PipelinePhase]
+IMPLEMENTED_STEP_PHASES = (
+    PipelinePhase.SUBMIT,
+    PipelinePhase.MONITOR,
+    PipelinePhase.PARSE,
+    PipelinePhase.ANALYZE,
+    PipelinePhase.EXPORT,
+)
+SUPPORTED_STEP_PHASES = [phase.value for phase in IMPLEMENTED_STEP_PHASES]
 SUPPORTED_SUBMIT_PROFILES = sorted(SUBMIT_PROFILES)
 ADSORPTION_WORKFLOW_SUBTASKS = ("clean_slab", "isolated_adsorbate", "adsorbed_system")
 ADSORPTION_OUTPUT_FILES = ("vasprun.xml", "OUTCAR", "OSZICAR", "CONTCAR", "vasp.out", "slurm.out")
@@ -1025,8 +1032,8 @@ def handle_run(args: argparse.Namespace) -> int:
         return 0
 
     if args.reset:
-        print("重置骨架已就位，后续将接入 checkpoint 清理。")
-        return 0
+        print("--reset 尚未实现；为避免自动化误判为成功，本次没有修改任何运行记录。")
+        return 2
 
     planning_result = create_plan_result(args)
     modeling_result = MODELER.build(
@@ -1303,7 +1310,7 @@ def handle_step(args: argparse.Namespace) -> int:
         return 0
 
     print(f"单步执行尚未实现：phase={args.phase}")
-    return 0
+    return 2
 
 
 def handle_adsorption_candidates(args: argparse.Namespace) -> int:

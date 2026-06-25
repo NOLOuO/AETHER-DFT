@@ -24,7 +24,7 @@ class SlurmRunner:
     def submit(self, spec: ExperimentSpec, run_record: RunRecord) -> RunnerResult:
         run_root = Path(run_record.run_root)
         job_script = run_root / "inputs" / "job.slurm"
-        gate = verify_submission_evidence(spec, run_record, mode="submit")
+        gate = verify_submission_evidence(spec, run_record, mode="submit", require_potcar=True)
         gate_path = run_root / "metadata" / "pre_submit_gate.json"
         if gate["status"] != "ready":
             message = "提交前证据核对未通过，已阻止 sbatch。"

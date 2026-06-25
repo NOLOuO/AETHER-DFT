@@ -1722,22 +1722,30 @@ def doctor(args: argparse.Namespace) -> int:
             "base_url_configured": has_base_url,
         },
     }
-    print("AETHER-DFT doctor")
-    print_json(payload)
+    if getattr(args, "json", False):
+        print_json(payload)
+    else:
+        print("AETHER-DFT doctor")
+        print_json(payload)
     if not python_ok:
-        print("ERROR: AETHER requires Python 3.12.x. Please install Python 3.12 and recreate the project .venv.")
+        if not getattr(args, "json", False):
+            print("ERROR: AETHER requires Python 3.12.x. Please install Python 3.12 and recreate the project .venv.")
         return 1
     if not dependencies_ok:
         missing = ", ".join(label for label, info in dependencies.items() if not info["available"])
-        print(f"ERROR: Missing required Python packages: {missing}. Re-run aether.cmd after fixing installation.")
+        if not getattr(args, "json", False):
+            print(f"ERROR: Missing required Python packages: {missing}. Re-run aether.cmd after fixing installation.")
         return 1
     if not has_base_url:
-        print("WARN: 当前 OpenAI-compatible provider 未配置 base_url")
+        if not getattr(args, "json", False):
+            print("WARN: 当前 OpenAI-compatible provider 未配置 base_url")
         return 1
     if not has_key:
-        print("WARN: 当前模型 provider 未找到 API key；请检查 api_keys.local.json 或对应环境变量。")
+        if not getattr(args, "json", False):
+            print("WARN: 当前模型 provider 未找到 API key；请检查 api_keys.local.json 或对应环境变量。")
         return 1
-    print("OK: OpenAI-compatible runtime configured")
+    if not getattr(args, "json", False):
+        print("OK: OpenAI-compatible runtime configured")
     return 0
 
 
@@ -2432,6 +2440,39 @@ def maybe_start_auto_after_enable(args: argparse.Namespace, result: dict[str, An
     return run_auto_initial_due_from_launcher(args)
 
 
+def configure_auto_enabled_from_args(args: argparse.Namespace, *, goal: str) -> dict[str, Any]:
+    from .auto_mode import configure_auto_mode
+
+    return configure_auto_mode(
+        project=args.project,
+        enabled=True,
+        research_goal=goal,
+        monitor_interval_hours=args.monitor_interval_hours,
+        daily_report_time=args.daily_report_time,
+        allow_cluster_submit=args.allow_cluster_submit,
+        allow_structure_build=not args.no_structure_build,
+        allow_literature_search=not args.no_literature,
+        allow_research_writeback=not args.no_writeback,
+        reset_questions=True,
+    )
+
+
+def print_auto_configured_and_maybe_start(args: argparse.Namespace, result: dict[str, Any]) -> int:
+    if getattr(args, "json", False):
+        print_json(result)
+        return 0 if result.get("status") == "ok" else 1
+    print_auto_preview(result)
+    if result.get("status") != "ok":
+        return 1
+    print(
+        f"{Colors.DIM}  scheduled: initial advance now, "
+        f"monitor every {result['state'].get('monitor_interval_hours')}h, "
+        f"daily report {result['state'].get('daily_report_time')}{Colors.RESET}"
+    )
+    started = maybe_start_auto_after_enable(args, result)
+    return 1 if started.get("status") == "error" else 0
+
+
 def handle_auto_switch(args: argparse.Namespace) -> int:
     """Top-level ``aether auto`` switch.
 
@@ -2478,55 +2519,11 @@ def handle_auto_switch(args: argparse.Namespace) -> int:
         return 1
     if inferred.get("source") and not getattr(args, "json", False):
         print(f"{Colors.DIM}auto goal inferred from {inferred.get('source')}: {_shorten_inline(goal, limit=120)}{Colors.RESET}")
-    result = configure_auto_mode(
-        project=args.project,
-        enabled=True,
-        research_goal=goal,
-        monitor_interval_hours=args.monitor_interval_hours,
-        daily_report_time=args.daily_report_time,
-        allow_cluster_submit=args.allow_cluster_submit,
-        allow_structure_build=not args.no_structure_build,
-        allow_literature_search=not args.no_literature,
-        allow_research_writeback=not args.no_writeback,
-        reset_questions=True,
-    )
-    if getattr(args, "json", False):
-        print_json(result)
-    else:
-        print_auto_preview(result)
-        if result.get("status") == "ok":
-            print(f"{Colors.DIM}  scheduled: initial advance now, monitor every {result['state'].get('monitor_interval_hours')}h, daily report {result['state'].get('daily_report_time')}{Colors.RESET}")
-            started = maybe_start_auto_after_enable(args, result)
-            if started.get("status") == "error":
-                return 1
-    return 0 if result.get("status") == "ok" else 1
+    return print_auto_configured_and_maybe_start(args, configure_auto_enabled_from_args(args, goal=goal))
 
 
 def handle_auto_on(args: argparse.Namespace) -> int:
-    from .auto_mode import configure_auto_mode
-
-    result = configure_auto_mode(
-        project=args.project,
-        enabled=True,
-        research_goal=args.goal,
-        monitor_interval_hours=args.monitor_interval_hours,
-        daily_report_time=args.daily_report_time,
-        allow_cluster_submit=args.allow_cluster_submit,
-        allow_structure_build=not args.no_structure_build,
-        allow_literature_search=not args.no_literature,
-        allow_research_writeback=not args.no_writeback,
-        reset_questions=True,
-    )
-    if getattr(args, "json", False):
-        print_json(result)
-    else:
-        print_auto_preview(result)
-        if result.get("status") == "ok":
-            print(f"{Colors.DIM}  scheduled: initial advance now, monitor every {result['state'].get('monitor_interval_hours')}h, daily report {result['state'].get('daily_report_time')}{Colors.RESET}")
-            started = maybe_start_auto_after_enable(args, result)
-            if started.get("status") == "error":
-                return 1
-    return 0 if result.get("status") == "ok" else 1
+    return print_auto_configured_and_maybe_start(args, configure_auto_enabled_from_args(args, goal=args.goal))
 
 
 def handle_auto_off(args: argparse.Namespace) -> int:
@@ -2558,7 +2555,11 @@ def handle_tools_run(args: argparse.Namespace) -> int:
         except OSError as exc:
             print_json({"status": "error", "message": f"无法读取 --arguments-file: {exc}"})
             return 1
-    arguments = parse_tool_arguments(raw_arguments)
+    try:
+        arguments = parse_tool_arguments(raw_arguments)
+    except ValueError as exc:
+        print_json({"status": "error", "message": str(exc)})
+        return 1
     registry = AetherToolRegistry(allow_cluster_submit=args.allow_cluster_submit)
     print_json(registry.run_tool(args.name, arguments))
     return 0
@@ -2935,6 +2936,23 @@ def handle_explain(args: argparse.Namespace) -> int:
     return dft_main(forwarded)
 
 
+def add_auto_enable_options(parser: argparse.ArgumentParser, *, include_goal: bool = False) -> None:
+    if include_goal:
+        parser.add_argument("goal")
+    parser.add_argument("--project")
+    parser.add_argument("--monitor-interval-hours", type=int, default=4)
+    parser.add_argument("--daily-report-time", default="18:00")
+    parser.add_argument("--allow-cluster-submit", action="store_true", help="允许 auto turn 调用真实 cluster submit；仍受 permission 模式约束。")
+    parser.add_argument("--no-structure-build", action="store_true")
+    parser.add_argument("--no-literature", action="store_true")
+    parser.add_argument("--no-writeback", action="store_true")
+    parser.add_argument("--no-start", action="store_true", help="只开启/切换状态，不立即运行首轮 autonomous pass。")
+    parser.add_argument("--model", help="首轮 autonomous pass 临时使用的模型；支持 qwen/deepseek 或完整模型 ID。")
+    parser.add_argument("--max-steps", type=int, default=6)
+    parser.add_argument("--max-tokens", type=int)
+    parser.add_argument("--json", action="store_true", help="输出原始 JSON，供脚本/测试使用。")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROGRAM_COMMAND,
@@ -2945,6 +2963,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor_parser = sub.add_parser("doctor", help="检查程序名称、版本、模型运行时与项目底座。")
     doctor_parser.add_argument("--model", help="临时检查指定模型；支持 qwen/deepseek 或完整模型 ID。")
+    doctor_parser.add_argument("--json", action="store_true", help="只输出机器可读 JSON。")
     doctor_parser.set_defaults(func=doctor)
 
     models_parser = sub.add_parser("models", help="列出可用 OpenAI-compatible provider/model。")
@@ -3210,18 +3229,7 @@ def build_parser() -> argparse.ArgumentParser:
             "旧式脚本入口 auto status/on/off 仍可用。"
         ),
     )
-    auto_parser.add_argument("--project")
-    auto_parser.add_argument("--monitor-interval-hours", type=int, default=4)
-    auto_parser.add_argument("--daily-report-time", default="18:00")
-    auto_parser.add_argument("--allow-cluster-submit", action="store_true", help="允许 auto turn 调用真实 cluster submit；仍受 permission 模式约束。")
-    auto_parser.add_argument("--no-structure-build", action="store_true")
-    auto_parser.add_argument("--no-literature", action="store_true")
-    auto_parser.add_argument("--no-writeback", action="store_true")
-    auto_parser.add_argument("--no-start", action="store_true", help="只开启/切换状态，不立即运行首轮 autonomous pass。")
-    auto_parser.add_argument("--model", help="首轮 autonomous pass 临时使用的模型；支持 qwen/deepseek 或完整模型 ID。")
-    auto_parser.add_argument("--max-steps", type=int, default=6)
-    auto_parser.add_argument("--max-tokens", type=int)
-    auto_parser.add_argument("--json", action="store_true", help="输出原始 JSON，供脚本/测试使用。")
+    add_auto_enable_options(auto_parser)
     auto_parser.set_defaults(func=handle_auto_switch)
     auto_parser.epilog = (
         "Shortcut: if the word after 'auto' is not status/on/off, AETHER treats the rest as the research goal. "
@@ -3233,19 +3241,7 @@ def build_parser() -> argparse.ArgumentParser:
     auto_status.add_argument("--json", action="store_true", help="输出原始 JSON，供脚本/测试使用。")
     auto_status.set_defaults(func=handle_auto_status)
     auto_on = auto_sub.add_parser("on", help="开启 /auto 并设置明确研究目标。")
-    auto_on.add_argument("goal")
-    auto_on.add_argument("--project")
-    auto_on.add_argument("--monitor-interval-hours", type=int, default=4)
-    auto_on.add_argument("--daily-report-time", default="18:00")
-    auto_on.add_argument("--allow-cluster-submit", action="store_true", help="允许 auto turn 调用真实 cluster submit；仍受 permission 模式约束。")
-    auto_on.add_argument("--no-structure-build", action="store_true")
-    auto_on.add_argument("--no-literature", action="store_true")
-    auto_on.add_argument("--no-writeback", action="store_true")
-    auto_on.add_argument("--no-start", action="store_true", help="只开启/排程，不立即运行首轮 autonomous pass。")
-    auto_on.add_argument("--model", help="首轮 autonomous pass 临时使用的模型；支持 qwen/deepseek 或完整模型 ID。")
-    auto_on.add_argument("--max-steps", type=int, default=6)
-    auto_on.add_argument("--max-tokens", type=int)
-    auto_on.add_argument("--json", action="store_true", help="输出原始 JSON，供脚本/测试使用。")
+    add_auto_enable_options(auto_on, include_goal=True)
     auto_on.set_defaults(func=handle_auto_on)
     auto_off = auto_sub.add_parser("off", help="关闭 /auto。")
     auto_off.add_argument("--project")

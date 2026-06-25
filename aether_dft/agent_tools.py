@@ -170,6 +170,8 @@ def parse_tool_arguments(raw: str | dict[str, Any] | None) -> dict[str, Any]:
         return {}
     try:
         payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"工具参数不是合法 JSON: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("工具参数 JSON 顶层必须是 object。")
+    return payload
