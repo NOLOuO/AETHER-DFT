@@ -1121,7 +1121,7 @@ def print_auto_preview(payload: dict[str, Any]) -> None:
             print(f"   - {question}")
     if not enabled and not state.get("research_goal"):
         project_hint = f" --project {state.get('project')}" if state.get("project") else ""
-        print(f"{Colors.DIM}  next: /auto <研究目标>  或  aether auto on \"研究目标\"{project_hint}{Colors.RESET}")
+        print(f"{Colors.DIM}  next: /auto <研究目标>  或  aether auto \"研究目标\"{project_hint}{Colors.RESET}")
 
 
 def answer_auto_human_question_from_cli(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2389,6 +2389,73 @@ def handle_auto_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_auto_switch(args: argparse.Namespace) -> int:
+    """Top-level ``aether auto`` switch.
+
+    The interactive slash command already treats /auto as a switch.  This keeps
+    the non-interactive launcher aligned with that mental model while retaining
+    ``auto on/status/off`` as explicit scripting aliases.
+    """
+
+    from .auto_mode import auto_mode_status, configure_auto_mode, infer_research_goal
+    from .session_store import AetherSessionStore
+
+    payload = auto_mode_status(project=args.project, include_due=True)
+    state = payload.get("state") or {}
+    if state.get("enabled"):
+        result = configure_auto_mode(project=args.project, enabled=False)
+        if getattr(args, "json", False):
+            print_json(result)
+        else:
+            print_auto_preview(result)
+        return 0 if result.get("status") == "ok" else 1
+
+    goal = str(state.get("research_goal") or "").strip()
+    inferred: dict[str, Any] = {}
+    if not goal:
+        inferred = infer_research_goal(project=args.project, session_store=AetherSessionStore())
+        goal = str(inferred.get("goal") or "").strip()
+    if not goal and hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
+        try:
+            goal = input("research goal> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            goal = ""
+    if not goal:
+        result = {
+            "status": "needs_goal",
+            "message": "没有从当前项目或会话中找到明确研究目标。请直接输入：aether auto \"<研究目标>\"",
+            "state": state,
+        }
+        if getattr(args, "json", False):
+            print_json(result)
+        else:
+            print_auto_preview(payload)
+            print(f"{Colors.YELLOW}{result['message']}{Colors.RESET}")
+        return 1
+    if inferred.get("source") and not getattr(args, "json", False):
+        print(f"{Colors.DIM}auto goal inferred from {inferred.get('source')}: {_shorten_inline(goal, limit=120)}{Colors.RESET}")
+    result = configure_auto_mode(
+        project=args.project,
+        enabled=True,
+        research_goal=goal,
+        monitor_interval_hours=args.monitor_interval_hours,
+        daily_report_time=args.daily_report_time,
+        allow_cluster_submit=args.allow_cluster_submit,
+        allow_structure_build=not args.no_structure_build,
+        allow_literature_search=not args.no_literature,
+        allow_research_writeback=not args.no_writeback,
+        reset_questions=True,
+    )
+    if getattr(args, "json", False):
+        print_json(result)
+    else:
+        print_auto_preview(result)
+        if result.get("status") == "ok":
+            print(f"{Colors.DIM}  scheduled: initial advance now, monitor every {result['state'].get('monitor_interval_hours')}h, daily report {result['state'].get('daily_report_time')}{Colors.RESET}")
+    return 0 if result.get("status") == "ok" else 1
+
+
 def handle_auto_on(args: argparse.Namespace) -> int:
     from .auto_mode import configure_auto_mode
 
@@ -3085,8 +3152,29 @@ def build_parser() -> argparse.ArgumentParser:
     followup_complete.add_argument("--no-reschedule", action="store_true")
     followup_complete.set_defaults(func=handle_followup_complete)
 
-    auto_parser = sub.add_parser("auto", help="目标驱动自动科研模式。")
-    auto_sub = auto_parser.add_subparsers(dest="auto_command")
+    auto_parser = sub.add_parser(
+        "auto",
+        help="目标驱动自动科研模式；无子命令时像 /auto 一样作为开关，或直接跟研究目标。",
+        description=(
+            "目标驱动自动科研模式。常用：aether auto --project MCH-Pt-Br；"
+            "aether auto \"验证 MCH 在 Br/Pt 上脱氢最低能路径\" --project MCH-Pt-Br；"
+            "旧式脚本入口 auto status/on/off 仍可用。"
+        ),
+    )
+    auto_parser.add_argument("--project")
+    auto_parser.add_argument("--monitor-interval-hours", type=int, default=4)
+    auto_parser.add_argument("--daily-report-time", default="18:00")
+    auto_parser.add_argument("--allow-cluster-submit", action="store_true", help="允许 auto turn 调用真实 cluster submit；仍受 permission 模式约束。")
+    auto_parser.add_argument("--no-structure-build", action="store_true")
+    auto_parser.add_argument("--no-literature", action="store_true")
+    auto_parser.add_argument("--no-writeback", action="store_true")
+    auto_parser.add_argument("--json", action="store_true", help="输出原始 JSON，供脚本/测试使用。")
+    auto_parser.set_defaults(func=handle_auto_switch)
+    auto_parser.epilog = (
+        "Shortcut: if the word after 'auto' is not status/on/off, AETHER treats the rest as the research goal. "
+        "Example: aether auto \"筛选 CO/Pt(111) 最稳定吸附构型\" --project demo"
+    )
+    auto_sub = auto_parser.add_subparsers(dest="auto_command", metavar="[status|on|off]")
     auto_status = auto_sub.add_parser("status", help="查看 /auto 状态。")
     auto_status.add_argument("--project")
     auto_status.add_argument("--json", action="store_true", help="输出原始 JSON，供脚本/测试使用。")
@@ -3293,9 +3381,41 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def normalize_auto_argv(raw_args: list[str]) -> list[str]:
+    """Normalize human-friendly ``aether auto <goal>`` into the legacy parser.
+
+    This is a CLI affordance, not a research workflow: it only maps the user's
+    natural entrypoint to the existing ``auto on`` command so all durable /auto
+    behavior remains model/tool driven.
+    """
+
+    if not raw_args or raw_args[0] != "auto":
+        return raw_args
+    if len(raw_args) == 1:
+        return raw_args
+    first = raw_args[1]
+    explicit = {"status", "on", "off", "-h", "--help"}
+    if first in explicit or first.startswith("-"):
+        return raw_args
+    goal_tokens: list[str] = []
+    rest: list[str] = []
+    in_rest = False
+    for token in raw_args[1:]:
+        if not in_rest and token.startswith("-"):
+            in_rest = True
+        if in_rest:
+            rest.append(token)
+        else:
+            goal_tokens.append(token)
+    goal = " ".join(goal_tokens).strip()
+    if not goal:
+        return raw_args
+    return ["auto", "on", goal, *rest]
+
+
 def main(argv: list[str] | None = None) -> int:
     ensure_console_utf8()
-    raw_args = list(sys.argv[1:] if argv is None else argv)
+    raw_args = normalize_auto_argv(list(sys.argv[1:] if argv is None else argv))
     if not raw_args:
         if hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
             return handle_chat(

@@ -383,6 +383,35 @@ def test_auto_cli_on_status_off(tmp_path: Path, monkeypatch, capsys):
     assert disabled["state"]["enabled"] is False
 
 
+def test_auto_cli_accepts_goal_without_on_keyword(tmp_path: Path, monkeypatch, capsys):
+    _redirect_dirs(monkeypatch, tmp_path)
+
+    assert cli.normalize_auto_argv(["auto", "研究", "CO/Pt(111)", "吸附构型", "--project", "demo"]) == [
+        "auto",
+        "on",
+        "研究 CO/Pt(111) 吸附构型",
+        "--project",
+        "demo",
+    ]
+
+    assert cli.main(["auto", "研究", "CO/Pt(111)", "吸附构型", "--project", "demo", "--json"]) == 0
+    enabled = json.loads(capsys.readouterr().out)
+
+    assert enabled["state"]["enabled"] is True
+    assert enabled["state"]["research_goal"] == "研究 CO/Pt(111) 吸附构型"
+    assert enabled["state"]["allow_cluster_submit"] is False
+
+
+def test_auto_cli_no_subcommand_behaves_as_switch(tmp_path: Path, monkeypatch, capsys):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="验证 H2O/Pt(111) 吸附能")
+
+    assert cli.main(["auto", "--project", "demo", "--json"]) == 0
+    disabled = json.loads(capsys.readouterr().out)
+
+    assert disabled["state"]["enabled"] is False
+
+
 def test_auto_cli_default_status_is_human_card(tmp_path: Path, monkeypatch, capsys):
     _redirect_dirs(monkeypatch, tmp_path)
     configure_auto_mode(project="demo", enabled=True, research_goal="验证 CO/Pt(111) 吸附构型")
