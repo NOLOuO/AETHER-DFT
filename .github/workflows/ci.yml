@@ -18,6 +18,8 @@ jobs:
       PYTHONIOENCODING: utf-8
       PYTHONNOUSERSITE: '1'
       AETHER_DFT_CI: '1'
+      DEEPSEEK_API_KEY: ci-placeholder-not-used
+      DASHSCOPE_API_KEY: ci-placeholder-not-used
 
     steps:
       - name: Checkout
