@@ -301,6 +301,41 @@ def test_cluster_runtime_digest_filters_to_current_project(tmp_path: Path, monke
     assert "333" not in digest
 
 
+def test_empty_cluster_runtime_digest_does_not_claim_live_queue_state(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    digest = build_cluster_runtime_digest(project="DemoProject")
+
+    assert "local run store" in digest
+    assert "not live scheduler evidence" in digest
+    assert "does not prove the user's cluster queue is empty" in digest
+    assert "cluster_my_jobs" in digest
+
+
+def test_nonempty_cluster_runtime_digest_marks_local_only_evidence(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    meta = tmp_path / ".aether" / "runs" / "DemoProject-task" / "run-demo" / "metadata"
+    meta.mkdir(parents=True)
+    (meta / "run_record.json").write_text(
+        (
+            "{"
+            "\"task_id\":\"DemoProject-task\",\"run_id\":\"run-demo\","
+            f"\"run_root\":\"{(tmp_path / '.aether' / 'runs' / 'DemoProject-task' / 'run-demo').as_posix()}\","
+            "\"created_at\":\"2026-01-01T00:00:00\",\"updated_at\":\"2026-01-01T00:00:00\","
+            "\"overall_status\":\"running\",\"current_phase\":\"submit\","
+            "\"scheduler_job_id\":\"111\",\"checkpoint_path\":\"x\",\"tags\":[],\"notes\":{},\"phases\":{}"
+            "}"
+        ),
+        encoding="utf-8",
+    )
+
+    digest = build_cluster_runtime_digest(project="DemoProject")
+
+    assert "111" in digest
+    assert "not live scheduler evidence" in digest
+    assert "before claiming current state" in digest
+
+
 def test_job_watch_digest_filters_to_current_project(tmp_path: Path, monkeypatch):
     import aether_dft.paths as paths
     import aether_dft.job_watcher as job_watcher

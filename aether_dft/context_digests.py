@@ -80,8 +80,16 @@ def build_cluster_runtime_digest(*, project: str | None = None, limit: int = 5) 
             break
     if not rows:
         scope = f" for project `{project}`" if project else ""
-        return f"No locally recorded active cluster jobs{scope}. If the user asks status, use `cluster_my_jobs` or a specific job realtime tool."
-    return "Locally recorded active/partial cluster jobs:\n" + "\n".join(rows)
+        return (
+            f"No AETHER-recorded active/partial cluster jobs in the local run store{scope}. "
+            "This is not live scheduler evidence and does not prove the user's cluster queue is empty. "
+            "If the user asks status, use `cluster_my_jobs` or a specific job realtime tool before claiming live job state."
+        )
+    return (
+        "AETHER-recorded active/partial cluster jobs from the local run store "
+        "(not live scheduler evidence; use realtime cluster tools before claiming current state):\n"
+        + "\n".join(rows)
+    )
 
 
 def build_job_watch_digest(*, project: str | None = None, limit: int = 5) -> str:

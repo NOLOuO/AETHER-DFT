@@ -442,6 +442,8 @@ def test_prompt_includes_cluster_realtime_section():
     assert "集群随时可问" in rendered
     assert "cluster_job_status_brief" in rendered
     assert "cluster_job_partial_outcar" in rendered
+    assert "没有调用 `cluster_my_jobs`" in rendered
+    assert "不要说“集群没有任务”" in rendered
 
 
 def test_ssh_runner_safe_extract_tar_rejects_path_traversal(tmp_path):
