@@ -15,9 +15,17 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Venv = Join-Path $Root ".venv"
 $VenvPy = Join-Path $Venv "Scripts\python.exe"
 $Stamp = Join-Path $Venv ".aether_ready"
+$CacheRoot = Join-Path $Root ".cache"
+$TmpRoot = Join-Path $Root ".tmp"
 $RequiredMajor = 3
 $SupportedMinors = @(12, 13)
 $env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONNOUSERSITE = "1"
+$env:PIP_CACHE_DIR = Join-Path $CacheRoot "pip"
+$env:XDG_CACHE_HOME = $CacheRoot
+$env:MPLCONFIGDIR = Join-Path $CacheRoot "matplotlib"
+$env:TEMP = Join-Path $TmpRoot "temp"
+$env:TMP = Join-Path $TmpRoot "temp"
 try {
     $utf8 = [System.Text.UTF8Encoding]::new($false)
     [Console]::OutputEncoding = $utf8
@@ -44,6 +52,21 @@ function Fail([string]$Message) {
         try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { $null = $_ }
     }
     exit 1
+}
+
+function Ensure-ProjectLocalRuntimeDirs {
+    foreach ($path in @($CacheRoot, $TmpRoot, $env:PIP_CACHE_DIR, $env:MPLCONFIGDIR, $env:TEMP)) {
+        if ($path -and -not (Test-Path $path)) {
+            New-Item -ItemType Directory -Path $path -Force | Out-Null
+        }
+    }
+}
+
+function Write-VenvPipConfig {
+    if (-not (Test-Path $Venv)) { return }
+    $pipIni = Join-Path $Venv "pip.ini"
+    $cache = ($env:PIP_CACHE_DIR -replace "\\", "/")
+    Set-Content -Path $pipIni -Encoding UTF8 -Value "[global]`ncache-dir = $cache`n"
 }
 
 function Test-PythonVersion([string]$PythonExe, [string[]]$PythonArgs) {
@@ -216,6 +239,7 @@ function Repair-Pip {
 }
 
 function Bootstrap-Aether {
+    Write-VenvPipConfig
     if ((Test-Path $Stamp) -and (Test-AetherInstall)) { return }
 
     if (Test-AetherInstall) {
@@ -242,6 +266,7 @@ function Bootstrap-Aether {
         & $base.Source @venvArgs
         if ($LASTEXITCODE -ne 0) { Fail "venv 创建失败。请确认 Python venv 模块可用。" }
     }
+    Write-VenvPipConfig
 
     Write-Info "升级 pip..."
     & $VenvPy -m pip install --upgrade pip --quiet
@@ -289,6 +314,7 @@ function Bootstrap-Aether {
 }
 
 Set-Location $Root
+Ensure-ProjectLocalRuntimeDirs
 
 if ($env:AETHER_LAUNCHER_SELFTEST -eq "1") {
     Write-Host "AETHER launcher self-test OK"

@@ -1592,8 +1592,6 @@ def doctor(args: argparse.Namespace) -> int:
     api_keys = load_api_keys(Path.cwd())
     has_key = bool(str(api_keys.get(provider_id, "")).strip())
     if not has_key:
-        import os
-
         has_key = bool(os.getenv(str(config["api_key_env"]), "").strip())
     has_base_url = bool(str(config.get("base_url", "") or "").strip())
     python_ok = python_version_supported()
@@ -1628,6 +1626,14 @@ def doctor(args: argparse.Namespace) -> int:
         },
         "dependencies": dependencies,
         "runtime": runtime,
+        "cache_policy": {
+            "pip_cache_dir": os.getenv("PIP_CACHE_DIR"),
+            "xdg_cache_home": os.getenv("XDG_CACHE_HOME"),
+            "mpl_config_dir": os.getenv("MPLCONFIGDIR"),
+            "temp": os.getenv("TEMP"),
+            "tmp": os.getenv("TMP"),
+            "python_no_user_site": os.getenv("PYTHONNOUSERSITE"),
+        },
         "effective_model": {
             "model_id": f"{provider_id}:{model_name}",
             "provider": provider_id,

@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.cache/
 .tmp/
 
 # local runtime and secrets
