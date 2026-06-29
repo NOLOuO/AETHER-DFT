@@ -23,6 +23,12 @@ dependencies = [
     "mp-api>=0.46",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8",
+]
+
 [project.scripts]
 aether = "aether_dft.cli:main"
 aether-dft = "aether_dft.cli:main"
@@ -41,3 +47,12 @@ cache_dir = ".tmp/pytest_cache"
 markers = [
     "requires_llm: live OpenAI-compatible model/API tests, skipped unless explicitly enabled",
 ]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+# Baseline ignores for existing code. Keep ruff wired into CI now, then remove
+# these one category at a time as cleanup PRs make the legacy tree compliant.
+ignore = ["E402", "F401", "F403", "F541"]

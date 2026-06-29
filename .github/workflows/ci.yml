@@ -1,0 +1,45 @@
+name: AETHER-DFT CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.13']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package and dev tools
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Compile sources
+        shell: pwsh
+        run: |
+          python -m compileall aether_dft dft_app dft_shared scripts tests
+
+      - name: Lint
+        shell: pwsh
+        run: |
+          python -m ruff check aether_dft dft_app scripts tests
+
+      - name: Tests
+        shell: pwsh
+        run: |
+          python -m pytest -q -m "not requires_llm"

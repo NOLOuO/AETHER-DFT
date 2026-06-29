@@ -106,7 +106,11 @@ def test_launcher_keeps_project_venv_dependency_isolated():
     launcher = Path("aether.ps1").read_text(encoding="utf-8")
     assert '+= "--system-site-packages"' not in launcher
     assert "Test-VenvUsesSharedSitePackages" in launcher
-    assert "安装 AETHER-DFT 运行依赖到项目 .venv" in launcher
+    assert "依赖清单只读取 pyproject.toml" in launcher
+    assert "pip install -e $Root" in launcher
+    assert "--no-deps" not in launcher
+    assert '"pydantic>=2.12"' not in launcher
+    assert '"rdkit>=2025.3"' not in launcher
 
 
 def test_launcher_accepts_312_or_313_without_forcing_313():

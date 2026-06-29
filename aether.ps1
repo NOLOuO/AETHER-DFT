@@ -76,7 +76,6 @@ function Test-PythonVersion([string]$PythonExe, [string[]]$PythonArgs) {
         $out = & $PythonExe @verArgs 2>$null
         if ($LASTEXITCODE -ne 0 -or -not $out) { return $false }
         $info = $out | Select-Object -First 1 | ConvertFrom-Json
-        if (Test-UnsupportedPythonPath ([string]$info.executable)) { return $false }
         $maj = [int]$info.major
         $min = [int]$info.minor
         return ($maj -eq $RequiredMajor -and ($SupportedMinors -contains $min))
@@ -85,21 +84,9 @@ function Test-PythonVersion([string]$PythonExe, [string[]]$PythonArgs) {
     }
 }
 
-function Test-UnsupportedPythonPath([string]$PythonExe) {
-    if (-not $PythonExe) { return $false }
-    return ($PythonExe -match "(?i)[\\/]uv[\\/]python|[\\/]Astral[\\/]")
-}
-
 function Test-CondaPythonPath([string]$PythonExe) {
     if (-not $PythonExe) { return $false }
     return ($PythonExe -match "(?i)[\\/]miniconda|[\\/]anaconda|[\\/]conda")
-}
-
-function Test-VenvUsesUnsupportedBase {
-    $cfg = Join-Path $Venv "pyvenv.cfg"
-    if (-not (Test-Path $cfg)) { return $false }
-    $text = Get-Content $cfg -Raw -ErrorAction SilentlyContinue
-    return ($text -match "(?i)[\\/]uv[\\/]python|Astral")
 }
 
 function Test-VenvUsesSharedSitePackages {
@@ -184,7 +171,6 @@ function Find-BasePython {
     foreach ($candidate in $candidates) {
         $cmd = Get-Command $candidate.exe -ErrorAction SilentlyContinue
         if (-not $cmd) { continue }
-        if (Test-UnsupportedPythonPath $cmd.Source) { continue }
         if (Test-PythonVersion $cmd.Source $candidate.args) {
             return @{
                 Source = $cmd.Source
@@ -203,7 +189,6 @@ function Find-BasePython {
 
 function Test-AetherInstall {
     if (-not (Test-Path $VenvPy)) { return $false }
-    if (Test-VenvUsesUnsupportedBase) { return $false }
     if (Test-VenvUsesSharedSitePackages) { return $false }
     & $VenvPy -c "import aether_dft.cli; import ase.io; import openai; import pymatgen" 2>$null
     return ($LASTEXITCODE -eq 0)
@@ -253,7 +238,7 @@ function Bootstrap-Aether {
         Fail "未找到本机 Python 3.12 或 3.13。请安装 Python 3.12/3.13 后重新运行 aether.cmd；AETHER 会把依赖安装到项目 .venv，不污染原 Python 环境。"
     }
 
-    if ((Test-Path $VenvPy) -and ((Test-VenvUsesUnsupportedBase) -or (Test-VenvUsesSharedSitePackages) -or -not (Test-PythonVersion $VenvPy @()))) {
+    if ((Test-Path $VenvPy) -and ((Test-VenvUsesSharedSitePackages) -or -not (Test-PythonVersion $VenvPy @()))) {
         Write-Info "检测到现有 .venv 不符合隔离要求（Python 3.12/3.13 / 不共享外部 site-packages），正在重建..."
         Reset-ProjectVenv
     }
@@ -276,28 +261,10 @@ function Bootstrap-Aether {
         }
     }
 
-    Write-Info "安装 AETHER-DFT 运行依赖到项目 .venv（pymatgen 等较大，请耐心；安装日志会直接显示）..."
-    & $VenvPy -m pip install `
-        "pydantic>=2.12" `
-        "pydantic-settings>=2.13" `
-        "typer>=0.24" `
-        "rich>=14.3" `
-        "rapidfuzz>=3.14" `
-        "tenacity>=9.1" `
-        "jinja2>=3.1" `
-        "openai>=1.57.4" `
-        "ase>=3.23" `
-        "pymatgen>=2025.10" `
-        "rdkit>=2025.3" `
-        "mp-api>=0.46"
+    Write-Info "安装 AETHER-DFT 及运行依赖到项目 .venv（依赖清单只读取 pyproject.toml；pymatgen/rdkit 等较大，请耐心）..."
+    & $VenvPy -m pip install -e $Root
     if ($LASTEXITCODE -ne 0) {
-        Fail "依赖安装失败。请检查网络；修复后重新双击 aether.cmd 即可继续。"
-    }
-
-    Write-Info "安装 AETHER-DFT 项目本体..."
-    & $VenvPy -m pip install -e $Root --no-deps
-    if ($LASTEXITCODE -ne 0) {
-        Fail "AETHER-DFT 项目安装失败。请修复后重新双击 aether.cmd。"
+        Fail "AETHER-DFT 安装失败。请检查网络或 pyproject.toml 依赖；修复后重新双击 aether.cmd 即可继续。"
     }
 
     Write-Info "验证交互入口和关键科学依赖..."

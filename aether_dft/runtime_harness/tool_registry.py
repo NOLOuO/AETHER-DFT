@@ -57,7 +57,7 @@ from aether_dft.auto_mode import (
 )
 from aether_dft.prompt_engine import load_architecture_live_doc_snapshot
 from aether_dft.permissions import get_permission_mode, permission_mode_label, should_allow_tool
-from aether_dft.project_state import append_progress, project_paths, read_project_context, write_project_state
+from aether_dft.project_state import append_progress, project_paths
 from aether_dft.adsorption_authoring import (
     AdsorptionCandidatePlan,
     create_candidate_plan,
