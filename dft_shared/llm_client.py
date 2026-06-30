@@ -1,7 +1,7 @@
 """独立 LLM 客户端：直接调用 OpenAI-compatible API。
 
-默认仍以本仓 provider 配置为主，同时补一层与 research-copilot
-近似的 `call_openai_compatible_result` 适配接口，便于结果解释服务复用。
+默认以本仓 provider 配置为主，同时提供 OpenAI-compatible
+`call_openai_compatible_result` 适配接口，便于结果解释服务复用。
 """
 
 from __future__ import annotations
@@ -50,22 +50,38 @@ DEFAULT_RACE_CANDIDATES: list[tuple[str, str]] = [
 ]
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-_WORKSPACE_ROOT = _PROJECT_ROOT.parent.parent
-_KEY_FILE = _PROJECT_ROOT / "api_keys.json"
-_KEY_FILE_CANDIDATES = (
-    _KEY_FILE,
-    _WORKSPACE_ROOT / "research-copilot" / "api_keys.local.json",
-    _WORKSPACE_ROOT / "domestic-research-copilot-app" / "api_keys.local.json",
-    _WORKSPACE_ROOT / "domestic-research-copilot-app" / "api_keys.json",
-)
+_KEY_FILE = _PROJECT_ROOT / "api_keys.local.json"
+_LEGACY_KEY_FILE = _PROJECT_ROOT / "api_keys.json"
 _PROVIDER_KEY_ALIASES: dict[str, tuple[str, ...]] = {
     "kimi": ("kimi", "moonshot"),
     "moonshot": ("moonshot", "kimi"),
 }
 
 
+def _key_file_candidates() -> list[Path]:
+    paths = [_KEY_FILE, _LEGACY_KEY_FILE]
+    extra_paths = os.getenv("AETHER_DFT_API_KEYS_PATHS", "").strip()
+    if extra_paths:
+        paths.extend(Path(item.strip()) for item in extra_paths.split(";") if item.strip())
+    deduped: list[Path] = []
+    for path in paths:
+        if path not in deduped:
+            deduped.append(path)
+    return deduped
+
+
+def _normalize_key_value(value: Any) -> str:
+    if isinstance(value, dict):
+        for field in ("api_key", "key", "token", "value"):
+            candidate = str(value.get(field) or "").strip()
+            if candidate:
+                return candidate
+        return ""
+    return str(value or "").strip()
+
+
 def _load_api_key(provider: str) -> str:
-    """按优先级查找 API key：环境变量 → 本项目 key 文件 → 共享 copilot key 文件。"""
+    """按优先级查找 API key：环境变量 → 本项目 key 文件 → 显式环境变量指定文件。"""
     prov_cfg = PROVIDERS.get(provider, {})
     env_key = prov_cfg.get("env_key", f"{provider.upper()}_API_KEY")
 
@@ -74,19 +90,22 @@ def _load_api_key(provider: str) -> str:
         return key
 
     lookup_names = _PROVIDER_KEY_ALIASES.get(provider, (provider,))
-    for path in _KEY_FILE_CANDIDATES:
+    candidates = _key_file_candidates()
+    for path in candidates:
         if not path.exists():
             continue
         try:
             keys = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
+        if not isinstance(keys, dict):
+            continue
         for lookup_name in lookup_names:
-            key = str(keys.get(lookup_name, "")).strip()
+            key = _normalize_key_value(keys.get(lookup_name))
             if key:
                 return key
 
-    tried_files = ", ".join(str(path) for path in _KEY_FILE_CANDIDATES)
+    tried_files = ", ".join(str(path) for path in candidates)
     raise ValueError(
         f"未找到 {provider} 的 API key（尝试过环境变量 {env_key}，以及文件: {tried_files}）"
     )
@@ -189,7 +208,7 @@ def call_openai_compatible_result(
     temperature: float | None = None,
     timeout: int = 60,
 ) -> dict[str, Any]:
-    """对齐 research-copilot 风格的调用接口。"""
+    """OpenAI-compatible 调用接口。"""
     if provider_id in {"", "auto"}:
         provider_id = "auto"
     if provider_id == "auto":

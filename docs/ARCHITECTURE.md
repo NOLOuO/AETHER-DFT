@@ -58,7 +58,7 @@ client.chat.completions.create(
 1. 不整仓硬拼；按能力层搬运。
 2. DFT 主线优先从 `semi_auto_dft` 继承。
 3. 结构/结果工具优先从 `dft_tools/dft_shared` 继承。
-4. 后续项目状态、知识库和长期记忆再从 `research-copilot` / `DeepScientist` 抽象接入。
+4. 后续项目状态、知识库和长期记忆统一沉淀为 AETHER 自有的发布版数据模型，不依赖个人外部项目。
 5. 对话式外壳统一收敛到 `aether-dft`：持续 REPL、命令面板、项目/会话/模型选择器。
 
 ## 下一阶段接口目标

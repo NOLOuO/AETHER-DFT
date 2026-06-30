@@ -25,15 +25,17 @@ aether.cmd
 
 首次启动会自动：
 
-1. 创建 `F:\AETHER-DFT\.venv`
+1. 创建 `<仓库根目录>\.venv`
 2. 使用 `pyproject.toml` 安装 AETHER-DFT 和运行依赖
 3. 把 pip/cache/temp 放到项目内 `.cache/` 与 `.tmp/`
 4. 进入交互式对话
 
+全局命令不是默认写入；如需把 `aether` 注册到 PowerShell Profile，显式运行 `./aether.ps1 -InstallCommand`。
+
 ### PowerShell 启动
 
 ```powershell
-cd F:\AETHER-DFT
+cd <仓库根目录>
 .\aether.cmd
 ```
 

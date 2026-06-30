@@ -107,7 +107,7 @@ $env:AETHER_RUN_LLM_TESTS='1'
 最近一次手动执行（2026-06-06）：
 
 - 命令：`aether-dft outcar analyze --latest --project MCH-Pt-Br --write-learning --json`
-- 远端来源：`/home/szhang/research/MCH-Pt-Br/MKM_actual_data_package_20260605/2Br/freq_tasks/Hstar_2Br-H_freq_Honly_20260601/OUTCAR`
+- 远端来源：`<cluster-research-root>/MCH-Pt-Br/MKM_actual_data_package_20260605/2Br/freq_tasks/Hstar_2Br-H_freq_Honly_20260601/OUTCAR`
 - 本地证据副本：`.aether/runtime/remote_outcar_analysis/Hstar_2Br-H_freq_Honly_20260601_b5e0389a91/`
 - 已拉回证据：`OUTCAR`、`OSZICAR`、`CONTCAR`、`POSCAR`
 - 解释结果：`frequency_finished_no_imaginary_modes`，最后 `TOTEN=-640.56417145 eV`，3 个实频、0 个虚频；POSCAR/CONTCAR 位移检查显示吸附几何稳定，最大位移约 `0.015 Å`。

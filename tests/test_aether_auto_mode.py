@@ -87,7 +87,7 @@ def test_auto_human_question_uses_current_project_when_model_omits_project(tmp_p
     assert "CO 吸附" in pending["question"]
 
 
-def test_auto_convergence_audit_accepts_completed_synonym(tmp_path: Path, monkeypatch):
+def test_auto_convergence_audit_accepts_completed_synonym_with_evidence(tmp_path: Path, monkeypatch):
     _redirect_dirs(monkeypatch, tmp_path)
     configure_auto_mode(project="demo", enabled=True, research_goal="验证 /auto 行为")
 
@@ -95,6 +95,7 @@ def test_auto_convergence_audit_accepts_completed_synonym(tmp_path: Path, monkey
         project="demo",
         verdict="completed",
         success_criteria=["向人类提问并记录答案"],
+        evidence_refs=["auto_human_question:q1"],
         completed_items=["auto_human_question 已记录答案"],
         missing_evidence=[],
     )
@@ -103,6 +104,84 @@ def test_auto_convergence_audit_accepts_completed_synonym(tmp_path: Path, monkey
     assert state["convergence_audit"]["verdict"] == "converged"
     assert state["status"] == "converged"
     assert state["current_phase"] == "complete_with_evidence"
+
+
+def test_auto_convergence_audit_demotes_completion_without_evidence(tmp_path: Path, monkeypatch):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="验证 MCH 吸附能")
+
+    result = audit_auto_research_progress(
+        project="demo",
+        verdict="converged",
+        success_criteria=["得到吸附能"],
+        evidence_refs=[],
+        completed_items=["模型认为已完成"],
+        missing_evidence=[],
+    )
+
+    state = result["state"]
+    audit = state["convergence_audit"]
+    assert audit["verdict"] == "needs_more_evidence"
+    assert state["status"] == "active"
+    assert state["current_phase"] == "needs_more_evidence"
+    assert audit["convergence_blockers"]
+    assert any("evidence_refs" in item for item in audit["missing_evidence"])
+
+
+def test_auto_convergence_audit_requires_computational_evidence_for_dft_goals(tmp_path: Path, monkeypatch):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="计算 H2O/Pt(111) 吸附能")
+
+    result = audit_auto_research_progress(
+        project="demo",
+        verdict="converged",
+        success_criteria=["吸附能计算完成"],
+        evidence_refs=["literature:water-pt"],
+        completed_items=["读了文献"],
+        missing_evidence=[],
+    )
+
+    audit = result["state"]["convergence_audit"]
+    assert audit["verdict"] == "needs_more_evidence"
+    assert any("DFT" in item or "结构" in item for item in audit["missing_evidence"])
+
+
+def test_auto_convergence_audit_rejects_running_calculation_status_for_dft_goals(tmp_path: Path, monkeypatch):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="计算 H2O/Pt(111) 吸附能")
+
+    result = audit_auto_research_progress(
+        project="demo",
+        verdict="converged",
+        success_criteria=["吸附能计算完成"],
+        evidence_refs=["run:demo-001"],
+        completed_items=["候选结构已提交"],
+        missing_evidence=[],
+        calculation_status={"status": "running", "completed": 0},
+    )
+
+    audit = result["state"]["convergence_audit"]
+    assert audit["verdict"] == "needs_more_evidence"
+    assert audit["convergence_blockers"]
+
+
+def test_auto_convergence_audit_accepts_completed_calculation_status_for_dft_goals(tmp_path: Path, monkeypatch):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="计算 H2O/Pt(111) 吸附能")
+
+    result = audit_auto_research_progress(
+        project="demo",
+        verdict="converged",
+        success_criteria=["吸附能计算完成"],
+        evidence_refs=["run:demo-001"],
+        completed_items=["OUTCAR 已解析并得到吸附能"],
+        missing_evidence=[],
+        calculation_status={"status": "completed", "final_energy": -123.4},
+    )
+
+    audit = result["state"]["convergence_audit"]
+    assert audit["verdict"] == "converged"
+    assert result["state"]["status"] == "converged"
 
 
 def test_auto_mode_collects_due_work_for_background_loop(tmp_path: Path, monkeypatch):

@@ -7,8 +7,13 @@ name = "dft-shared"
 version = "0.1.0"
 description = "Shared infrastructure for DFT tools: remote backends, workflow config, knowledge helpers."
 readme = "README.md"
-requires-python = ">=3.10"
-dependencies = []
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "numpy>=2.0",
+    "ase>=3.23",
+    "pymatgen>=2025.10",
+    "mp-api>=0.46",
+]
 
 [tool.setuptools]
 package-dir = {"" = "."}

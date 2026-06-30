@@ -80,10 +80,7 @@ class PlannerTemplateKnowledge:
             if cache_path
             else self.project_root / "cache" / "planner_template_cache.json"
         )
-        self.remote_template_dir = os.getenv(
-            "SEMI_DFT_PLANNER_TEMPLATE_REMOTE_DIR",
-            "/home/szhang/clean",
-        )
+        self.remote_template_dir = os.getenv("SEMI_DFT_PLANNER_TEMPLATE_REMOTE_DIR", "")
         self.cache_max_age_seconds = int(
             os.getenv("SEMI_DFT_PLANNER_TEMPLATE_CACHE_MAX_AGE", "43200")
         )

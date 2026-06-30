@@ -9,7 +9,7 @@
 普通用户不需要手动激活 Conda，也不需要记 Python 模块路径。第一次启动直接双击：
 
 ```powershell
-cd F:\AETHER-DFT
+cd <仓库根目录>
 .\aether.cmd
 ```
 

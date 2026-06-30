@@ -488,7 +488,7 @@ class ToolRegistry:
         self._register(ToolSpec("vasp_output_scan", "扫描本地 run_root 的 VASP 输出；不要把 /home/... 远端路径传给本工具。远端结果请用 cluster_job_partial_outcar / cluster_job_tail_log。", {"run_root": {"type": "string"}}, True), self._vasp_output_scan)
         self._register(ToolSpec("vasp_input_summary", "总结 VASP 输入。", {"run_root": {"type": "string"}}, True), self._vasp_input_summary)
         self._register(ToolSpec("cluster_profile_list", "读取项目内 .secrets/ssh_config 可进入的集群 Host 列表；模型应先用它根据用户自然语言选择 cluster_alias，不要求用户手动切换。", {}, True), self._cluster_profile_list)
-        self._register(ToolSpec("cluster_probe", "探测 SSH/SLURM 集群；可传 cluster_alias（例如 szhang/rxqin/fghe）直接连接对应 Host，不改变 active cluster。", {"cluster_alias": {"type": "string"}}, True), self._cluster_probe)
+        self._register(ToolSpec("cluster_probe", "探测 SSH/SLURM 集群；可传 cluster_alias 直接连接项目内 SSH config 的对应 Host，不改变 active cluster。", {"cluster_alias": {"type": "string"}}, True), self._cluster_probe)
         self._register(ToolSpec("cluster_config", "读取集群配置；可传 cluster_alias 查看指定 Host 配置，不改变 active cluster。", {"cluster_alias": {"type": "string"}}, True), self._cluster_config)
         self._register(ToolSpec("cluster_job_status_brief", "轻量单 job 查询：squeue/sacct 状态 + elapsed + 节点。可传 cluster_alias 指定账号/集群。< 2 秒。", {"job_id": {"type": "string"}, "cluster_alias": {"type": "string"}}, True, ("job_id",)), self._cluster_job_status_brief)
         self._register(ToolSpec("cluster_my_jobs", "squeue --me 简化版：列当前或指定 cluster_alias 的 running/pending job。< 2 秒。", {"limit": {"type": "integer"}, "cluster_alias": {"type": "string"}}, True), self._cluster_my_jobs)
@@ -1726,7 +1726,7 @@ class ToolRegistry:
                 "candidate_tools": ["cluster_profile_list", "cluster_config", "cluster_probe", "research_workspace_diff"],
                 "call_when": "preflight ready 且用户目标包含提交/监控/回收时调用；只做连通性证据。",
                 "skip_when": "用户只要生成输入包，或 preflight blocked。",
-                "model_decision": "若用户提到账号/别名（如 rxqin/fghe/szhang），先用 cluster_profile_list 识别 cluster_alias，再把 cluster_alias 传给 cluster_config/cluster_probe/submit；probe 成功只是允许进入提交候选，不等于已经提交。",
+                "model_decision": "若用户提到账号/别名，先用 cluster_profile_list 识别 cluster_alias，再把 cluster_alias 传给 cluster_config/cluster_probe/submit；probe 成功只是允许进入提交候选，不等于已经提交。",
             },
             {
                 "purpose": "统一本地 research 与集群 ~/research",

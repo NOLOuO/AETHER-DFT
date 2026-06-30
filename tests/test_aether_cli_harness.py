@@ -113,6 +113,25 @@ def test_launcher_keeps_project_venv_dependency_isolated():
     assert '"rdkit>=2025.3"' not in launcher
 
 
+def test_launcher_does_not_modify_profile_by_default():
+    launcher = Path("aether.ps1").read_text(encoding="utf-8")
+    assert "[switch]$InstallCommand" in launcher
+    assert "Register-GlobalAether" in launcher
+    assert "if ($InstallCommand)" in launcher
+    assert "if (Register-GlobalAether)" in launcher
+    assert "Invoke-InstallCommandIfRequested" in launcher
+    default_chat_tail = launcher[launcher.rindex('if ($Args.Count -eq 0)') :]
+    assert "Register-GlobalAether" not in default_chat_tail
+    assert "默认启动不会修改 PowerShell Profile" in launcher
+
+
+def test_launcher_has_no_hardcoded_personal_python_paths():
+    launcher = Path("aether.ps1").read_text(encoding="utf-8")
+    assert r"D:\miniconda3" not in launcher
+    assert r"C:\miniconda3" not in launcher
+    assert "p312env" not in launcher
+
+
 def test_launcher_accepts_312_or_313_without_forcing_313():
     launcher = Path("aether.ps1").read_text(encoding="utf-8")
     assert "$SupportedMinors = @(12, 13)" in launcher
@@ -132,6 +151,22 @@ def test_key_store_does_not_read_personal_workspace_fallbacks(tmp_path, monkeypa
 
     monkeypatch.delenv("AETHER_DFT_API_KEYS_PATHS", raising=False)
     assert load_api_keys(tmp_path) == {}
+
+
+def test_key_store_accepts_readme_api_key_object_schema(tmp_path, monkeypatch):
+    from dft_app.llm.key_store import load_api_keys, save_api_keys
+
+    monkeypatch.delenv("AETHER_DFT_API_KEYS_PATHS", raising=False)
+    (tmp_path / "api_keys.local.json").write_text(
+        json.dumps({"deepseek": {"api_key": "ds-test"}, "bailian": "qwen-test"}),
+        encoding="utf-8",
+    )
+    assert load_api_keys(tmp_path) == {"deepseek": "ds-test", "bailian": "qwen-test"}
+
+    save_api_keys(tmp_path, {"deepseek": "saved-test"})
+    assert json.loads((tmp_path / "api_keys.local.json").read_text(encoding="utf-8")) == {
+        "deepseek": {"api_key": "saved-test"}
+    }
 
 
 def test_cli_model_smoke_summarizes_required_tool(monkeypatch, capsys):
@@ -700,3 +735,18 @@ def test_doctor_payload_names_program_model_and_version(capsys):
     assert "executable" not in payload["python"]
     assert "conda" not in out.lower()
     assert "uv" not in out.lower()
+
+
+def test_dft_shared_llm_client_uses_only_project_or_explicit_key_paths(tmp_path, monkeypatch):
+    import dft_shared.llm_client as client
+
+    monkeypatch.setattr(client, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(client, "_KEY_FILE", tmp_path / "api_keys.local.json")
+    monkeypatch.setattr(client, "_LEGACY_KEY_FILE", tmp_path / "api_keys.json")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("AETHER_DFT_API_KEYS_PATHS", raising=False)
+
+    (tmp_path / "api_keys.local.json").write_text(json.dumps({"deepseek": {"api_key": "shared-ds"}}), encoding="utf-8")
+    assert client._load_api_key("deepseek") == "shared-ds"
+    candidates = [str(path) for path in client._key_file_candidates()]
+    assert not any("research-copilot" in item or "domestic-research-copilot-app" in item for item in candidates)

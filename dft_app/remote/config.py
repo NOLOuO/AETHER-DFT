@@ -41,15 +41,15 @@ class RemoteClusterConfig:
             alias = (
                 os.getenv("SEMI_DFT_REMOTE_SSH_ALIAS")
                 or os.getenv("AETHER_DFT_CLUSTER_ALIAS")
-                or str(local_profile.get("ssh_host_alias") or "szhang")
-            )
+                or str(local_profile.get("ssh_host_alias") or "")
+            ).strip()
             ssh_config_path = (
                 os.getenv("SEMI_DFT_REMOTE_SSH_CONFIG")
                 or os.getenv("AETHER_DFT_CLUSTER_SSH_CONFIG")
                 or str(local_profile.get("ssh_config_path") or "")
                 or str(cls._default_ssh_config_path())
             )
-            if Path(ssh_config_path).exists():
+            if alias and Path(ssh_config_path).exists():
                 parsed = parse_ssh_config_host(Path(ssh_config_path), alias)
                 if parsed:
                     host = host or str(parsed.get("hostname") or alias)
@@ -97,7 +97,8 @@ class RemoteClusterConfig:
             joined = ", ".join(missing)
             raise ValueError(
                 f"远程模式缺少必要环境变量: {joined}，且未找到可用 SSH alias 配置。"
-                "可运行 `aether-dft cluster import-ssh-config --source C:\\Users\\24651\\.ssh\\config --alias szhang`。"
+                "请先运行 `aether cluster import-ssh-config --source <你的 SSH config 路径> --alias <Host 别名>`，"
+                "或设置 AETHER_DFT_CLUSTER_HOST / AETHER_DFT_CLUSTER_USER / AETHER_DFT_CLUSTER_REMOTE_BASE_DIR。"
             )
 
         port = int(os.getenv("SEMI_DFT_REMOTE_PORT", "22"))
@@ -178,9 +179,7 @@ class RemoteClusterConfig:
     @classmethod
     def _default_ssh_config_path(cls) -> Path:
         project_copy = cls._app_root() / ".secrets" / "ssh_config"
-        if project_copy.exists():
-            return project_copy
-        return Path.home() / ".ssh" / "config"
+        return project_copy
 
     @classmethod
     def _load_local_profile(cls) -> dict[str, Any]:

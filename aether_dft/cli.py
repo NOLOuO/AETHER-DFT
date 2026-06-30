@@ -2599,7 +2599,7 @@ def handle_cluster_list(args: argparse.Namespace) -> int:
     print(f"active: {Colors.YELLOW}{payload.get('active_alias') or '(none)'}{Colors.RESET}")
     clusters = payload.get("clusters") or []
     if not clusters:
-        print("项目内还没有可识别集群。运行：aether cluster import-ssh-config --source C:/Users/24651/.ssh/config --alias szhang")
+        print("项目内还没有可识别集群。运行：aether cluster import-ssh-config --source <你的 SSH config 路径> --alias <Host 别名>")
         return 1
     for item in clusters:
         alias = str(item.get("alias") or "")
@@ -2629,8 +2629,11 @@ def handle_cluster_config(args: argparse.Namespace) -> int:
 
 def handle_cluster_probe(args: argparse.Namespace) -> int:
     from dft_app.remote import SSHRemoteRunner
+    from dft_app.remote.config import config_for_local_cluster_alias
 
-    result = SSHRemoteRunner().probe()
+    alias = str(getattr(args, "alias", "") or "").strip()
+    runner = SSHRemoteRunner(config=config_for_local_cluster_alias(alias)) if alias else SSHRemoteRunner()
+    result = runner.probe()
     print_json({"status": result.status, "message": result.message, "details": result.details})
     return 0 if result.status in {"ok", "partial"} else 1
 
@@ -3266,7 +3269,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     harness_real_case.add_argument("--project", required=True, help="research/project slug，例如 MCH-Pt-Br。")
     harness_real_case.add_argument("--model", help="临时使用模型；支持 qwen/deepseek 或完整模型 ID。")
-    harness_real_case.add_argument("--cluster-alias", help="优先让模型使用的项目内 SSH Host alias，例如 szhang。")
+    harness_real_case.add_argument("--cluster-alias", help="优先让模型使用的项目内 SSH Host alias。")
     harness_real_case.add_argument("--include-outcar", action="store_true", help="要求模型尝试只读 OUTCAR/结果证据。")
     harness_real_case.add_argument("--max-steps", type=int, default=6)
     harness_real_case.add_argument("--max-tokens", type=int, default=1400)
@@ -3277,7 +3280,7 @@ def build_parser() -> argparse.ArgumentParser:
     cluster_sub = cluster_parser.add_subparsers(dest="cluster_command")
     cluster_import = cluster_sub.add_parser("import-ssh-config", help="复制本机 SSH config 到项目 .secrets，并设置默认集群 alias。")
     cluster_import.add_argument("--source", default=str(Path.home() / ".ssh" / "config"))
-    cluster_import.add_argument("--alias", default="szhang")
+    cluster_import.add_argument("--alias", required=True)
     cluster_import.add_argument("--remote-base-dir", help="远程 run 根目录，默认 /home/<user>/aether-dft-runs。")
     cluster_import.set_defaults(func=handle_cluster_import)
     cluster_list = cluster_sub.add_parser("list", help="列出项目内 SSH config 可识别的集群 Host。")
@@ -3290,6 +3293,7 @@ def build_parser() -> argparse.ArgumentParser:
     cluster_config = cluster_sub.add_parser("config", help="显示当前集群配置摘要，不暴露私钥/API key。")
     cluster_config.set_defaults(func=handle_cluster_config)
     cluster_probe = cluster_sub.add_parser("probe", help="真实 SSH 探测集群连通性和 sbatch/squeue/vasp_std。")
+    cluster_probe.add_argument("--alias", help="不切换 active 集群，直接探测项目内某个 SSH Host alias。")
     cluster_probe.set_defaults(func=handle_cluster_probe)
 
     outcar_parser = sub.add_parser("outcar", help="查找/拉回/解释集群 OUTCAR。")
@@ -3312,6 +3316,7 @@ def build_parser() -> argparse.ArgumentParser:
     outcar_analyze.set_defaults(func=handle_outcar_analyze)
 
     ssh_parser = sub.add_parser("ssh", help="简写：真实 SSH 探测集群。")
+    ssh_parser.add_argument("--alias", help="不切换 active 集群，直接探测项目内某个 SSH Host alias。")
     ssh_parser.set_defaults(func=handle_cluster_probe)
 
     agent_parser = sub.add_parser("agent", help="让 qwen/OpenAI-compatible 模型通过工具调用 AETHER-DFT/集群。")

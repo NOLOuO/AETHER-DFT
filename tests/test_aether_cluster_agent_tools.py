@@ -269,15 +269,15 @@ def test_agent_loop_executes_model_requested_tool(monkeypatch, tmp_path):
 
     class FakeSSHRemoteRunner:
         def describe_config(self):
-            return {"ssh_host_alias": "szhang", "backend": "openssh"}
+            return {"ssh_host_alias": "test-cluster", "backend": "openssh"}
 
     monkeypatch.setattr("aether_dft.agent.DomesticCopilotLLM", FakeLLM)
-    monkeypatch.setattr("aether_dft.agent_tools.SSHRemoteRunner", FakeSSHRemoteRunner)
+    monkeypatch.setattr("aether_dft.runtime_harness.tool_registry.SSHRemoteRunner", FakeSSHRemoteRunner)
 
     record = run_agent_once("检查集群配置", model_id="bailian:qwen3.7-max")
 
     assert record["tool_executions"][0]["name"] == "cluster_config"
-    assert record["tool_executions"][0]["result"]["config"]["ssh_host_alias"] == "szhang"
+    assert record["tool_executions"][0]["result"]["config"]["ssh_host_alias"] == "test-cluster"
     assert "已调用 cluster_config" in record["response"]
 
 
@@ -546,3 +546,21 @@ def test_job_watch_completed_job_suggests_fetch_and_parse(tmp_path, monkeypatch)
     assert {"cluster_job_partial_outcar", "cluster_remote_fetch", "result_interpret"}.issubset(
         set(recover["candidate_tools"])
     )
+
+
+def test_remote_config_without_profile_does_not_default_to_personal_alias(tmp_path, monkeypatch):
+    from dft_app.remote.config import RemoteClusterConfig
+
+    monkeypatch.setattr(RemoteClusterConfig, "_app_root", staticmethod(lambda: tmp_path))
+    monkeypatch.delenv("SEMI_DFT_REMOTE_HOST", raising=False)
+    monkeypatch.delenv("SEMI_DFT_REMOTE_USER", raising=False)
+    monkeypatch.delenv("SEMI_DFT_REMOTE_BASE_DIR", raising=False)
+    monkeypatch.delenv("SEMI_DFT_REMOTE_SSH_ALIAS", raising=False)
+    monkeypatch.delenv("AETHER_DFT_CLUSTER_ALIAS", raising=False)
+
+    with pytest.raises(ValueError) as exc:
+        RemoteClusterConfig.from_env()
+    message = str(exc.value)
+    assert "szhang" not in message
+    assert "C:\\Users\\24651" not in message
+    assert "<Host 别名>" in message

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 
 KEYS_FILE_NAME = "api_keys.local.json"
@@ -11,6 +11,16 @@ KEYS_FILE_NAME = "api_keys.local.json"
 
 def keys_file_path(app_root: Path) -> Path:
     return app_root / KEYS_FILE_NAME
+
+
+def _normalize_key_value(value: Any) -> str:
+    if isinstance(value, dict):
+        for field in ("api_key", "key", "token", "value"):
+            candidate = str(value.get(field) or "").strip()
+            if candidate:
+                return candidate
+        return ""
+    return str(value or "").strip()
 
 
 def load_api_keys(app_root: Path) -> dict[str, str]:
@@ -27,7 +37,8 @@ def load_api_keys(app_root: Path) -> dict[str, str]:
         return {}
     if not isinstance(data, dict):
         return {}
-    return {str(key): str(value) for key, value in data.items()}
+    normalized = {str(key): _normalize_key_value(value) for key, value in data.items()}
+    return {key: value for key, value in normalized.items() if value}
 
 
 def resolve_api_key(
@@ -50,5 +61,5 @@ def resolve_api_key(
 
 def save_api_keys(app_root: Path, api_keys: dict[str, str]) -> None:
     path = keys_file_path(app_root)
-    payload = {str(key): str(value).strip() for key, value in api_keys.items() if str(value).strip()}
+    payload = {str(key): {"api_key": str(value).strip()} for key, value in api_keys.items() if str(value).strip()}
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

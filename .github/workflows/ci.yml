@@ -38,6 +38,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
+      - name: Launcher and doctor smoke
+        shell: pwsh
+        run: |
+          .\aether.cmd doctor --json
+          python -m aether_dft.cli doctor --json
+
       - name: Compile sources
         shell: pwsh
         run: |
@@ -55,6 +61,7 @@ jobs:
             tests/test_aether_cli_harness.py `
             tests/test_aether_llm_runtime.py `
             tests/test_aether_cluster_realtime.py `
+            tests/test_aether_cluster_agent_tools.py `
             tests/test_harness_architecture.py `
             tests/test_aether_auto_mode.py `
             tests/test_aether_tool_discovery.py `

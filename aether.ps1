@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env pwsh
+#!/usr/bin/env pwsh
 # AETHER-DFT launcher
 # - Double-click aether.cmd or run .\aether.ps1 to enter the chat UI.
 # - First launch creates a project-local .venv and installs AETHER-DFT.
@@ -6,6 +6,7 @@
 
 [CmdletBinding()]
 param(
+    [switch]$InstallCommand,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Args
 )
@@ -96,41 +97,6 @@ function Test-VenvUsesSharedSitePackages {
     return ($text -match "(?im)^\s*include-system-site-packages\s*=\s*true\s*$")
 }
 
-function Find-CondaEnvPythons {
-    $roots = @()
-    if ($env:CONDA_PREFIX) {
-        $roots += $env:CONDA_PREFIX
-    }
-    $conda = Get-Command "conda" -ErrorAction SilentlyContinue
-    if ($conda) {
-        $condaPath = $conda.Source
-        $root = Split-Path -Parent (Split-Path -Parent $condaPath)
-        if ($root) { $roots += $root }
-    }
-    foreach ($path in @(
-        "$env:USERPROFILE\miniconda3",
-        "$env:USERPROFILE\anaconda3",
-        "D:\miniconda3",
-        "C:\miniconda3",
-        "C:\ProgramData\miniconda3",
-        "C:\ProgramData\anaconda3"
-    )) {
-        if ($path) { $roots += $path }
-    }
-    foreach ($root in ($roots | Where-Object { $_ } | Select-Object -Unique)) {
-        $basePy = Join-Path $root "python.exe"
-        if (Test-Path $basePy) { $basePy }
-        $envRoot = Join-Path $root "envs"
-        if (Test-Path $envRoot) {
-            Get-ChildItem $envRoot -Directory -ErrorAction SilentlyContinue |
-                ForEach-Object {
-                    $py = Join-Path $_.FullName "python.exe"
-                    if (Test-Path $py) { $py }
-                }
-        }
-    }
-}
-
 function Reset-ProjectVenv {
     if (-not (Test-Path $Venv)) { return }
     try {
@@ -177,11 +143,6 @@ function Find-BasePython {
                 Args = [string[]]$candidate.args
                 IsConda = (Test-CondaPythonPath $cmd.Source)
             }
-        }
-    }
-    foreach ($condaPython in (Find-CondaEnvPythons)) {
-        if (Test-PythonVersion $condaPython @()) {
-            return @{ Source = $condaPython; Args = [string[]]@(); IsConda = $true }
         }
     }
     return $null
@@ -275,8 +236,18 @@ function Bootstrap-Aether {
 
     New-Item -ItemType File -Path $Stamp -Force | Out-Null
     Write-Host "✓ 环境就绪：$Venv" -ForegroundColor Green
-    if (Register-GlobalAether) {
-        Write-Host "✓ 已注册全局命令 aether；重开终端后任何目录都可输入 aether。" -ForegroundColor Green
+    if (-not $InstallCommand) {
+        Write-Host "提示：如需注册全局 aether 命令，请显式运行 .\aether.ps1 -InstallCommand。默认启动不会修改 PowerShell Profile。" -ForegroundColor DarkGray
+    }
+}
+
+function Invoke-InstallCommandIfRequested {
+    if ($InstallCommand) {
+        if (Register-GlobalAether) {
+            Write-Host "✓ 已注册全局命令 aether；重开终端后任何目录都可输入 aether。" -ForegroundColor Green
+        } else {
+            Write-Host "全局命令 aether 已存在或无需更新。" -ForegroundColor DarkGray
+        }
     }
 }
 
@@ -291,6 +262,11 @@ if ($env:AETHER_LAUNCHER_SELFTEST -eq "1") {
 }
 
 Bootstrap-Aether
+Invoke-InstallCommandIfRequested
+
+if ($InstallCommand -and $Args.Count -eq 0) {
+    exit 0
+}
 
 if ($Args.Count -eq 0) {
     & $VenvPy -m aether_dft.cli chat --resume

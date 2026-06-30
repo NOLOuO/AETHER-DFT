@@ -17,6 +17,8 @@ api_keys.json
 .secrets/
 runtime/
 .aether/
+.aether.__cihide__/
+.secrets.__cihide__/
 .omc/
 .omx/
 .learnings/

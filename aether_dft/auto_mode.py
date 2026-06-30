@@ -63,6 +63,115 @@ def _string_items(value: Any, *, limit: int = 20) -> list[str]:
     return result
 
 
+def _goal_requires_computational_evidence(goal: str) -> bool:
+    text = str(goal or "").lower()
+    markers = (
+        "dft",
+        "vasp",
+        "outcar",
+        "oszicar",
+        "poscar",
+        "incar",
+        "cluster",
+        "slurm",
+        "adsorption",
+        "energy",
+        "frequency",
+        "transition state",
+        "neb",
+        "计算",
+        "吸附",
+        "结构",
+        "构型",
+        "能量",
+        "频率",
+        "过渡态",
+        "反应",
+        "集群",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _calculation_status_has_completed_evidence(calculation_status: dict[str, Any]) -> bool:
+    if not calculation_status:
+        return False
+    negative_states = {
+        "not_started",
+        "pending",
+        "queued",
+        "running",
+        "submitted",
+        "active",
+        "cancelled",
+        "canceled",
+        "failed",
+        "error",
+        "unknown",
+    }
+    positive_states = {"completed", "complete", "done", "finished", "converged", "parsed", "success", "ok"}
+    for key in ("status", "state", "job_state", "slurm_state", "verdict"):
+        value = str(calculation_status.get(key) or "").strip().lower()
+        if value in negative_states:
+            return False
+        if value in positive_states:
+            return True
+    for key in ("completed", "done", "finished", "converged", "parsed"):
+        value = calculation_status.get(key)
+        if isinstance(value, bool) and value:
+            return True
+        if isinstance(value, (int, float)) and value > 0:
+            return True
+    for key in ("energy", "final_energy", "e_ads", "adsorption_energy"):
+        if calculation_status.get(key) is not None:
+            return True
+    for key in ("outcar", "oszicar", "contcar", "parsed_results", "result_path", "artifacts"):
+        value = calculation_status.get(key)
+        if value:
+            return True
+    return False
+
+
+def _has_computational_evidence(*, evidence_refs: list[str], completed_items: list[str], calculation_status: dict[str, Any]) -> bool:
+    if _calculation_status_has_completed_evidence(calculation_status):
+        return True
+    joined = " ".join(evidence_refs + completed_items).lower()
+    markers = (
+        "outcar",
+        "oszicar",
+        "contcar",
+        "vasprun.xml",
+        "e_ads",
+        "adsorption_energy",
+        "final_energy",
+        "energy=",
+        "parsed",
+        "converged",
+        "收敛",
+        "吸附能",
+        "最终能量",
+        "解析",
+    )
+    return any(marker in joined for marker in markers)
+
+
+def _convergence_blockers(*, state: dict[str, Any], audit: dict[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    if not audit.get("success_criteria"):
+        blockers.append("缺少明确 success_criteria，不能声明 /auto 已收敛。")
+    if not audit.get("evidence_refs"):
+        blockers.append("缺少 evidence_refs，不能声明 /auto 已收敛。")
+    if not audit.get("completed_items"):
+        blockers.append("缺少 completed_items，不能声明 /auto 已收敛。")
+    goal = str(state.get("research_goal") or "")
+    if _goal_requires_computational_evidence(goal) and not _has_computational_evidence(
+        evidence_refs=list(audit.get("evidence_refs") or []),
+        completed_items=list(audit.get("completed_items") or []),
+        calculation_status=audit.get("calculation_status") if isinstance(audit.get("calculation_status"), dict) else {},
+    ):
+        blockers.append("该研究目标涉及计算/结构/集群证据，但 audit 缺少 DFT/结构/作业/解析结果证据。")
+    return blockers
+
+
 def _refresh_human_question_summary(state: dict[str, Any]) -> None:
     records = [item for item in (state.get("human_question_records") or []) if isinstance(item, dict)]
     pending = [item for item in records if str(item.get("status") or "") == "pending"]
@@ -635,6 +744,15 @@ def audit_auto_research_progress(
         "next_focus": str(next_focus or "").strip(),
         "confidence": confidence,
     }
+    convergence_blockers = _convergence_blockers(state=state, audit=audit) if clean_verdict == "converged" else []
+    if convergence_blockers:
+        clean_verdict = "needs_more_evidence"
+        audit["verdict"] = clean_verdict
+        existing_missing = list(audit.get("missing_evidence") or [])
+        audit["missing_evidence"] = _string_items(existing_missing + convergence_blockers, limit=50)
+        audit["convergence_blockers"] = convergence_blockers
+        if not audit.get("next_focus"):
+            audit["next_focus"] = "补齐收敛审计所需的成功标准、证据引用、完成项和计算结果证据。"
     state["convergence_audit"] = audit
     if clean_verdict == "converged":
         state["status"] = "converged"
