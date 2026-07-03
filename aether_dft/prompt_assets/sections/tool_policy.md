@@ -29,6 +29,7 @@
 - `structure_enumerate_sites` 拿到位点坐标。
 - 用 A/B/C 的结论判断哪些位点 × 取向 × anchor 值得算，写明理由，**不要无脑全枚举**。
 - 对每个候选 `structure_add_adsorbate`（传 `cart_coords` + `anchor_symbol`；默认 `fixed_bottom_layers=2`），紧接着 `structure_sanity_check` 和 `candidate_quality_score` 检查几何质量。
+- 如果 cheap relax / DFT 后出现漂移、脱附、解离、位移过大或能量不利，调用 `adsorption_relaxation_feedback`，把反馈变成下一批候选的修改依据；不要手工硬凑单一结构。
 - `adsorption_candidate_manifest_compose` 收编成 manifest；每个 candidate 的 `reason` 建议带科学依据（来自 hint / prior / 对称判断），不要只写 "selected by model"。
 - 把"为什么选这些位点 / 排除哪些位点 / 关键边界"写进 `knowledge_note_add`，让判断成为下次同类课题的 prior。
 

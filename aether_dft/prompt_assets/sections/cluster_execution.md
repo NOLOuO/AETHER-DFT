@@ -47,7 +47,7 @@
 | 统一 research | 本地 `research/` 与集群 `~/research` 是否一致 | `research_workspace_diff` / `research_workspace_sync_to_cluster` | missing/differing 列表或同步结果 |
 | 提交任务 | 当前输入包 gate ready、run_root、用户/运行时允许提交、远程 probe 证据 | `cluster_remote_submit`（内部仍会自适应复核 gate，不接受绕过） | scheduler job id / remote_run_root |
 | 监控与回收 | run_id 或 run_root、scheduler 状态 | `cluster_remote_monitor` / `cluster_remote_fetch` / `vasp_output_scan` | 输出文件与状态 |
-| 解释并写回 | OUTCAR/OSZICAR、E_ads/频率/失败原因 | `candidate_outcome_record` / `knowledge_note_add` / `project_progress_append` | 可复用科研经验 |
+| 解释并写回 | OUTCAR/OSZICAR、E_ads/频率/失败原因、relax 后位移/漂移 | `adsorption_relaxation_feedback` / `candidate_outcome_record` / `knowledge_note_add` / `project_progress_append` | 下一批候选策略 + 可复用科研经验 |
 
 ### 自适应分支示例
 
@@ -57,6 +57,7 @@
 - **用户问 INCAR 参数是否合理**：只读 research 和模板解析，给出核对结论；不要写文件。
 - **preflight blocked**：解释 blocker 并修正输入/要求补文件；不要 probe/submit。
 - **任务已经在队列或跑完**：monitor/fetch/scan/write-back；不要重新 build。
+- **relax/DFT 后候选漂移、脱附或解离**：先用 `adsorption_relaxation_feedback` 合成证据，再决定生成邻近位点/取向变体、剪枝，或把解离通道转成中间体/TS 任务；不要手工硬凑单个结构。
 
 ### 提交前硬门槛
 

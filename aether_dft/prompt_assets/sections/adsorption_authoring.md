@@ -16,6 +16,9 @@
 **动手生成 POSCAR。**
 对每个 plan 内位点用 `structure_add_adsorbate`（传 `cart_coords` 来精确放置；`anchor_symbol` 与 `orientation` 来自上一步的判断），然后顺手 `structure_sanity_check` 看最短距离/真空层，`candidate_quality_score` 给物理合理性评分。如果某个候选 sanity 报警或 score 低，你的选择：调整 height/orientation 重试，或者承认这个位点不合适、把它移到 plan 的 `excluded_sites_with_reason`。可选：`structure_relax_short` 用 ASE EMT 做廉价预筛；如果它不可用就跳过，**不要假装跑过**。
 
+**用 relax / DFT 反馈修正候选。**
+如果 cheap relax 或正式 DFT 后发现吸附物漂移、脱附、解离、位移过大、能量不利，不要只口头说"这个不好"。调用 `adsorption_relaxation_feedback` 把 `candidate_quality_score`、`structure_displacement_compare`、OUTCAR/结果解释或 outcome 证据合成下一步决策：保留提交、生成邻近位点/取向变体、剪枝、或转入反应中间体/TS 候选。这是闭环，不是固定流程；反馈告诉你下一步缺什么证据。
+
 **收口。**
 `adsorption_candidate_manifest_compose` 把候选整合成 manifest。**它不会因为质量问题挡你**——plan_id 漏了、reason 太短、site_label 与 plan 不对齐、候选数超 6 个没写 prune_rationale，这些都只会出现在返回值的 `quality_warnings` + 自动跟上的 `audit` 报告里。看到 warnings 之后你自己决定要不要回去补，没人逼。如果你想要独立的"行为画像"评分，单独调 `manifest_audit(manifest_path)` 也行。
 

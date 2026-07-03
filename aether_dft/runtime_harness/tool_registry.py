@@ -39,6 +39,7 @@ from aether_dft.adsorption import (
     plan_adsorption_task,
     run_adsorption_full_workflow,
 )
+from aether_dft.adsorption_feedback import adsorption_relaxation_feedback
 from aether_dft.auto_campaign import (
     list_campaigns as auto_campaign_list,
     load_campaign as auto_campaign_load,
@@ -190,6 +191,15 @@ def _loads_tool_arguments(arguments: str) -> tuple[dict[str, Any] | None, str | 
     return payload, None
 
 
+def _safe_optional_float(value: Any) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 DISCOVERY_TOOL_NAMES = {"aether_capability_map", "aether_discover_tools"}
 
 
@@ -208,6 +218,8 @@ DISCOVERY_QUERY_ALIASES: dict[str, tuple[str, ...]] = {
     "队列": ("squeue", "job", "cluster", "status", "slurm"),
     "作业": ("job", "cluster", "slurm", "status", "tail", "outcar"),
     "收敛": ("convergence", "outcar", "oszicar", "energy", "force"),
+    "漂移": ("relaxation", "feedback", "drift", "displacement", "adsorbate", "candidate"),
+    "反馈": ("feedback", "relaxation", "candidate", "outcome", "refine"),
     "结果": ("result", "parse", "outcar", "interpret", "analysis", "energy"),
     "能量": ("energy", "e_ads", "result", "outcar", "chemistry"),
     "文献": ("literature", "web", "research", "knowledge", "prior"),
@@ -300,6 +312,7 @@ CAPABILITY_CATEGORIES: dict[str, dict[str, Any]] = {
             "adsorption_candidates",
             "manifest_audit",
             "candidate_outcome_record",
+            "adsorption_relaxation_feedback",
             "adsorption_workflow_status",
         ],
     },
@@ -314,6 +327,7 @@ CAPABILITY_CATEGORIES: dict[str, dict[str, Any]] = {
             "auto_campaign_update_candidate",
             "auto_campaign_next_batch",
             "auto_campaign_prune_plan",
+            "adsorption_relaxation_feedback",
         ],
     },
     "dft_tasking": {
@@ -367,6 +381,7 @@ CAPABILITY_CATEGORIES: dict[str, dict[str, Any]] = {
             "structure_bond_analyze",
             "structure_displacement_compare",
             "candidate_outcome_record",
+            "adsorption_relaxation_feedback",
         ],
     },
     "writeback_learning": {
@@ -529,6 +544,7 @@ class ToolRegistry:
         self._register(ToolSpec("adsorption_candidate_plan_list", "列出某项目（或 runtime）下已创建的 adsorption candidate plans。", {"project": {"type": "string"}}, True), self._adsorption_candidate_plan_list)
         self._register(ToolSpec("adsorption_candidate_manifest_compose", "把模型生成的 POSCAR 收编成 manifest.json。本工具不会拦截：plan_id / reason 长度 / site_label 对齐 / 候选数阈值 等质量问题会通过返回值的 quality_warnings 反馈给你，由你决定是否回炉。", {"task_id": {"type": "string"}, "material_name": {"type": "string"}, "source_prompt": {"type": "string"}, "slab_source": {"type": "string"}, "adsorbate_source": {"type": "string"}, "output_dir": {"type": "string"}, "candidates": {"type": "array", "items": {"type": "object"}}, "metadata": {"type": "object"}, "plan_id": {"type": "string"}, "project": {"type": "string"}, "prune_rationale": {"type": "string"}}, False, ("task_id", "material_name", "source_prompt", "slab_source", "adsorbate_source", "output_dir", "candidates")), self._adsorption_candidate_manifest_compose)
         self._register(ToolSpec("manifest_audit", "读已存盘 candidate_manifest.json 给行为画像：plan 链接 / reason 质量 / site 对齐 / prior 引用 / 候选规模 五维评分 + suggestions。不挡路，纯反馈。", {"manifest_path": {"type": "string"}}, True, ("manifest_path",)), self._manifest_audit)
+        self._register(ToolSpec("adsorption_relaxation_feedback", "把吸附候选的 cheap relax / DFT 结果 / 几何质量 / 位移漂移反馈转成下一轮建模决策；借鉴 AdsMind 式 self-correcting loop。只读，不更新 campaign；若要落盘再调用 auto_campaign_update_candidate / candidate_outcome_record / research_learning_capture。", {"candidate_id": {"type": "string"}, "material": {"type": "string"}, "adsorbate": {"type": "string"}, "initial_path": {"type": "string"}, "relaxed_path": {"type": "string"}, "quality_report": {"type": "object"}, "displacement_report": {"type": "object"}, "adsorption_energy_ev": {"type": "number"}, "energy_change_ev": {"type": "number"}, "outcome": {"type": "string"}, "notes": {"type": "string"}}, True), self._adsorption_relaxation_feedback)
         self._register(ToolSpec("candidate_outcome_record", "把已完成候选的 DFT 结果复盘写回 KB：E_ads、verdict、初末态位移/漂移、可复用经验。只记录证据，不假装执行。", {"project": {"type": "string"}, "material": {"type": "string"}, "adsorbate": {"type": "string"}, "candidate_id": {"type": "string"}, "verdict": {"type": "string"}, "adsorption_energy_ev": {"type": "number"}, "initial_path": {"type": "string"}, "final_path": {"type": "string"}, "manifest_path": {"type": "string"}, "calculation_summary": {"type": "string"}, "notes": {"type": "string"}}, False, ("project", "material", "adsorbate", "candidate_id", "verdict")), self._candidate_outcome_record)
         self._register(ToolSpec("adsorption_full_workflow", "生成吸附全流程工作区。", {"material": {"type": "string"}, "adsorbate": {"type": "string"}, "output_dir": {"type": "string"}}, False, ("material", "adsorbate", "output_dir")), self._adsorption_full_workflow)
         self._register(ToolSpec("transition_state_plan", "TS 任务规划；dry_run=true 时只返回可执行 dry-run 命令，不执行 NEB/Dimer。", {"prompt": {"type": "string"}, "material": {"type": "string"}, "dry_run": {"type": "boolean"}}, True), self._transition_state_plan)
@@ -838,7 +854,7 @@ class ToolRegistry:
                 {"category": "structure_modeling", "tools": ["structure_modeling_tool_status", "structure_modeling_intent_plan", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
                 {"category": "dft_execution", "tools": ["cluster_execution_intent_plan", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_profile_list", "cluster_probe", "cluster_config", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "cluster_job_cancel"]},
                 {"category": "realtime_cluster_status", "tools": ["cluster_job_status_brief", "cluster_my_jobs", "cluster_job_tail_log", "cluster_job_partial_outcar", "cluster_job_progress_estimate", "job_watch_snapshot", "cluster_job_cancel"]},
-                {"category": "result_analysis", "tools": ["vasp_output_scan", "result_interpret", "next_experiment_propose", "candidate_outcome_record"]},
+                {"category": "result_analysis", "tools": ["vasp_output_scan", "result_interpret", "next_experiment_propose", "candidate_outcome_record", "adsorption_relaxation_feedback"]},
                 {"category": "writeback_learning", "tools": ["research_learning_capture", "research_cycle_checkpoint", "evidence_claim_audit", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show", "project_progress_append", "behavior_audit"]},
             ],
             "evaluation_tools": ["adsorption_eval_case_list", "adsorption_eval_score_plan"],
@@ -1629,6 +1645,21 @@ class ToolRegistry:
         if not manifest_path:
             return {"status": "error", "message": "manifest_path 不能为空。"}
         return audit_manifest(manifest_path)
+
+    def _adsorption_relaxation_feedback(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return adsorption_relaxation_feedback(
+            candidate_id=str(payload.get("candidate_id") or "").strip() or None,
+            material=str(payload.get("material") or "").strip() or None,
+            adsorbate=str(payload.get("adsorbate") or "").strip() or None,
+            initial_path=str(payload.get("initial_path") or "").strip() or None,
+            relaxed_path=str(payload.get("relaxed_path") or payload.get("final_path") or "").strip() or None,
+            quality_report=payload.get("quality_report") if isinstance(payload.get("quality_report"), dict) else None,
+            displacement_report=payload.get("displacement_report") if isinstance(payload.get("displacement_report"), dict) else None,
+            adsorption_energy_ev=_safe_optional_float(payload.get("adsorption_energy_ev")),
+            energy_change_ev=_safe_optional_float(payload.get("energy_change_ev")),
+            outcome=str(payload.get("outcome") or "").strip() or None,
+            notes=str(payload.get("notes") or "").strip() or None,
+        )
 
     def _candidate_outcome_record(self, payload: dict[str, Any]) -> dict[str, Any]:
         energy = payload.get("adsorption_energy_ev")
