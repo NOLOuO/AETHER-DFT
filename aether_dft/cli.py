@@ -647,10 +647,11 @@ def handle_chat_project_command(line: str, args: argparse.Namespace, session_sto
 
 
 def print_chat_context_status(*, session_store: Any, session_id: str) -> None:
-    from .context_budget import current_context_window_tokens, usable_context_chars, usable_context_tokens
+    from .context_budget import context_budget, current_context_window_tokens, usable_context_chars, usable_context_tokens
 
     state = session_store.load_state(session_id)
     session_context = session_store.build_session_context(session_id)
+    budget = context_budget()
     used_chars = len(session_context)
     usable_chars = usable_context_chars()
     usage_ratio = used_chars / usable_chars if usable_chars else 0.0
@@ -666,10 +667,20 @@ def print_chat_context_status(*, session_store: Any, session_id: str) -> None:
             "model_context_window_tokens": current_context_window_tokens(),
             "usable_context_tokens": usable_context_tokens(),
             "usable_context_chars": usable_chars,
+            "auto_compact_threshold_chars": budget.auto_compact_chars,
+            "auto_compact_ratio": budget.auto_compact_ratio,
+            "guard_threshold_chars": budget.guard_chars,
+            "guard_ratio": budget.guard_ratio,
             "current_session_context_chars": used_chars,
             "context_usage_percent": round(usage_ratio * 100, 2),
             "compacted_turn_count": state.get("compacted_turn_count", 0),
             "has_compact_summary": bool(str(state.get("compact_summary") or "").strip()),
+            "last_compact": {
+                "at": state.get("last_compacted_at"),
+                "trigger": state.get("last_compact_trigger"),
+                "reason": state.get("last_compact_reason"),
+                "stats": state.get("last_compact_stats"),
+            },
             "context_analysis": analysis,
             "suggestions": _context_suggestions(
                 usage_ratio=usage_ratio,
@@ -782,6 +793,14 @@ def make_chat_progress_printer() -> Any:
             print(
                 f"{Colors.YELLOW}context guard{Colors.RESET}: {ratio:.1f}% budget used; "
                 "stopping further tool calls and asking the model to summarize"
+            )
+        elif kind == "session_auto_compacted":
+            print(
+                f"{Colors.YELLOW}auto-compact{Colors.RESET}: "
+                f"compacted={event.get('compacted_turn_count')} "
+                f"summary_chars={event.get('compact_summary_chars')} "
+                f"before={event.get('approx_chars_before')} "
+                f"threshold={event.get('auto_compact_threshold_chars')}"
             )
         elif kind == "tool_permission_required":
             label = event.get("permission_label") or "需要用户同意"

@@ -37,6 +37,7 @@ def test_qwen37_uses_dashscope_beijing_openai_compatible_endpoint():
     assert config["model"] == "qwen3.7-max"
     assert config["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert config["api_key_env"] == "DASHSCOPE_API_KEY"
+    assert config["context_window"] == 1_000_000
 
 
 def test_model_catalog_only_lists_project_fit_models():

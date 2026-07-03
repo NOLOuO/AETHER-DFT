@@ -226,6 +226,10 @@ def _extract_goal_from_text(text: str) -> str:
                 "project",
                 "turn_count",
                 "model_usable_context",
+                "model_context_window",
+                "auto_compact",
+                "last_compact",
+                "compact",
                 "session_context",
                 "this context",
             )

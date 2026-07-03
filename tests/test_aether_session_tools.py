@@ -88,6 +88,7 @@ def test_tool_registry_exposes_builtin_agent_tools():
 
 def test_session_context_auto_compacts_before_prompt_budget(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AETHER_DFT_CONTEXT_MAX_CHARS", "12000")
+    monkeypatch.setenv("AETHER_DFT_AUTO_COMPACT_RATIO", "0.60")
     store = AetherSessionStore(tmp_path / "sessions")
     session_id = store.start_session(project="demo")
     for index in range(90):
@@ -104,7 +105,32 @@ def test_session_context_auto_compacts_before_prompt_budget(tmp_path: Path, monk
     context = store.build_session_context(session_id)
     assert state["compacted_turn_count"] > 0
     assert "Compacted Session Summary" in context
+    assert "auto_compact_threshold_chars" in context
     assert len(context) <= SESSION_CONTEXT_MAX_CHARS
+
+
+def test_session_compact_if_needed_uses_auto_threshold_metadata(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AETHER_DFT_CONTEXT_MAX_CHARS", "12000")
+    monkeypatch.setenv("AETHER_DFT_AUTO_COMPACT_RATIO", "0.50")
+    store = AetherSessionStore(tmp_path / "sessions")
+    session_id = store.start_session(project="demo")
+    for index in range(86):
+        store.append_turn(
+            session_id,
+            {
+                "project": "demo",
+                "prompt": f"prompt {index} " + "p" * 160,
+                "response": f"response {index} " + "r" * 160,
+            },
+        )
+
+    result = store.compact_if_needed(session_id, reason="test_preflight")
+    state = store.load_state(session_id)
+
+    assert result["status"] in {"ok", "skipped"}
+    assert state["last_compact_stats"]["context_budget"]["context_window_tokens"] == 1_000_000
+    assert state["last_compact_trigger"] == "automatic"
+    assert state["last_compact_reason"] in {"append_turn", "test_preflight", "build_session_context"}
 
 
 def test_session_manual_compact_keeps_recent_turns_without_deleting_transcript(tmp_path: Path):

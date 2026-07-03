@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .context_budget import usable_context_chars, usable_context_tokens
+from .context_budget import context_budget, usable_context_chars, usable_context_tokens
 from .paths import ensure_runtime_dir
 
 SESSION_CONTEXT_MAX_TOKENS = usable_context_tokens()
@@ -15,6 +15,7 @@ SESSION_CONTEXT_MAX_CHARS = usable_context_chars()
 SESSION_COMPACTION_TRIGGER_CHARS = SESSION_CONTEXT_MAX_CHARS
 SESSION_COMPACTION_KEEP_RECENT_TURNS = 80
 SESSION_COMPACT_SUMMARY_MAX_CHARS = min(240_000, max(6_000, SESSION_CONTEXT_MAX_CHARS // 10))
+SESSION_RECENT_CONTEXT_DEFAULT_TURNS = 10_000
 
 
 def _now_iso() -> str:
@@ -346,7 +347,7 @@ class AetherSessionStore:
         entries = [entry for entry in self._load_index() if entry.get("session_id") != session_id]
         entries.insert(0, state)
         self._save_index(entries)
-        self._maybe_compact_session(session_id)
+        self._maybe_compact_session(session_id, reason="append_turn")
         return transcript_path
 
     def _read_transcript_rows(self, session_id: str) -> list[dict[str, Any]]:
@@ -501,6 +502,7 @@ class AetherSessionStore:
 
         state = self.load_state(session_id)
         rows = self._read_transcript_rows(session_id)
+        budget = context_budget()
         buckets = {
             "user_prompt_chars": 0,
             "assistant_response_chars": 0,
@@ -569,7 +571,10 @@ class AetherSessionStore:
             "status": "ok",
             "session_id": session_id,
             "turn_count": len(rows),
+            "context_budget": budget.to_dict(),
             "approx_total_chars": total,
+            "auto_compact_threshold_chars": budget.auto_compact_chars,
+            "auto_compact_usage_percent": round((total / budget.auto_compact_chars) * 100, 2) if budget.auto_compact_chars else 0.0,
             "buckets": buckets,
             "top_buckets": top_buckets,
             "top_tool_results": _top(tool_results),
@@ -592,12 +597,23 @@ class AetherSessionStore:
         compact_summary_chars: int,
     ) -> list[dict[str, Any]]:
         recommendations: list[dict[str, Any]] = []
-        if total >= SESSION_CONTEXT_MAX_CHARS * 0.55:
+        budget = context_budget()
+        if total >= budget.auto_compact_chars:
             recommendations.append(
                 {
-                    "priority": "high" if total >= SESSION_CONTEXT_MAX_CHARS * 0.80 else "medium",
+                    "priority": "high",
+                    "action": "auto_compact_due",
+                    "reason": "session context crossed the automatic compaction threshold",
+                    "threshold_chars": budget.auto_compact_chars,
+                    "command": "/compact",
+                }
+            )
+        elif total >= int(budget.auto_compact_chars * 0.75):
+            recommendations.append(
+                {
+                    "priority": "medium",
                     "action": "compact_session",
-                    "reason": "session context is large enough that long DFT/tool chains may waste model budget",
+                    "reason": "session context is approaching the automatic compaction threshold",
                     "command": "/compact 12",
                 }
             )
@@ -712,14 +728,48 @@ class AetherSessionStore:
             return text
         return text[: SESSION_COMPACT_SUMMARY_MAX_CHARS - 15].rstrip() + "\n...[compacted]"
 
-    def _maybe_compact_session(self, session_id: str) -> None:
+    def _session_context_record_chars(self, rows: list[dict[str, Any]]) -> int:
+        return sum(len(json.dumps(row.get("record") or row, ensure_ascii=False, default=str)) for row in rows)
+
+    def _maybe_compact_session(self, session_id: str, *, reason: str = "automatic") -> dict[str, Any] | None:
         rows = self._read_transcript_rows(session_id)
         if len(rows) <= SESSION_COMPACTION_KEEP_RECENT_TURNS:
-            return
-        approx_chars = sum(len(json.dumps(row.get("record") or row, ensure_ascii=False, default=str)) for row in rows)
-        if approx_chars < usable_context_chars():
-            return
-        self.compact_session(session_id, keep_recent=SESSION_COMPACTION_KEEP_RECENT_TURNS, trigger="automatic")
+            return None
+        approx_chars = self._session_context_record_chars(rows)
+        budget = context_budget()
+        if approx_chars < budget.auto_compact_chars:
+            return None
+        return self.compact_session(
+            session_id,
+            keep_recent=SESSION_COMPACTION_KEEP_RECENT_TURNS,
+            trigger="automatic",
+            reason=reason,
+            approx_chars_before=approx_chars,
+        )
+
+    def compact_if_needed(self, session_id: str, *, reason: str = "before_prompt") -> dict[str, Any]:
+        """Run Codex/Claude-Code-style automatic compaction if the session is large.
+
+        The transcript remains append-only.  Only the model-visible resume
+        context changes: older turns are replaced by an extractive compact
+        summary plus recent turn trails.
+        """
+
+        result = self._maybe_compact_session(session_id, reason=reason)
+        if result is not None:
+            return result
+        rows = self._read_transcript_rows(session_id)
+        budget = context_budget()
+        approx_chars = self._session_context_record_chars(rows)
+        return {
+            "status": "skipped",
+            "reason": "below_auto_compact_threshold",
+            "session_id": session_id,
+            "turn_count": len(rows),
+            "approx_chars": approx_chars,
+            "auto_compact_threshold_chars": budget.auto_compact_chars,
+            "context_budget": budget.to_dict(),
+        }
 
     def compact_session(
         self,
@@ -727,6 +777,8 @@ class AetherSessionStore:
         *,
         keep_recent: int = SESSION_COMPACTION_KEEP_RECENT_TURNS,
         trigger: str = "manual",
+        reason: str = "",
+        approx_chars_before: int | None = None,
     ) -> dict[str, Any]:
         """Write a compact summary for older turns without deleting transcript rows."""
 
@@ -753,11 +805,21 @@ class AetherSessionStore:
                 "keep_recent": keep_recent,
             }
         state = self.load_state(session_id)
+        budget = context_budget()
+        approx_chars_before = approx_chars_before if approx_chars_before is not None else self._session_context_record_chars(rows)
         state["compact_summary"] = summary
         state["compacted_turn_count"] = len(older_rows)
         state["last_compacted_at"] = _now_iso()
         state["last_compact_trigger"] = trigger
+        state["last_compact_reason"] = reason
         state["compact_keep_recent_turns"] = keep_recent
+        state["last_compact_stats"] = {
+            "approx_chars_before": approx_chars_before,
+            "compact_summary_chars": len(summary),
+            "kept_recent_turns": keep_recent,
+            "context_budget": budget.to_dict(),
+            "auto_compact_threshold_chars": budget.auto_compact_chars,
+        }
         self._state_path(session_id).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         entries = [entry for entry in self._load_index() if entry.get("session_id") != session_id]
         entries.insert(0, state)
@@ -771,18 +833,25 @@ class AetherSessionStore:
             "compacted_turn_count": len(older_rows),
             "compact_summary_chars": len(summary),
             "trigger": trigger,
+            "reason": reason,
+            "approx_chars_before": approx_chars_before,
+            "context_budget": budget.to_dict(),
         }
 
     def build_session_context(self, session_id: str, *, limit: int | None = None, max_chars: int | None = None) -> str:
         """Summarize recent turns so a resumed session actually carries forward context."""
 
         state = self.load_state(session_id)
+        if limit is None and hasattr(self, "compact_if_needed"):
+            self.compact_if_needed(session_id, reason="build_session_context")
+            state = self.load_state(session_id)
         max_chars = max_chars or usable_context_chars()
         if limit is None and int(state.get("compacted_turn_count") or 0) > 0:
             default_limit = int(state.get("compact_keep_recent_turns") or SESSION_COMPACTION_KEEP_RECENT_TURNS)
         else:
-            default_limit = 10_000
+            default_limit = SESSION_RECENT_CONTEXT_DEFAULT_TURNS
         recent_turns = self.read_transcript(session_id, limit=limit or default_limit)
+        budget = context_budget()
 
         start_turn = max(1, int(state.get("turn_count") or 0) - len(recent_turns) + 1)
         lines = [
@@ -792,6 +861,8 @@ class AetherSessionStore:
             f"- project: {state.get('project') or 'none'}",
             f"- turn_count: {int(state.get('turn_count') or 0)}",
             f"- model_usable_context_tokens: {usable_context_tokens()}",
+            f"- model_context_window_tokens: {budget.context_window_tokens}",
+            f"- auto_compact_threshold_chars: {budget.auto_compact_chars}",
             f"- session_context_char_budget: {max_chars}",
             "- this context is resume-only and should not be treated as new facts",
         ]
@@ -800,6 +871,8 @@ class AetherSessionStore:
             lines.extend(
                 [
                     f"- compacted_turn_count: {int(state.get('compacted_turn_count') or 0)}",
+                    f"- last_compact_trigger: {state.get('last_compact_trigger') or 'unknown'}",
+                    f"- last_compact_reason: {state.get('last_compact_reason') or ''}",
                     "",
                     compact_summary,
                 ]

@@ -759,6 +759,35 @@ def test_agent_harness_replays_recent_session_context(tmp_path: Path):
     assert second["response"] == "已续接前文，可以继续推进。"
 
 
+def test_agent_harness_auto_compacts_before_model_request(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("AETHER_DFT_CONTEXT_MAX_CHARS", "90000")
+    monkeypatch.setenv("AETHER_DFT_AUTO_COMPACT_RATIO", "0.95")
+    sessions = HarnessSessionStore(tmp_path / "sessions")
+    session_id = sessions.store.start_session(project="demo")
+    for index in range(86):
+        sessions.store.append_turn(
+            session_id,
+            {
+                "project": "demo",
+                "prompt": f"历史问题 {index} " + "p" * 600,
+                "response": f"历史回答 {index} " + "r" * 600,
+            },
+        )
+
+    monkeypatch.setenv("AETHER_DFT_CONTEXT_MAX_CHARS", "12000")
+    monkeypatch.setenv("AETHER_DFT_AUTO_COMPACT_RATIO", "0.50")
+    events: list[dict[str, Any]] = []
+    harness = AgentHarness(adapter=SessionReplayAdapter(), sessions=sessions)
+
+    record = harness.run_turn("继续这个长 session", session_id=session_id, max_steps=2, progress_callback=events.append)
+
+    assert record["response"] in {"第一轮已完成。", "已续接前文，可以继续推进。"}
+    assert any(event.get("event") == "session_auto_compacted" for event in events)
+    state = sessions.store.load_state(session_id)
+    assert state["last_compact_trigger"] == "automatic"
+    assert state["last_compact_stats"]["context_budget"]["auto_compact_chars"] == 8000
+
+
 class ApprovalRetryAdapter:
     runtime = type("Runtime", (), {"model_id": "fake:qwen3.7-max"})()
 

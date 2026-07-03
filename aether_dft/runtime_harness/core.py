@@ -503,6 +503,25 @@ class AgentHarness:
         if max_steps is None:
             max_steps = EXECUTION_MAX_STEPS if interaction_mode == "execution" else DISCUSSION_MAX_STEPS
         session_id = session_store.ensure_session(session_id=session_id, project=project, first_prompt=prompt)
+        if session_id and hasattr(session_store, "compact_if_needed"):
+            try:
+                compact_result = session_store.compact_if_needed(session_id, reason="run_turn_preflight")
+                if progress_callback and compact_result.get("status") == "ok":
+                    progress_callback(
+                        {
+                            "event": "session_auto_compacted",
+                            "session_id": session_id,
+                            "compacted_turn_count": compact_result.get("compacted_turn_count"),
+                            "compact_summary_chars": compact_result.get("compact_summary_chars"),
+                            "approx_chars_before": compact_result.get("approx_chars_before"),
+                            "auto_compact_threshold_chars": (compact_result.get("context_budget") or {}).get("auto_compact_chars"),
+                        }
+                    )
+            except Exception as exc:
+                log_event(
+                    "session_auto_compact_failed",
+                    {"session_id": session_id, "error": str(exc), "project": project},
+                )
         session_context = ""
         if session_id and hasattr(session_store, "build_session_context"):
             try:
