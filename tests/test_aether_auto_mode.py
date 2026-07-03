@@ -598,6 +598,53 @@ def test_auto_daemon_refuses_duplicate_lock(tmp_path: Path, monkeypatch, capsys)
     assert paths["lock"].exists()
 
 
+def test_auto_daemon_status_reads_lock_and_recent_events(tmp_path: Path, monkeypatch, capsys):
+    _redirect_dirs(monkeypatch, tmp_path)
+    paths = cli._auto_daemon_paths("demo")
+    paths["lock"].parent.mkdir(parents=True, exist_ok=True)
+    paths["lock"].write_text(json.dumps({"pid": 12345, "project": "demo", "started_at": "2026-01-01T00:00:00+08:00"}), encoding="utf-8")
+    cli._append_daemon_event(paths["log"], {"event": "daemon_start", "project": "demo"})
+    cli._append_daemon_event(paths["log"], {"event": "cycle_result", "result": {"status": "idle"}})
+    calls: list[dict[str, object]] = []
+
+    def fake_run_auto_due_once(**kwargs):
+        calls.append(kwargs)
+        return {"status": "ok", "ran": True}
+
+    monkeypatch.setattr(cli, "run_auto_due_once", fake_run_auto_due_once)
+
+    assert cli.main(["auto", "daemon", "--project", "demo", "--status", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "locked"
+    assert payload["lock"]["pid"] == 12345
+    assert payload["log_exists"] is True
+    assert [event["event"] for event in payload["recent_events"][-2:]] == ["daemon_start", "cycle_result"]
+    assert calls == []
+
+
+def test_auto_daemon_force_lock_replaces_stale_lock(tmp_path: Path, monkeypatch, capsys):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="筛选 CO/Pt(111) 吸附构型")
+    paths = cli._auto_daemon_paths("demo")
+    paths["lock"].parent.mkdir(parents=True, exist_ok=True)
+    paths["lock"].write_text(json.dumps({"pid": 12345, "project": "demo"}), encoding="utf-8")
+    calls: list[dict[str, object]] = []
+
+    def fake_run_auto_due_once(**kwargs):
+        calls.append(kwargs)
+        return {"status": "ok", "ran": False}
+
+    monkeypatch.setattr(cli, "run_auto_due_once", fake_run_auto_due_once)
+
+    assert cli.main(["auto", "daemon", "--project", "demo", "--once", "--force-lock", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    assert calls
+    assert not paths["lock"].exists()
+
+
 def test_auto_daemon_once_logs_runtime_error(tmp_path: Path, monkeypatch, capsys):
     _redirect_dirs(monkeypatch, tmp_path)
     configure_auto_mode(project="demo", enabled=True, research_goal="筛选 CO/Pt(111) 吸附构型")

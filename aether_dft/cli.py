@@ -2521,6 +2521,52 @@ def _read_daemon_lock(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _tail_jsonl(path: Path, *, limit: int = 5) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-max(1, limit) :]
+    except OSError:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            data = json.loads(line)
+            if isinstance(data, dict):
+                rows.append(data)
+        except json.JSONDecodeError:
+            rows.append({"event": "unparseable_log_line", "raw": line[:300]})
+    return rows
+
+
+def _auto_daemon_status(project: str | None, *, event_limit: int = 5) -> dict[str, Any]:
+    paths = _auto_daemon_paths(project)
+    lock_path = paths["lock"]
+    log_path = paths["log"]
+    lock = _read_daemon_lock(lock_path) if lock_path.exists() else {}
+    events = _tail_jsonl(log_path, limit=event_limit)
+    last_event = events[-1] if events else {}
+    if lock:
+        status = "locked"
+    elif last_event.get("event") == "daemon_stop":
+        status = "stopped"
+    elif log_path.exists():
+        status = "no_lock_with_log"
+    else:
+        status = "not_started"
+    return {
+        "status": status,
+        "project": project or "",
+        "lock_exists": lock_path.exists(),
+        "lock_path": str(lock_path),
+        "lock": lock,
+        "log_exists": log_path.exists(),
+        "log_path": str(log_path),
+        "log_size_bytes": log_path.stat().st_size if log_path.exists() else 0,
+        "recent_events": events,
+    }
+
+
 def _acquire_auto_daemon_lock(*, project: str | None, force: bool = False) -> dict[str, Any]:
     paths = _auto_daemon_paths(project)
     lock_path = paths["lock"]
@@ -2575,6 +2621,21 @@ def handle_auto_daemon(args: argparse.Namespace) -> int:
     from .session_store import AetherSessionStore
 
     ensure_console_utf8()
+    if bool(getattr(args, "status", False)):
+        payload = _auto_daemon_status(args.project, event_limit=int(getattr(args, "event_limit", 5) or 5))
+        if getattr(args, "json", False):
+            print_json(payload)
+        else:
+            print(f"{Colors.BOLD}{Colors.CYAN}auto daemon{Colors.RESET}: {payload['status']}")
+            print(f"  project : {payload.get('project') or 'default'}")
+            print(f"  lock    : {payload['lock_path']} ({'present' if payload['lock_exists'] else 'absent'})")
+            if payload.get("lock"):
+                print(f"  pid     : {payload['lock'].get('pid')}")
+                print(f"  started : {payload['lock'].get('started_at')}")
+            print(f"  log     : {payload['log_path']} ({payload['log_size_bytes']} bytes)")
+            for event in payload.get("recent_events") or []:
+                print(f"  - {event.get('at', '?')} {event.get('event', '?')} {event.get('result', '')}")
+        return 0
     lock_result = _acquire_auto_daemon_lock(project=args.project, force=bool(getattr(args, "force_lock", False)))
     log_path = Path(str(lock_result.get("log") or _auto_daemon_paths(args.project)["log"]))
     if lock_result.get("status") != "ok":
@@ -3420,6 +3481,9 @@ def build_parser() -> argparse.ArgumentParser:
     auto_daemon.add_argument("--max-cycles", type=int, help="最多循环次数；测试或受控运行使用。")
     auto_daemon.add_argument("--quiet", action="store_true", help="减少心跳输出。")
     auto_daemon.add_argument("--json", action="store_true", help="每轮输出 JSON。")
+    auto_daemon.add_argument("--status", action="store_true", help="只查看 daemon lock/log 状态，不启动 worker。")
+    auto_daemon.add_argument("--event-limit", type=int, default=5, help="--status 显示的最近事件数量。")
+    auto_daemon.add_argument("--force-lock", action="store_true", help="强制清理已有 lock 后启动；仅确认旧进程已退出时使用。")
     auto_daemon.add_argument("--no-interactive-questions", action="store_true", help="后台运行时不要在终端提问；遇到人类问题则保持 pending。")
     auto_daemon.set_defaults(func=handle_auto_daemon)
     tools_parser = sub.add_parser("tools", help="AETHER harness 工具注册表。")
