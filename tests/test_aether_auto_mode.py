@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from aether_dft import cli
 from aether_dft.auto_mode import (
@@ -640,6 +641,82 @@ def test_auto_daemon_status_marks_stale_lock(tmp_path: Path, monkeypatch, capsys
     assert payload["status"] == "stale_lock"
     assert payload["lock_process"]["status"] == "stale"
     assert paths["lock"].exists()
+
+
+def test_auto_status_includes_daemon_health(tmp_path: Path, monkeypatch, capsys):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="筛选 CO/Pt(111) 吸附构型")
+
+    monkeypatch.setattr(
+        cli,
+        "_auto_daemon_status",
+        lambda project, event_limit=3: {
+            "status": "stale_lock",
+            "project": project,
+            "lock_path": "demo.lock.json",
+            "lock_process": {"status": "stale"},
+        },
+    )
+
+    assert cli.main(["auto", "status", "--project", "demo", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["state"]["enabled"] is True
+    assert payload["daemon"]["status"] == "stale_lock"
+    assert payload["daemon"]["lock_process"]["status"] == "stale"
+
+
+def test_auto_status_preview_prints_daemon_health(tmp_path: Path, monkeypatch, capsys):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="筛选 CO/Pt(111) 吸附构型")
+
+    monkeypatch.setattr(
+        cli,
+        "_auto_daemon_status",
+        lambda project, event_limit=3: {
+            "status": "stale_lock",
+            "project": project,
+            "lock_path": "demo.lock.json",
+            "lock_process": {"status": "stale"},
+        },
+    )
+
+    assert cli.main(["auto", "status", "--project", "demo"]) == 0
+
+    out = capsys.readouterr().out
+    assert "daemon" in out
+    assert "stale_lock" in out
+    assert "demo.lock.json" in out
+
+
+def test_chat_auto_status_prints_human_readable_panel(tmp_path: Path, monkeypatch, capsys):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="筛选 CO/Pt(111) 吸附构型")
+
+    monkeypatch.setattr(
+        cli,
+        "_auto_daemon_status",
+        lambda project, event_limit=3: {
+            "status": "stopped",
+            "project": project,
+            "lock_path": "demo.lock.json",
+            "lock_process": {},
+        },
+    )
+
+    handled, session_id = cli.handle_chat_auto_command(
+        "/auto status",
+        SimpleNamespace(project="demo"),
+        session_store=None,
+        session_id="session-1",
+    )
+
+    out = capsys.readouterr().out
+    assert handled is True
+    assert session_id == "session-1"
+    assert "/auto" in out
+    assert "daemon" in out
+    assert "stopped" in out
 
 
 def test_auto_daemon_refuses_stale_lock_without_force(tmp_path: Path, monkeypatch, capsys):

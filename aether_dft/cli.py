@@ -1136,6 +1136,15 @@ def print_auto_preview(payload: dict[str, Any]) -> None:
         print(f"  {Colors.CYAN}DFT board{Colors.RESET}: due={len(due)} scheduled={len(scheduled)} campaigns={len(campaigns)}")
         for item in due[:3]:
             print(f"   due now: {item.get('title') or item.get('id')}")
+    daemon = payload.get("daemon") if isinstance(payload.get("daemon"), dict) else {}
+    if daemon:
+        daemon_status = daemon.get("status") or "unknown"
+        lock_process = daemon.get("lock_process") if isinstance(daemon.get("lock_process"), dict) else {}
+        process_status = lock_process.get("status") if lock_process else ""
+        suffix = f" / process={process_status}" if process_status else ""
+        print(f"  {Colors.CYAN}daemon{Colors.RESET}: {daemon_status}{suffix}")
+        if daemon_status == "stale_lock":
+            print(f"   {Colors.YELLOW}stale lock{Colors.RESET}: {daemon.get('lock_path')}")
     questions = state.get("human_questions") or []
     if questions:
         print(f"  {Colors.YELLOW}questions for human{Colors.RESET}:")
@@ -1542,7 +1551,7 @@ def handle_chat_auto_command(line: str, args: argparse.Namespace, session_store:
     if raw == "on":
         raw = ""
     if raw in {"status", "show", "list"}:
-        print_json(auto_mode_status(project=args.project, include_due=True))
+        print_auto_preview(_auto_status_with_daemon(args.project))
         return True, session_id
     if raw in {"tick", "run", "continue"}:
         print("不用手动推进：/auto 开启后会根据项目 follow-up 到期时间由后台自动让模型工作。")
@@ -2334,14 +2343,20 @@ def handle_followup_complete(args: argparse.Namespace) -> int:
 
 
 def handle_auto_status(args: argparse.Namespace) -> int:
-    from .auto_mode import auto_mode_status
-
-    payload = auto_mode_status(project=args.project, include_due=True)
+    payload = _auto_status_with_daemon(args.project)
     if getattr(args, "json", False):
         print_json(payload)
     else:
         print_auto_preview(payload)
     return 0
+
+
+def _auto_status_with_daemon(project: str | None) -> dict[str, Any]:
+    from .auto_mode import auto_mode_status
+
+    payload = auto_mode_status(project=project, include_due=True)
+    payload["daemon"] = _auto_daemon_status(project, event_limit=3)
+    return payload
 
 
 def _prepare_auto_launcher_turn_args(args: argparse.Namespace) -> argparse.Namespace:
