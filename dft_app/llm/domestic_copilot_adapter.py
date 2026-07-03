@@ -78,6 +78,7 @@ class DomesticCopilotLLM:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
         stream_callback: Any | None = None,
+        timeout_seconds: int | None = None,
     ) -> dict[str, Any]:
         resolved_provider, resolved_model = (
             (provider_id, model_id)
@@ -95,6 +96,7 @@ class DomesticCopilotLLM:
             tools=tools,
             tool_choice=tool_choice,
             stream_callback=stream_callback,
+            timeout_seconds=timeout_seconds,
         )
         result["provider_id"] = resolved_provider
         result["model_id"] = resolved_model

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 """Volatile prompt digests for live cluster/research context."""
 
-from pathlib import Path
 import json
+import os
 import re
+from pathlib import Path
 
 from .research_workspace import resolve_research_project
 
@@ -226,18 +227,58 @@ def build_research_workspace_digest(*, project: str | None = None, max_chars: in
     return "\n".join(lines)[:max_chars]
 
 
+def _preload_semantic_priors_enabled() -> bool:
+    raw = os.getenv("AETHER_DFT_PRELOAD_SEMANTIC_PRIORS", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def build_relevant_priors_digest(*, project: str | None = None, query: str | None = None, max_items: int = 3) -> str:
     if not query:
         return ""
     try:
-        from .knowledge import search_notes
+        from .knowledge import search_for_system, search_notes
     except Exception:
         return ""
+    max_items = max(1, min(int(max_items or 3), 8))
+    semantic = _preload_semantic_priors_enabled()
     try:
-        notes = search_notes(project or "", query)[:max_items]
+        result = search_for_system(
+            extra_terms=[query],
+            project_priority=project,
+            max_results=max_items,
+            semantic=semantic,
+        )
     except Exception:
+        try:
+            notes = search_notes(project or "", query)[:max_items]
+        except Exception:
+            return ""
+        rows = []
+        for note in notes:
+            rows.append(f"- {note.get('title') or note.get('path')}: {str(note.get('excerpt') or '')[:160]}")
+        return "\n".join(rows)
+
+    matches = result.get("matches") or []
+    if not matches:
         return ""
-    rows = []
-    for note in notes:
-        rows.append(f"- {note.get('title') or note.get('path')}: {str(note.get('excerpt') or '')[:160]}")
+    method = str(result.get("selection_method") or ("semantic" if semantic else "lexical"))
+    rows = [
+        (
+            f"Relevant project/research priors ({method} preload; lightweight, not exhaustive). "
+            "If this is insufficient, call `knowledge_search_for_system` explicitly with the actual material/adsorbate; "
+            "prioritize warnings/gotchas/避坑 over ordinary API notes."
+        )
+    ]
+    for item in matches[:max_items]:
+        title = item.get("title") or item.get("path") or "untitled"
+        source = item.get("source") or "knowledge"
+        project_slug = item.get("project")
+        reason = item.get("semantic_reason")
+        preview = str(item.get("preview") or "")[:180].replace("\n", " ")
+        meta = f"{source}"
+        if project_slug:
+            meta += f"; project={project_slug}"
+        if reason:
+            meta += f"; reason={str(reason)[:80]}"
+        rows.append(f"- {title} ({meta}): {preview}")
     return "\n".join(rows)

@@ -164,6 +164,7 @@ def call_openai_compatible_responses_result(
     messages: list[dict[str, Any]],
     max_tokens: int | None = None,
     tools: list[dict[str, Any]] | None = None,
+    timeout_seconds: int | None = None,
 ) -> dict[str, Any]:
     config = build_provider_model_config(provider_id, model_id)
     base_url = str(config.get("base_url", "") or "").strip().rstrip("/")
@@ -188,7 +189,7 @@ def call_openai_compatible_responses_result(
     client = _build_openai_client(
         resolved_key,
         base_url,
-        int(config.get("timeout_seconds", 180)),
+        int(timeout_seconds or config.get("timeout_seconds", 180)),
     )
 
     try:
@@ -249,6 +250,7 @@ def call_openai_compatible_result(
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | dict[str, Any] | None = None,
     stream_callback: Any | None = None,
+    timeout_seconds: int | None = None,
 ) -> dict[str, Any]:
     config = build_provider_model_config(provider_id, model_id)
     base_url = str(config.get("base_url", "") or "").strip().rstrip("/")
@@ -262,7 +264,7 @@ def call_openai_compatible_result(
     client = _build_openai_client(
         resolved_key,
         base_url,
-        int(config.get("timeout_seconds", 180)),
+        int(timeout_seconds or config.get("timeout_seconds", 180)),
     )
 
     body: dict[str, Any] = {

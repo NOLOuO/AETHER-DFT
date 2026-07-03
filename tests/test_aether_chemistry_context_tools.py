@@ -7,6 +7,7 @@ from ase.build import fcc111
 from pymatgen.io.ase import AseAtomsAdaptor
 
 from aether_dft.knowledge import add_note, search_for_system
+from aether_dft.context_digests import build_relevant_priors_digest
 from aether_dft.project_state import init_project
 from dft_shared.chemistry_hints import get_adsorbate_chemistry_hint, list_curated_adsorbates
 from dft_shared.structure_analyzer.operations import inspect_slab_surface
@@ -164,3 +165,49 @@ def test_knowledge_search_for_system_falls_back_when_semantic_selector_fails():
     assert result["selection_method"] == "lexical_fallback"
     assert "selector unavailable" in result["selection_error"]
     assert result["returned"] >= 1
+
+
+def test_relevant_priors_digest_uses_unified_knowledge_search_without_live_selector(monkeypatch):
+    init_project("pytest-prior-digest", description="prompt prior digest", overwrite=True)
+    add_note(
+        "pytest-prior-digest",
+        "Pt water warning",
+        "H2O on Pt(111) prior: compare atop and bridge first; avoid floating O-up initial states.",
+        tags=["warning"],
+    )
+
+    def should_not_call_live_selector(*args, **kwargs):
+        raise AssertionError("prompt preload should not call the live semantic selector by default")
+
+    import aether_dft.knowledge as knowledge
+
+    monkeypatch.setattr(knowledge, "_default_memory_selector", should_not_call_live_selector)
+    digest = build_relevant_priors_digest(project="pytest-prior-digest", query="H2O Pt(111)", max_items=2)
+
+    assert "Relevant project/research priors (lexical preload" in digest
+    assert "Pt water warning" in digest
+    assert "knowledge_search_for_system" in digest
+
+
+def test_relevant_priors_digest_can_opt_into_semantic_preload(monkeypatch):
+    init_project("pytest-prior-semantic", description="prompt prior semantic digest", overwrite=True)
+    add_note(
+        "pytest-prior-semantic",
+        "水在铂表面的避坑",
+        "摘要：水分子在铂表面容易悬浮；应优先检查氧端朝下和顶位吸附构型。",
+        tags=["避坑"],
+    )
+
+    import aether_dft.knowledge as knowledge
+
+    def selector(query, catalog, max_results):
+        chosen = next(item for item in catalog if "避坑" in item["title"])
+        return [{"rank": chosen["rank"], "semantic_reason": "中文语义命中避坑经验"}]
+
+    monkeypatch.setenv("AETHER_DFT_PRELOAD_SEMANTIC_PRIORS", "1")
+    monkeypatch.setattr(knowledge, "_default_memory_selector", selector)
+    digest = build_relevant_priors_digest(project="pytest-prior-semantic", query="H2O Pt111", max_items=2)
+
+    assert "Relevant project/research priors (semantic preload" in digest
+    assert "水在铂表面的避坑" in digest
+    assert "中文语义命中避坑经验" in digest

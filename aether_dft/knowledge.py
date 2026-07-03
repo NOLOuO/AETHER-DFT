@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Callable
@@ -389,6 +390,7 @@ def _default_memory_selector(query: str, catalog: list[dict[str, Any]], max_resu
         max_tokens=4096,
         tools=[],
         tool_choice="none",
+        timeout_seconds=max(1, int(os.getenv("AETHER_MEMORY_SELECTOR_TIMEOUT_SECONDS", "20"))),
     )
     data = _extract_json_object(str(result.get("content") or ""))
     if not data and result.get("reasoning_content"):

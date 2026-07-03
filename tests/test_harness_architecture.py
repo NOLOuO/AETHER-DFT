@@ -1021,7 +1021,7 @@ def test_agent_can_use_step2_tools_to_create_model_authored_adsorption_manifest(
                             "type": "function",
                             "function": {
                                 "name": "knowledge_search_for_system",
-                                "arguments": '{"material":"Pt(111)","adsorbate":"H2O","max_results":3}',
+                                "arguments": '{"material":"Pt(111)","adsorbate":"H2O","max_results":3,"semantic":false}',
                             },
                         },
                         {
