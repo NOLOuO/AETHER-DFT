@@ -193,6 +193,32 @@ def _loads_tool_arguments(arguments: str) -> tuple[dict[str, Any] | None, str | 
 DISCOVERY_TOOL_NAMES = {"aether_capability_map", "aether_discover_tools"}
 
 
+DISCOVERY_QUERY_ALIASES: dict[str, tuple[str, ...]] = {
+    "吸附": ("adsorption", "adsorbate", "adsorb", "site", "slab", "candidate", "e_ads"),
+    "位点": ("site", "surface", "adsorption", "coordination"),
+    "构型": ("structure", "candidate", "manifest", "geometry", "orientation"),
+    "建模": ("structure", "modeling", "slab", "adsorption", "candidate"),
+    "结构": ("structure", "poscar", "slab", "atoms", "geometry"),
+    "缺陷": ("defect", "vacancy", "dopant", "site"),
+    "过渡态": ("transition", "ts", "neb", "midpoint", "frequency"),
+    "反应": ("reaction", "transition", "ts", "neb", "mechanism"),
+    "计算": ("dft", "vasp", "incar", "kpoints", "run", "preflight"),
+    "提交": ("cluster", "submit", "slurm", "sbatch", "remote"),
+    "集群": ("cluster", "remote", "slurm", "squeue", "sbatch", "ssh"),
+    "队列": ("squeue", "job", "cluster", "status", "slurm"),
+    "作业": ("job", "cluster", "slurm", "status", "tail", "outcar"),
+    "收敛": ("convergence", "outcar", "oszicar", "energy", "force"),
+    "结果": ("result", "parse", "outcar", "interpret", "analysis", "energy"),
+    "能量": ("energy", "e_ads", "result", "outcar", "chemistry"),
+    "文献": ("literature", "web", "research", "knowledge", "prior"),
+    "先验": ("knowledge", "prior", "learning", "gotcha", "warning"),
+    "复盘": ("learning", "writeback", "checkpoint", "outcome", "audit"),
+    "目标": ("auto", "goal", "campaign", "checkpoint", "followup"),
+    "自动": ("auto", "campaign", "followup", "monitor", "daily"),
+    "监控": ("monitor", "job", "cluster", "status", "followup", "tail"),
+}
+
+
 CAPABILITY_CATEGORIES: dict[str, dict[str, Any]] = {
     "project_memory": {
         "label": "项目记忆 / 连续对话",
@@ -367,6 +393,43 @@ CAPABILITY_CATEGORIES: dict[str, dict[str, Any]] = {
         ],
     },
 }
+
+
+def _discovery_query_terms(query: str) -> list[str]:
+    raw_terms = [token for token in re.split(r"[\s,;，；/()（）:：]+", query.lower()) if token]
+    expanded: list[str] = []
+    for token in raw_terms:
+        expanded.append(token)
+        for alias, synonyms in DISCOVERY_QUERY_ALIASES.items():
+            if alias in token or token in alias:
+                expanded.extend(synonyms)
+    seen: set[str] = set()
+    terms: list[str] = []
+    for term in expanded:
+        cleaned = str(term or "").strip().lower()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            terms.append(cleaned)
+    return terms
+
+
+def _score_discovery_candidate(*, name: str, description: str, category: str, terms: list[str]) -> tuple[int, list[str]]:
+    haystack = f"{name} {description} {category}".lower()
+    score = 0
+    matched: list[str] = []
+    for term in terms:
+        if term in haystack:
+            matched.append(term)
+            score += 3 if term in name.lower() else 1
+    if any(term in {"outcar", "oszicar", "convergence", "energy", "收敛", "结果"} for term in terms) and category == "result_analysis":
+        score += 2
+    if any(term in {"cluster", "slurm", "squeue", "sbatch", "集群", "作业", "提交"} for term in terms) and category == "cluster_runtime":
+        score += 2
+    if any(term in {"adsorption", "adsorbate", "吸附", "位点"} for term in terms) and category in {"structure_modeling", "adsorption_authoring"}:
+        score += 2
+    if any(term in {"auto", "goal", "campaign", "自动", "目标"} for term in terms) and category in {"project_memory", "auto_campaign"}:
+        score += 2
+    return score, matched
 
 
 def _capability_summary() -> list[dict[str, Any]]:
@@ -627,11 +690,22 @@ class ToolRegistry:
                 candidates.extend(str(name) for name in data["tools"])
         candidates.extend(requested)
         if query:
-            tokens = [token for token in re.split(r"[\s,;，；/]+", query) if token]
+            tokens = _discovery_query_terms(query)
+            scored: list[tuple[int, str, list[str]]] = []
             for name, (spec, _) in self._tools.items():
-                haystack = f"{name} {spec.description} {self._category_for_tool(name)}".lower()
-                if all(token in haystack for token in tokens):
-                    candidates.append(name)
+                if name in DISCOVERY_TOOL_NAMES:
+                    continue
+                category_name = self._category_for_tool(name)
+                score, matched = _score_discovery_candidate(
+                    name=name,
+                    description=spec.description,
+                    category=category_name,
+                    terms=tokens,
+                )
+                if score > 0:
+                    scored.append((score, name, matched))
+            scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            candidates.extend(name for _score, name, _matched in scored)
         if not candidates and not category and not query and not requested:
             candidates.extend(["project_continuity_digest", "project_state_read", "aether_capability_map"])
         seen: set[str] = set()
@@ -662,13 +736,26 @@ class ToolRegistry:
         names = self._discover_tool_names(payload)
         include_schemas = bool(payload.get("include_schemas", False))
         summaries = [summary for name in names if (summary := self._tool_summary(name)) is not None]
+        query_terms = _discovery_query_terms(str(payload.get("query") or ""))
+        category_hits: dict[str, int] = {}
+        for name in names:
+            category = self._category_for_tool(name)
+            category_hits[category] = category_hits.get(category, 0) + 1
         result: dict[str, Any] = {
             "status": "ok",
             "category": str(payload.get("category") or "").strip(),
             "query": str(payload.get("query") or "").strip(),
+            "query_terms": query_terms,
+            "matched_categories": [
+                {"category": category, "count": count}
+                for category, count in sorted(category_hits.items(), key=lambda item: item[1], reverse=True)
+            ],
             "tool_names": names,
             "tools": summaries,
-            "model_instruction": "这些工具已按需发现；如果 harness 支持动态解锁，下一步可直接调用这些 tool。否则用返回的 required 字段组织下一步请求。",
+            "model_instruction": (
+                "这些工具已按需发现；不要把顺序当固定流程。先根据用户目标和当前证据缺口选最小必要工具，"
+                "若涉及写文件/提交/同步，先确认权限和 evidence gate。"
+            ),
             "capabilities": _capability_summary(),
         }
         if include_schemas:

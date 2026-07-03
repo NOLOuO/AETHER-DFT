@@ -313,6 +313,9 @@ def test_session_context_analysis_identifies_large_tool_results(tmp_path: Path):
     assert analysis["top_buckets"][0]["name"] == "tool_result_chars"
     assert analysis["top_tool_results"][0]["name"] == "cluster_job_partial_outcar"
     assert analysis["large_turns"][0]["turn"] == 1
+    actions = {item["action"] for item in analysis["recommendations"]}
+    assert "persist_large_tool_outputs" in actions
+    assert "replace_raw_vasp_output_with_dossier" in actions
 
 
 def test_permission_mode_blocks_write_tools_in_ask_mode():

@@ -32,6 +32,22 @@ def test_capability_map_and_discover_tools_are_first_class_tools():
     assert any(schema["function"]["name"] == "structure_add_adsorbate" for schema in discovered["schemas"])
 
 
+def test_discover_tools_ranks_chinese_research_intent_without_exact_token_overlap():
+    registry = ToolRegistry()
+
+    discovered = registry.run_tool(
+        "aether_discover_tools",
+        {"query": "我想看吸附构型和位点，后面还要判断收敛结果", "max_tools": 20},
+    )["result"]
+
+    names = set(discovered["tool_names"])
+    assert discovered["status"] == "ok"
+    assert "structure_enumerate_sites" in names
+    assert "structure_add_adsorbate" in names or "adsorption_candidate_plan" in names
+    assert any(item["category"] in {"structure_modeling", "adsorption_authoring"} for item in discovered["matched_categories"])
+    assert "adsorption" in discovered["query_terms"]
+
+
 def test_discussion_mode_uses_lazy_schema_unlock_for_heavy_tools():
     registry = ToolRegistry()
     initial = registry.openai_tool_schemas(interaction_mode="discussion")

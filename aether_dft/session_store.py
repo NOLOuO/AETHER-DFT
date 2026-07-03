@@ -558,6 +558,13 @@ class AetherSessionStore:
             for name, chars in sorted(buckets.items(), key=lambda item: item[1], reverse=True)
             if chars
         ]
+        recommendations = self._context_recommendations(
+            total=total,
+            buckets=buckets,
+            tool_results=tool_results,
+            large_turns=large_turns,
+            compact_summary_chars=int(buckets.get("compact_summary_chars") or 0),
+        )
         return {
             "status": "ok",
             "session_id": session_id,
@@ -568,11 +575,78 @@ class AetherSessionStore:
             "top_tool_results": _top(tool_results),
             "top_tool_requests": _top(tool_requests),
             "large_turns": large_turns[-8:],
+            "recommendations": recommendations,
             "guidance": (
                 "Use this as a context diagnosis, not a scientific conclusion. "
                 "Large tool_result buckets should usually be microcompacted/persisted as artifacts before long follow-up chats."
             ),
         }
+
+    @staticmethod
+    def _context_recommendations(
+        *,
+        total: int,
+        buckets: dict[str, int],
+        tool_results: dict[str, int],
+        large_turns: list[dict[str, Any]],
+        compact_summary_chars: int,
+    ) -> list[dict[str, Any]]:
+        recommendations: list[dict[str, Any]] = []
+        if total >= SESSION_CONTEXT_MAX_CHARS * 0.55:
+            recommendations.append(
+                {
+                    "priority": "high" if total >= SESSION_CONTEXT_MAX_CHARS * 0.80 else "medium",
+                    "action": "compact_session",
+                    "reason": "session context is large enough that long DFT/tool chains may waste model budget",
+                    "command": "/compact 12",
+                }
+            )
+        tool_result_chars = int(buckets.get("tool_result_chars") or 0)
+        if total and tool_result_chars / max(total, 1) >= 0.35:
+            recommendations.append(
+                {
+                    "priority": "high",
+                    "action": "persist_large_tool_outputs",
+                    "reason": "tool results dominate context; keep paths/digests in chat and persist OUTCAR/log/manifests as artifacts",
+                    "candidate_tools": ["outcar analyze", "research_learning_capture", "candidate_outcome_record"],
+                }
+            )
+        if large_turns:
+            recommendations.append(
+                {
+                    "priority": "medium",
+                    "action": "review_large_turns",
+                    "reason": "some turns are unusually large; summarize their scientific conclusion before continuing",
+                    "large_turn_count": len(large_turns),
+                }
+            )
+        heavy_tools = [name for name, _chars in sorted(tool_results.items(), key=lambda item: item[1], reverse=True)[:3]]
+        if any(name in {"cluster_job_partial_outcar", "job_partial_outcar", "vasp_output_scan", "cluster_job_tail_log"} for name in heavy_tools):
+            recommendations.append(
+                {
+                    "priority": "medium",
+                    "action": "replace_raw_vasp_output_with_dossier",
+                    "reason": "raw VASP/log output should become an evidence dossier plus paths, not repeated chat context",
+                    "candidate_tools": ["cluster_remote_fetch", "result_interpret", "research_learning_capture"],
+                }
+            )
+        if compact_summary_chars:
+            recommendations.append(
+                {
+                    "priority": "low",
+                    "action": "trust_compact_summary_but_verify_latest_artifacts",
+                    "reason": "older turns are summarized; current scientific claims should still be checked against project files and latest evidence",
+                }
+            )
+        if not recommendations:
+            recommendations.append(
+                {
+                    "priority": "low",
+                    "action": "continue",
+                    "reason": "context is healthy; continue natural-language research work",
+                }
+            )
+        return recommendations
 
     @staticmethod
     def _collapse_text(value: Any, *, limit: int = 220) -> str:
