@@ -2521,6 +2521,48 @@ def _read_daemon_lock(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _daemon_pid_status(pid: Any) -> dict[str, Any]:
+    """Best-effort liveness check for a daemon lock PID.
+
+    The lock file is the coordination primitive; PID probing is only a product
+    diagnostic so users can tell a genuinely running daemon from a stale lock.
+    """
+
+    try:
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return {"status": "unknown", "pid": pid, "message": "lock has no valid pid"}
+    if pid_int <= 0:
+        return {"status": "unknown", "pid": pid_int, "message": "lock pid is not positive"}
+    if pid_int == os.getpid():
+        return {"status": "running", "pid": pid_int, "message": "current process"}
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid_int)
+            if handle:
+                kernel32.CloseHandle(handle)
+                return {"status": "running", "pid": pid_int, "message": "process exists"}
+            error_code = ctypes.get_last_error()
+            if error_code == 5:
+                return {"status": "running", "pid": pid_int, "message": "process exists but access is denied"}
+            return {"status": "stale", "pid": pid_int, "message": f"process not found or inaccessible ({error_code})"}
+        except Exception as exc:
+            return {"status": "unknown", "pid": pid_int, "message": f"pid probe failed: {exc}"}
+    try:
+        os.kill(pid_int, 0)
+        return {"status": "running", "pid": pid_int, "message": "process exists"}
+    except ProcessLookupError:
+        return {"status": "stale", "pid": pid_int, "message": "process not found"}
+    except PermissionError:
+        return {"status": "running", "pid": pid_int, "message": "process exists but access is denied"}
+    except Exception as exc:
+        return {"status": "unknown", "pid": pid_int, "message": f"pid probe failed: {exc}"}
+
+
 def _tail_jsonl(path: Path, *, limit: int = 5) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -2544,10 +2586,11 @@ def _auto_daemon_status(project: str | None, *, event_limit: int = 5) -> dict[st
     lock_path = paths["lock"]
     log_path = paths["log"]
     lock = _read_daemon_lock(lock_path) if lock_path.exists() else {}
+    lock_process = _daemon_pid_status(lock.get("pid")) if lock else {}
     events = _tail_jsonl(log_path, limit=event_limit)
     last_event = events[-1] if events else {}
     if lock:
-        status = "locked"
+        status = "stale_lock" if lock_process.get("status") == "stale" else "locked"
     elif last_event.get("event") == "daemon_stop":
         status = "stopped"
     elif log_path.exists():
@@ -2560,6 +2603,7 @@ def _auto_daemon_status(project: str | None, *, event_limit: int = 5) -> dict[st
         "lock_exists": lock_path.exists(),
         "lock_path": str(lock_path),
         "lock": lock,
+        "lock_process": lock_process,
         "log_exists": log_path.exists(),
         "log_path": str(log_path),
         "log_size_bytes": log_path.stat().st_size if log_path.exists() else 0,
@@ -2586,7 +2630,15 @@ def _acquire_auto_daemon_lock(*, project: str | None, force: bool = False) -> di
         fd = os.open(str(lock_path), flags)
     except FileExistsError:
         existing = _read_daemon_lock(lock_path)
-        return {"status": "locked", "message": "auto daemon lock already exists", "existing": existing, **paths}
+        process = _daemon_pid_status(existing.get("pid")) if existing else {}
+        status = "stale_lock" if process.get("status") == "stale" else "locked"
+        return {
+            "status": status,
+            "message": "auto daemon lock already exists",
+            "existing": existing,
+            "lock_process": process,
+            **paths,
+        }
     except OSError as exc:
         return {"status": "error", "message": str(exc), **paths}
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -2631,6 +2683,8 @@ def handle_auto_daemon(args: argparse.Namespace) -> int:
             print(f"  lock    : {payload['lock_path']} ({'present' if payload['lock_exists'] else 'absent'})")
             if payload.get("lock"):
                 print(f"  pid     : {payload['lock'].get('pid')}")
+                if payload.get("lock_process"):
+                    print(f"  process : {payload['lock_process'].get('status')} ({payload['lock_process'].get('message')})")
                 print(f"  started : {payload['lock'].get('started_at')}")
             print(f"  log     : {payload['log_path']} ({payload['log_size_bytes']} bytes)")
             for event in payload.get("recent_events") or []:
@@ -2643,6 +2697,7 @@ def handle_auto_daemon(args: argparse.Namespace) -> int:
             "status": lock_result.get("status"),
             "message": lock_result.get("message"),
             "existing": lock_result.get("existing"),
+            "lock_process": lock_result.get("lock_process"),
             "lock_path": str(lock_result.get("lock") or ""),
             "log_path": str(log_path),
         }
@@ -2653,7 +2708,9 @@ def handle_auto_daemon(args: argparse.Namespace) -> int:
             print(f"{Colors.YELLOW}[auto daemon]{Colors.RESET} {payload['message'] or payload['status']}")
             if payload.get("existing"):
                 print(f"{Colors.DIM}existing: {payload['existing']}{Colors.RESET}")
-            print(f"{Colors.DIM}Use --force-lock only after confirming no other daemon is running.{Colors.RESET}")
+            if payload.get("lock_process"):
+                print(f"{Colors.DIM}process: {payload['lock_process']}{Colors.RESET}")
+            print(f"{Colors.DIM}Use --force-lock only after confirming no other daemon is running or the lock is stale.{Colors.RESET}")
         return 1
     session_store = AetherSessionStore()
     resumed = session_store.resume_payload(project=args.project)

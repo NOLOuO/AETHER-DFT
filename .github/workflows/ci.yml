@@ -41,7 +41,9 @@ jobs:
       - name: Launcher and doctor smoke
         shell: pwsh
         run: |
+          $env:AETHER_LAUNCHER_SELFTEST = "1"
           .\aether.cmd doctor --json
+          Remove-Item Env:\AETHER_LAUNCHER_SELFTEST
           python -m aether_dft.cli doctor --json
 
       - name: Compile sources
