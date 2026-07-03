@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+from datetime import datetime
 import hashlib
 import importlib.util
 import json
@@ -29,6 +30,7 @@ from .model_catalog import (
 )
 from .permissions import get_permission_mode, permission_mode_label, set_permission_mode
 from .project_state import append_progress, init_project, list_projects, load_project, project_paths, read_project_context
+from .paths import ensure_runtime_dir
 
 PROGRAM_NAME = "AETHER-DFT"
 PROGRAM_COMMAND = "aether"
@@ -2482,6 +2484,85 @@ def handle_auto_off(args: argparse.Namespace) -> int:
     return 0 if result.get("status") == "ok" else 1
 
 
+def _auto_daemon_scope(project: str | None) -> str:
+    text = str(project or "default").strip() or "default"
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", text)[:80] or "default"
+
+
+def _auto_daemon_paths(project: str | None) -> dict[str, Path]:
+    root = ensure_runtime_dir("auto_daemon")
+    scope = _auto_daemon_scope(project)
+    return {
+        "root": root,
+        "lock": root / f"{scope}.lock.json",
+        "log": root / f"{scope}.jsonl",
+    }
+
+
+def _json_default(value: Any) -> str:
+    try:
+        return str(value)
+    except Exception:
+        return repr(value)
+
+
+def _append_daemon_event(path: Path, event: dict[str, Any]) -> None:
+    payload = {"at": datetime.now().astimezone().isoformat(timespec="seconds"), **event}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, default=_json_default) + "\n")
+
+
+def _read_daemon_lock(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _acquire_auto_daemon_lock(*, project: str | None, force: bool = False) -> dict[str, Any]:
+    paths = _auto_daemon_paths(project)
+    lock_path = paths["lock"]
+    if force and lock_path.exists():
+        try:
+            lock_path.unlink()
+        except OSError as exc:
+            return {"status": "error", "message": f"无法清理旧 daemon lock: {exc}", **paths}
+    payload = {
+        "project": project or "",
+        "pid": os.getpid(),
+        "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "lock_path": str(lock_path),
+    }
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    try:
+        fd = os.open(str(lock_path), flags)
+    except FileExistsError:
+        existing = _read_daemon_lock(lock_path)
+        return {"status": "locked", "message": "auto daemon lock already exists", "existing": existing, **paths}
+    except OSError as exc:
+        return {"status": "error", "message": str(exc), **paths}
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False)
+    return {"status": "ok", "lock": payload, **paths}
+
+
+def _release_auto_daemon_lock(lock_result: dict[str, Any]) -> None:
+    if lock_result.get("status") != "ok":
+        return
+    lock_path = lock_result.get("lock")
+    path = lock_result.get("lock_path") or (lock_path.get("lock_path") if isinstance(lock_path, dict) else "")
+    if not path:
+        path_obj = lock_result.get("lock")
+        if isinstance(path_obj, Path):
+            path = str(path_obj)
+    try:
+        Path(str(path)).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def handle_auto_daemon(args: argparse.Namespace) -> int:
     """Run the durable /auto follow-up queue as a long-lived foreground worker.
 
@@ -2494,6 +2575,25 @@ def handle_auto_daemon(args: argparse.Namespace) -> int:
     from .session_store import AetherSessionStore
 
     ensure_console_utf8()
+    lock_result = _acquire_auto_daemon_lock(project=args.project, force=bool(getattr(args, "force_lock", False)))
+    log_path = Path(str(lock_result.get("log") or _auto_daemon_paths(args.project)["log"]))
+    if lock_result.get("status") != "ok":
+        payload = {
+            "status": lock_result.get("status"),
+            "message": lock_result.get("message"),
+            "existing": lock_result.get("existing"),
+            "lock_path": str(lock_result.get("lock") or ""),
+            "log_path": str(log_path),
+        }
+        _append_daemon_event(log_path, {"event": "daemon_lock_failed", **payload})
+        if getattr(args, "json", False):
+            print_json(payload)
+        else:
+            print(f"{Colors.YELLOW}[auto daemon]{Colors.RESET} {payload['message'] or payload['status']}")
+            if payload.get("existing"):
+                print(f"{Colors.DIM}existing: {payload['existing']}{Colors.RESET}")
+            print(f"{Colors.DIM}Use --force-lock only after confirming no other daemon is running.{Colors.RESET}")
+        return 1
     session_store = AetherSessionStore()
     resumed = session_store.resume_payload(project=args.project)
     session_ref = {"id": resumed.get("session_id") if resumed.get("status") == "ok" else None}
@@ -2504,64 +2604,94 @@ def handle_auto_daemon(args: argparse.Namespace) -> int:
     max_cycles = int(args.max_cycles) if getattr(args, "max_cycles", None) is not None else None
     cycle = 0
     last_result: dict[str, Any] = {"status": "not_started"}
-    if not getattr(args, "json", False):
-        print(
-            f"{Colors.CYAN}[auto daemon]{Colors.RESET} project={args.project or 'default'} "
-            f"interval={interval:g}s; Ctrl+C to stop"
-        )
-    while True:
-        cycle += 1
-        status = auto_mode_status(project=args.project, include_due=True)
-        state = status.get("state") or {}
-        if not state.get("enabled"):
-            last_result = {"status": "auto_disabled", "ran": False, "cycle": cycle, "state": state}
-            if getattr(args, "json", False):
-                print_json(last_result)
-            else:
-                print(f"{Colors.YELLOW}[auto daemon]{Colors.RESET} /auto is off; enable it with /auto or `aether auto \"<goal>\"`.")
-            return 0
-        pending_questions = [str(item).strip() for item in state.get("human_questions") or [] if str(item).strip()]
-        if pending_questions:
-            last_result = {
-                "status": "waiting_for_human",
-                "ran": False,
-                "cycle": cycle,
-                "questions": pending_questions,
-            }
-            if getattr(args, "json", False):
-                print_json(last_result)
-            else:
-                print(f"{Colors.YELLOW}[auto daemon]{Colors.RESET} waiting for human answer:")
-                for question in pending_questions[:3]:
-                    print(f"  - {question}")
-            return 0
-        turn_args = auto_turn_args(_prepare_auto_launcher_turn_args(args))
-        last_result = run_auto_due_once(
-            args=turn_args,
-            session_store=session_store,
-            session_ref=session_ref,
-            quiet=bool(getattr(args, "quiet", False) or getattr(args, "json", False)),
-            interactive_questions=not bool(getattr(args, "no_interactive_questions", False)),
-        )
-        last_result["cycle"] = cycle
-        if getattr(args, "json", False):
-            print_json(last_result)
-        elif last_result.get("ran"):
+    _append_daemon_event(
+        log_path,
+        {
+            "event": "daemon_start",
+            "project": args.project or "",
+            "pid": os.getpid(),
+            "interval_seconds": interval,
+            "session_id": session_ref.get("id"),
+        },
+    )
+    try:
+        if not getattr(args, "json", False):
             print(
-                f"{Colors.CYAN}[auto daemon]{Colors.RESET} cycle={cycle} "
-                f"status={last_result.get('status')} completed={last_result.get('completed')}"
+                f"{Colors.CYAN}[auto daemon]{Colors.RESET} project={args.project or 'default'} "
+                f"interval={interval:g}s log={log_path}; Ctrl+C to stop"
             )
-        elif not getattr(args, "quiet", False):
-            due_count = (status.get("due_followups") or {}).get("count", 0)
-            print(f"{Colors.DIM}[auto daemon] cycle={cycle} idle; due={due_count}{Colors.RESET}")
-        if getattr(args, "once", False) or (max_cycles is not None and cycle >= max_cycles):
-            return 1 if last_result.get("status") == "error" else 0
-        try:
-            time.sleep(interval)
-        except KeyboardInterrupt:
-            if not getattr(args, "json", False):
-                print(f"\n{Colors.DIM}[auto daemon] stopped by user{Colors.RESET}")
-            return 0
+        while True:
+            cycle += 1
+            try:
+                status = auto_mode_status(project=args.project, include_due=True)
+                state = status.get("state") or {}
+                if not state.get("enabled"):
+                    last_result = {"status": "auto_disabled", "ran": False, "cycle": cycle, "state": state}
+                    _append_daemon_event(log_path, {"event": "cycle_result", "result": last_result})
+                    if getattr(args, "json", False):
+                        print_json(last_result)
+                    else:
+                        print(f"{Colors.YELLOW}[auto daemon]{Colors.RESET} /auto is off; enable it with /auto or `aether auto \"<goal>\"`.")
+                    return 0
+                pending_questions = [str(item).strip() for item in state.get("human_questions") or [] if str(item).strip()]
+                if pending_questions:
+                    last_result = {
+                        "status": "waiting_for_human",
+                        "ran": False,
+                        "cycle": cycle,
+                        "questions": pending_questions,
+                    }
+                    _append_daemon_event(log_path, {"event": "cycle_result", "result": last_result})
+                    if getattr(args, "json", False):
+                        print_json(last_result)
+                    else:
+                        print(f"{Colors.YELLOW}[auto daemon]{Colors.RESET} waiting for human answer:")
+                        for question in pending_questions[:3]:
+                            print(f"  - {question}")
+                    return 0
+                turn_args = auto_turn_args(_prepare_auto_launcher_turn_args(args))
+                last_result = run_auto_due_once(
+                    args=turn_args,
+                    session_store=session_store,
+                    session_ref=session_ref,
+                    quiet=bool(getattr(args, "quiet", False) or getattr(args, "json", False)),
+                    interactive_questions=not bool(getattr(args, "no_interactive_questions", False)),
+                )
+                last_result["cycle"] = cycle
+                _append_daemon_event(log_path, {"event": "cycle_result", "result": last_result})
+            except Exception as exc:
+                last_result = {"status": "error", "ran": False, "cycle": cycle, "message": str(exc)}
+                _append_daemon_event(log_path, {"event": "cycle_error", "result": last_result})
+                if getattr(args, "once", False) or (max_cycles is not None and cycle >= max_cycles):
+                    if getattr(args, "json", False):
+                        print_json(last_result)
+                    else:
+                        print(f"{Colors.RED}[auto daemon]{Colors.RESET} error: {_shorten_inline(str(exc), limit=240)}")
+                    return 1
+                if not getattr(args, "quiet", False) and not getattr(args, "json", False):
+                    print(f"{Colors.YELLOW}[auto daemon]{Colors.RESET} cycle error; will retry: {_shorten_inline(str(exc), limit=180)}")
+            if getattr(args, "json", False):
+                print_json(last_result)
+            elif last_result.get("ran"):
+                print(
+                    f"{Colors.CYAN}[auto daemon]{Colors.RESET} cycle={cycle} "
+                    f"status={last_result.get('status')} completed={last_result.get('completed')}"
+                )
+            elif not getattr(args, "quiet", False):
+                due_count = (status.get("due_followups") or {}).get("count", 0) if "status" in locals() else "unknown"
+                print(f"{Colors.DIM}[auto daemon] cycle={cycle} idle; due={due_count}{Colors.RESET}")
+            if getattr(args, "once", False) or (max_cycles is not None and cycle >= max_cycles):
+                return 1 if last_result.get("status") == "error" else 0
+            try:
+                time.sleep(interval)
+            except KeyboardInterrupt:
+                if not getattr(args, "json", False):
+                    print(f"\n{Colors.DIM}[auto daemon] stopped by user{Colors.RESET}")
+                _append_daemon_event(log_path, {"event": "daemon_stopped", "reason": "keyboard_interrupt", "cycle": cycle})
+                return 0
+    finally:
+        _append_daemon_event(log_path, {"event": "daemon_stop", "project": args.project or "", "pid": os.getpid(), "last_result": last_result})
+        _release_auto_daemon_lock(lock_result)
 
 
 def handle_tools_list(args: argparse.Namespace) -> int:

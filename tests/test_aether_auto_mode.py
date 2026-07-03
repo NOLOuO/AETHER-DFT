@@ -568,6 +568,54 @@ def test_auto_daemon_runs_due_worker_without_new_workflow(tmp_path: Path, monkey
     assert calls
     assert calls[0]["args"].project == "demo"
     assert calls[0]["args"].max_steps >= cli.AUTO_TURN_MIN_STEPS
+    log_path = cli._auto_daemon_paths("demo")["log"]
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert any(event["event"] == "daemon_start" for event in events)
+    assert any(event["event"] == "cycle_result" for event in events)
+    assert any(event["event"] == "daemon_stop" for event in events)
+
+
+def test_auto_daemon_refuses_duplicate_lock(tmp_path: Path, monkeypatch, capsys):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="筛选 CO/Pt(111) 吸附构型")
+    paths = cli._auto_daemon_paths("demo")
+    paths["lock"].parent.mkdir(parents=True, exist_ok=True)
+    paths["lock"].write_text(json.dumps({"pid": 12345, "project": "demo"}), encoding="utf-8")
+    calls: list[dict[str, object]] = []
+
+    def fake_run_auto_due_once(**kwargs):
+        calls.append(kwargs)
+        return {"status": "ok", "ran": True}
+
+    monkeypatch.setattr(cli, "run_auto_due_once", fake_run_auto_due_once)
+
+    assert cli.main(["auto", "daemon", "--project", "demo", "--once", "--json"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "locked"
+    assert payload["existing"]["pid"] == 12345
+    assert calls == []
+    assert paths["lock"].exists()
+
+
+def test_auto_daemon_once_logs_runtime_error(tmp_path: Path, monkeypatch, capsys):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="筛选 CO/Pt(111) 吸附构型")
+
+    def broken_run_auto_due_once(**kwargs):
+        raise RuntimeError("simulated scheduler failure")
+
+    monkeypatch.setattr(cli, "run_auto_due_once", broken_run_auto_due_once)
+
+    assert cli.main(["auto", "daemon", "--project", "demo", "--once", "--json"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert "simulated scheduler failure" in payload["message"]
+    log_path = cli._auto_daemon_paths("demo")["log"]
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert any(event["event"] == "cycle_error" for event in events)
+    assert any(event["event"] == "daemon_stop" for event in events)
 
 
 def test_auto_daemon_waits_for_pending_human_question(tmp_path: Path, monkeypatch, capsys):
