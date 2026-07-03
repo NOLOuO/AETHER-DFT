@@ -414,6 +414,38 @@ def test_tools_registered_in_registry():
 
     cancel_spec = next(tool for tool in registry.list_tools() if tool["name"] == "cluster_job_cancel")
     assert cancel_spec["read_only"] is False
+    assert cancel_spec["explicit_human_required"] is True
+
+
+def test_registry_cluster_job_cancel_requires_explicit_human_permission_even_in_dev(monkeypatch):
+    from aether_dft.runtime_harness.tool_registry import ToolRegistry
+
+    fake = _FakeRunner({"scancel 12345": _FakeCommandResult(0, "", "")})
+    _patch_runner(monkeypatch, fake)
+    result = ToolRegistry(permission_mode="dev").run_tool("cluster_job_cancel", {"job_id": "12345"})
+
+    assert result["result"]["status"] == "permission_required"
+    assert result["result"]["reason"] == "explicit_human_required"
+    assert fake.calls == []
+
+
+def test_registry_cluster_job_cancel_runs_after_explicit_human_permission(monkeypatch):
+    from aether_dft.runtime_harness.tool_registry import ToolRegistry
+
+    fake = _FakeRunner(
+        {
+            "scancel 12345": _FakeCommandResult(0, "", ""),
+            "squeue -j 12345": _FakeCommandResult(0, "", ""),
+        }
+    )
+    _patch_runner(monkeypatch, fake)
+    result = ToolRegistry(permission_mode="dev").run_tool(
+        "cluster_job_cancel",
+        {"job_id": "12345", "_permission_granted": True},
+    )
+
+    assert result["result"]["status"] == "canceled"
+    assert any(call.startswith("scancel 12345") for call in fake.calls)
 
 
 def test_registry_realtime_handlers_return_errors_instead_of_raising(monkeypatch):

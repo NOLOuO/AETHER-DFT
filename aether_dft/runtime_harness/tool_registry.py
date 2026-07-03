@@ -106,6 +106,7 @@ class ToolSpec:
     read_only: bool = True
     required: tuple[str, ...] = ()
     parallel_safe: bool = True
+    explicit_human_required: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -490,7 +491,7 @@ class ToolRegistry:
         self._register(ToolSpec("project_continuity_digest", "读取项目状态、research、知识库、近期 run 和最近结果，生成下一轮可续接摘要；这是证据地图，不是固定流程。", {"project": {"type": "string"}, "focus": {"type": "string"}, "recent_results": {"type": "array", "items": {"type": "object"}}, "max_chars": {"type": "integer"}}, True), self._project_continuity_digest)
         self._register(ToolSpec("research_cycle_checkpoint", "把当前科研循环的目标、决定、证据、开放问题、blocker、下一步持久化到项目 checkpoint/progress/state。", {"project": {"type": "string"}, "goal": {"type": "string"}, "current_decision": {"type": "string"}, "evidence_refs": {"type": "array", "items": {"type": "string"}}, "open_questions": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "next_steps": {"type": "array", "items": {"type": "string"}}, "run_ids": {"type": "array", "items": {"type": "string"}}, "candidate_ids": {"type": "array", "items": {"type": "string"}}, "update_project_state": {"type": "boolean"}}, False, ("project", "goal", "current_decision")), self._research_cycle_checkpoint)
         self._register(ToolSpec("auto_mode_status", "读取 /auto 目标驱动科研模式状态、到期 follow-up 和自主策略；这是目标/证据地图，不是固定流程。", {"project": {"type": "string"}, "include_due": {"type": "boolean"}}, True), self._auto_mode_status)
-        self._register(ToolSpec("auto_mode_configure", "开启/关闭或调整 /auto 模式。开启时必须有 research_goal；会创建周期 monitor/daily report follow-up 意图，但不会自动运行集群动作。", {"project": {"type": "string"}, "enabled": {"type": "boolean"}, "research_goal": {"type": "string"}, "monitor_interval_hours": {"type": "integer"}, "daily_report_time": {"type": "string"}, "allow_cluster_submit": {"type": "boolean"}, "allow_structure_build": {"type": "boolean"}, "allow_literature_search": {"type": "boolean"}, "allow_research_writeback": {"type": "boolean"}, "reset_questions": {"type": "boolean"}}, False, ("enabled",)), self._auto_mode_configure)
+        self._register(ToolSpec("auto_mode_configure", "开启/关闭或调整 /auto 模式。开启时必须有 research_goal；会创建周期 monitor/daily report follow-up 意图，但不会自动运行集群动作。模型不能通过本工具开启集群提交权限；真实提交必须由 CLI/人类显式授权。", {"project": {"type": "string"}, "enabled": {"type": "boolean"}, "research_goal": {"type": "string"}, "monitor_interval_hours": {"type": "integer"}, "daily_report_time": {"type": "string"}, "allow_structure_build": {"type": "boolean"}, "allow_literature_search": {"type": "boolean"}, "allow_research_writeback": {"type": "boolean"}, "reset_questions": {"type": "boolean"}}, False, ("enabled",)), self._auto_mode_configure)
         self._register(ToolSpec("auto_mode_checkpoint", "记录 auto 模式本轮观察、决策、证据、下一关注点和需要问人类的问题；用于长期目标闭环。", {"project": {"type": "string"}, "status": {"type": "string"}, "current_phase": {"type": "string"}, "observation": {"type": "string"}, "decision": {"type": "string"}, "evidence_refs": {"type": "array", "items": {"type": "string"}}, "next_focus": {"type": "string"}, "open_questions": {"type": "array", "items": {"type": "string"}}, "human_questions": {"type": "array", "items": {"type": "string"}}}, False), self._auto_mode_checkpoint)
         self._register(ToolSpec("auto_mode_convergence_audit", "专业计算化学收敛审计：把研究目标/成功标准映射到结构、候选、DFT 输入/任务、解析结果、文献和不确定性证据。用于判断 /auto 是继续、等集群、问人、阻塞还是有证据地完成；不是固定流程。", {"project": {"type": "string"}, "verdict": {"type": "string"}, "success_criteria": {"type": "array", "items": {"type": "string"}}, "evidence_refs": {"type": "array", "items": {"type": "string"}}, "completed_items": {"type": "array", "items": {"type": "string"}}, "missing_evidence": {"type": "array", "items": {"type": "string"}}, "calculation_status": {"type": "object"}, "literature_status": {"type": "object"}, "uncertainty": {"type": "string"}, "next_focus": {"type": "string"}, "confidence": {"type": "number"}}, False, ("verdict",)), self._auto_mode_convergence_audit)
         self._register(ToolSpec("auto_human_question", "在 /auto 自主推进遇到不可由工具查明的人类判断时，向 CLI 用户提出一个阻塞问题。先查证据；只问目标/成功标准/昂贵分支/权限/不可逆动作；每次只问一个问题。", {"project": {"type": "string"}, "question": {"type": "string"}, "why_needed": {"type": "string"}, "decision_boundary": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}, "default_if_unanswered": {"type": "string"}, "evidence_refs": {"type": "array", "items": {"type": "string"}}}, True, ("question",), False), self._auto_human_question)
@@ -575,7 +576,7 @@ class ToolRegistry:
         self._register(ToolSpec("cluster_job_tail_log", "tail -n <lines> 集群上某 job 的日志（默认 vasp.out，找不到自动回落 logs/*、slurm.out、OSZICAR）。可传 cluster_alias。< 2 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "log_name": {"type": "string"}, "lines": {"type": "integer"}, "project_root": {"type": "string"}, "cluster_alias": {"type": "string"}}, True), self._cluster_job_tail_log)
         self._register(ToolSpec("cluster_job_partial_outcar", "解析当前 OUTCAR 末段：能量 / 力 / ionic step / SCF 是否收敛。可传 cluster_alias。< 3 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "project_root": {"type": "string"}, "cluster_alias": {"type": "string"}}, True), self._cluster_job_partial_outcar)
         self._register(ToolSpec("cluster_job_progress_estimate", "用 OSZICAR ionic step 轨迹判断能量趋势：是否单调下降 / 震荡 / 给收敛分数。可传 cluster_alias。< 5 秒。", {"job_id": {"type": "string"}, "remote_run_root": {"type": "string"}, "project_root": {"type": "string"}, "cluster_alias": {"type": "string"}}, True), self._cluster_job_progress_estimate)
-        self._register(ToolSpec("cluster_job_cancel", "精确取消单个 SLURM job_id，并回读 squeue 验证；可传 cluster_alias；不支持批量、通配符或 --me。只在用户明确要求取消/撤销测试任务时调用。", {"job_id": {"type": "string"}, "cluster_alias": {"type": "string"}}, False, ("job_id",)), self._cluster_job_cancel)
+        self._register(ToolSpec("cluster_job_cancel", "精确取消单个 SLURM job_id，并回读 squeue 验证；可传 cluster_alias；不支持批量、通配符或 --me。危险操作：即使在 dev 模式也必须由人类显式确认后才能执行。", {"job_id": {"type": "string"}, "cluster_alias": {"type": "string"}}, False, ("job_id",), True, True), self._cluster_job_cancel)
         self._register(ToolSpec("research_workspace_diff", "按项目比较本地 research/<project>/ 与集群 ~/research/<project>/ 差异；project 为空则比较整个 research。", {"project": {"type": "string"}, "remote_research_dir": {"type": "string"}}, True), self._research_workspace_diff)
         self._register(ToolSpec("research_workspace_sync_to_cluster", "把本地 research/<project>/ 推到集群 ~/research/<project>/；默认 dry-run，apply=true 才修改远端。", {"project": {"type": "string"}, "remote_research_dir": {"type": "string"}, "apply": {"type": "boolean"}}, False), self._research_workspace_sync_to_cluster)
         self._register(ToolSpec("research_workspace_sync_from_cluster", "从集群 ~/research/<project>/ 拉回本地 research/<project>/；默认 dry-run，apply=true 才覆盖本地且先备份。", {"project": {"type": "string"}, "remote_research_dir": {"type": "string"}, "apply": {"type": "boolean"}}, False), self._research_workspace_sync_from_cluster)
@@ -822,19 +823,24 @@ class ToolRegistry:
                 and not str(payload.get("project") or "").strip()
             ):
                 payload["project"] = self.default_project
+            explicit_permission = bool(payload.pop("_permission_granted", False))
             allowed, reason = should_allow_tool(
                 read_only=spec.read_only,
                 mode=self.permission_mode,
-                explicit_permission=bool(payload.pop("_permission_granted", False)),
+                explicit_permission=explicit_permission,
             )
+            if allowed and spec.explicit_human_required and not explicit_permission:
+                allowed = False
+                reason = "explicit_human_required"
             if not allowed:
                 result = {
                     "status": "permission_required",
-                    "message": "当前为“需要用户同意”模式；此工具会修改状态/文件或产生副作用，必须先得到用户明确同意。",
+                    "message": "此工具会修改状态/文件或产生副作用，必须先得到用户明确同意。",
                     "permission_mode": self.permission_mode,
                     "permission_label": permission_mode_label(self.permission_mode),
                     "tool": name,
                     "read_only": spec.read_only,
+                    "explicit_human_required": spec.explicit_human_required,
                     "reason": reason,
                 }
                 return {"name": name, "arguments": payload, "result": result}
@@ -2498,7 +2504,6 @@ class ToolRegistry:
             research_goal=str(payload.get("research_goal") or "").strip() or None,
             monitor_interval_hours=payload.get("monitor_interval_hours"),
             daily_report_time=str(payload.get("daily_report_time") or "").strip() or None,
-            allow_cluster_submit=payload.get("allow_cluster_submit") if "allow_cluster_submit" in payload else None,
             allow_structure_build=payload.get("allow_structure_build") if "allow_structure_build" in payload else None,
             allow_literature_search=payload.get("allow_literature_search") if "allow_literature_search" in payload else None,
             allow_research_writeback=payload.get("allow_research_writeback") if "allow_research_writeback" in payload else None,

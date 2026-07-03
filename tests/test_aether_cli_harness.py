@@ -100,6 +100,7 @@ def test_cli_doctor_json_is_machine_readable(capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["program"]["name"] == "AETHER-DFT"
     assert payload["python"]["required"] == "3.12.x or 3.13.x"
+    assert payload["dependencies"]["rdkit"]["available"] is True
 
 
 def test_launcher_keeps_project_venv_dependency_isolated():
@@ -111,6 +112,7 @@ def test_launcher_keeps_project_venv_dependency_isolated():
     assert "--no-deps" not in launcher
     assert '"pydantic>=2.12"' not in launcher
     assert '"rdkit>=2025.3"' not in launcher
+    assert "import rdkit" in launcher
 
 
 def test_launcher_does_not_modify_profile_by_default():
@@ -385,10 +387,12 @@ def test_cli_natural_language_model_failure_is_user_readable(monkeypatch, capsys
 
 def test_cli_interactive_status_and_context_shortcuts(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    inputs = iter(["/status", "/context", "/help", "/exit"])
+    inputs = iter(["/status", "/status --json", "/context", "/help", "/exit"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
     assert cli.main([]) == 0
     out = capsys.readouterr().out
+    assert "AETHER status" in out
+    assert "json       : /status --json" in out
     assert '"program": "AETHER-DFT"' in out
     assert '"usable_context_tokens": 936000' in out
     assert '"context_usage_percent"' in out
@@ -428,7 +432,8 @@ def test_cli_interactive_model_command_opens_selector(monkeypatch, tmp_path, cap
     assert "select model" in out
     assert "model switched" in out
     assert "bailian:qwen3.7-max" in out
-    assert '"model": "bailian:qwen3.7-max"' in out
+    assert "model      :" in out
+    assert "bailian:qwen3.7-max" in out
 
 
 def test_cli_interactive_slash_opens_command_palette(monkeypatch, tmp_path, capsys):
@@ -447,7 +452,24 @@ def test_cli_interactive_slash_opens_command_palette(monkeypatch, tmp_path, caps
     assert "/model" in out
     assert "select model" in out
     assert "model switched" in out
-    assert '"model": "bailian:qwen3.7-max"' in out
+    assert "model      :" in out
+    assert "bailian:qwen3.7-max" in out
+
+
+def test_cli_model_selector_blocks_missing_key_model(monkeypatch, tmp_path, capsys):
+    import aether_dft.model_catalog as model_catalog
+    import aether_dft.paths as paths
+
+    monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(model_catalog, "PREFERENCES_PATH", tmp_path / "runtime" / "model-preferences.json")
+    catalog = model_catalog.load_model_catalog(Path.cwd())
+    missing = next((item for item in sorted(catalog.values(), key=lambda item: item.model_id) if not item.available), None)
+    if missing is None:
+        return
+    cli.handle_chat_model_command(f"/model {missing.model_id}", argparse.Namespace(model=None))
+    out = capsys.readouterr().out
+    assert "model switch blocked" in out
+    assert missing.api_key_env in out
 
 
 def test_cli_interactive_sessions_and_resume_command(monkeypatch, tmp_path, capsys):
@@ -473,8 +495,8 @@ def test_cli_interactive_sessions_and_resume_command(monkeypatch, tmp_path, caps
     assert older in out
     assert newer in out
     assert f"resumed" in out
-    assert f'"id": "{older}"' in out
-    assert '"project": "MCH-Pt-Br"' in out
+    assert "session    :" in out
+    assert "project    : MCH-Pt-Br" in out
 
 
 def test_cli_resume_all_search_can_cross_project(tmp_path, capsys):
@@ -516,8 +538,8 @@ def test_cli_interactive_resume_command_opens_selector(monkeypatch, tmp_path, ca
     assert "resume session" in out
     assert older in out
     assert newer in out
-    assert f'"id": "{older}"' in out
-    assert '"project": "MCH-Pt-Br"' in out
+    assert "session    :" in out
+    assert "project    : MCH-Pt-Br" in out
 
 
 def test_cli_failed_turn_can_continue_from_pending(monkeypatch, tmp_path, capsys):
@@ -547,10 +569,74 @@ def test_cli_failed_turn_can_continue_from_pending(monkeypatch, tmp_path, capsys
     assert cli.main(["chat"]) == 0
     out = capsys.readouterr().out
     assert "模型调用失败" in out
-    assert '"pending_turn"' in out
+    assert "pending" in out
     assert "continue>" in out
     assert "继续完成了。" in out
     assert calls["count"] == 2
+
+
+def test_cli_interrupted_turn_stays_pending_for_continue(monkeypatch, tmp_path, capsys):
+    import aether_dft.paths as paths
+
+    monkeypatch.setattr(paths, "RUNTIME_DIR", tmp_path / "runtime")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    inputs = iter(["继续检查当前课题", "/status", "/continue", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+    calls = {"count": 0}
+
+    def fake_ask_once(prompt, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return {
+                "prompt": prompt,
+                "response": "用户中断，本轮 partial trace 已保存。",
+                "record_path": str(tmp_path / "interrupted.jsonl"),
+                "elapsed_seconds": 0.1,
+                "tool_executions": [],
+                "progress": {"next_steps": []},
+                "finish_reason": "user_interrupted",
+            }
+        return {
+            "prompt": prompt,
+            "response": "中断后的请求已经继续完成。",
+            "record_path": str(tmp_path / "complete.jsonl"),
+            "elapsed_seconds": 0.1,
+            "tool_executions": [],
+            "progress": {"next_steps": []},
+        }
+
+    monkeypatch.setattr(cli, "ask_once", fake_ask_once)
+
+    assert cli.main(["chat"]) == 0
+    out = capsys.readouterr().out
+    assert "本轮已中断" in out
+    assert "pending" in out
+    assert "continue>" in out
+    assert "中断后的请求已经继续完成。" in out
+    assert calls["count"] == 2
+
+
+def test_session_store_keeps_interrupted_turn_pending(tmp_path):
+    from aether_dft.session_store import AetherSessionStore
+
+    store = AetherSessionStore(tmp_path / "sessions")
+    session_id = store.start_session(project="demo", first_prompt="检查任务")
+    store.record_pending_turn(session_id, prompt="检查任务", project="demo", model_id="deepseek:deepseek-v4-pro")
+
+    store.append_turn(
+        session_id,
+        {
+            "project": "demo",
+            "prompt": "检查任务",
+            "response": "用户中断，本轮 partial trace 已保存。",
+            "finish_reason": "user_interrupted",
+        },
+    )
+
+    pending = store.pending_turn(session_id)
+    assert pending is not None
+    assert pending["prompt"] == "检查任务"
+    assert pending["status"] == "interrupted"
 
 
 def test_cli_history_and_rename_commands(monkeypatch, tmp_path, capsys):
@@ -573,7 +659,8 @@ def test_cli_history_and_rename_commands(monkeypatch, tmp_path, capsys):
     assert "history matches for 'OUTCAR'" in out
     assert "分析 OUTCAR" in out
     assert "renamed" in out
-    assert '"title": "新的科研会话标题"' in out
+    assert "title      :" in out
+    assert "新的科研会话标题" in out
 
 
 def test_cli_project_command_fuzzy_matches_research_workspace(monkeypatch, tmp_path, capsys):
@@ -620,8 +707,8 @@ def test_cli_interactive_resume_is_scoped_to_current_project(monkeypatch, tmp_pa
     assert "resume session" in out
     assert target in out
     assert other not in out
-    assert f'"id": "{target}"' in out
-    assert '"project": "MCH-Pt-Br"' in out
+    assert "session    :" in out
+    assert "project    : MCH-Pt-Br" in out
 
 
 def test_cli_interactive_resume_searches_current_project_sessions(monkeypatch, tmp_path, capsys):
@@ -643,9 +730,10 @@ def test_cli_interactive_resume_searches_current_project_sessions(monkeypatch, t
 
     assert cli.main(["chat", "--project", "MCH-Pt-Br"]) == 0
     out = capsys.readouterr().out
-    assert f'"id": "{target}"' in out
+    assert "session    :" in out
+    assert target in out
     assert other not in out
-    assert '"project": "MCH-Pt-Br"' in out
+    assert "project    : MCH-Pt-Br" in out
 
 
 def test_cli_interactive_project_command_opens_selector(monkeypatch, tmp_path, capsys):
@@ -664,7 +752,7 @@ def test_cli_interactive_project_command_opens_selector(monkeypatch, tmp_path, c
     assert "select project" in out
     assert "project switched" in out
     assert "MCH-Pt-Br" in out
-    assert '"project": "MCH-Pt-Br"' in out
+    assert "project    : MCH-Pt-Br" in out
 
 
 def test_cli_interactive_permission_command_opens_selector(monkeypatch, tmp_path, capsys):
@@ -681,7 +769,7 @@ def test_cli_interactive_permission_command_opens_selector(monkeypatch, tmp_path
     out = capsys.readouterr().out
     assert "select permission" in out
     assert "permission switched" in out
-    assert '"mode": "ask"' in out
+    assert "(ask)" in out
 
 
 def test_cli_interactive_new_command_starts_fresh_session(monkeypatch, tmp_path, capsys):
@@ -695,8 +783,8 @@ def test_cli_interactive_new_command_starts_fresh_session(monkeypatch, tmp_path,
     assert cli.main(["chat", "--project", "MCH-Pt-Br"]) == 0
     out = capsys.readouterr().out
     assert "new session" in out
-    assert '"project": "MCH-Pt-Br"' in out
-    assert '"turn_count": 0' in out
+    assert "project    : MCH-Pt-Br" in out
+    assert "turns=0" in out
 
 
 def test_cli_mainline_prints_explicit_workflow(capsys):

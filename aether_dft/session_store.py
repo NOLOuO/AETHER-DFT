@@ -330,7 +330,17 @@ class AetherSessionStore:
             state["title"] = _derive_session_title(state.get("first_prompt") or record.get("prompt"))
         state["last_response"] = _clean_text(record.get("response"))
         state["project"] = record.get("project", state.get("project"))
-        state.pop("pending_turn", None)
+        if record.get("finish_reason") == "user_interrupted":
+            pending = state.get("pending_turn") if isinstance(state.get("pending_turn"), dict) else {}
+            pending = dict(pending)
+            pending["prompt"] = str(pending.get("prompt") or record.get("prompt") or "")
+            pending["project"] = pending.get("project") or record.get("project") or state.get("project")
+            pending["status"] = "interrupted"
+            pending["error"] = "user_interrupted"
+            pending["updated_at"] = now
+            state["pending_turn"] = pending
+        else:
+            state.pop("pending_turn", None)
         self._state_path(session_id).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         self._write_project_session_reference(state)
 

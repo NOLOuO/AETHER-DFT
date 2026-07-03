@@ -151,7 +151,7 @@ function Find-BasePython {
 function Test-AetherInstall {
     if (-not (Test-Path $VenvPy)) { return $false }
     if (Test-VenvUsesSharedSitePackages) { return $false }
-    & $VenvPy -c "import aether_dft.cli; import ase.io; import openai; import pymatgen" 2>$null
+    & $VenvPy -c "import aether_dft.cli; import ase.io; import openai; import pymatgen; import rdkit" 2>$null
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -229,9 +229,9 @@ function Bootstrap-Aether {
     }
 
     Write-Info "验证交互入口和关键科学依赖..."
-    & $VenvPy -c "import aether_dft.cli; import ase.io; import openai; import pymatgen; print('AETHER import smoke OK')"
+    & $VenvPy -c "import aether_dft.cli; import ase.io; import openai; import pymatgen; import rdkit; print('AETHER import smoke OK')"
     if ($LASTEXITCODE -ne 0) {
-        Fail "依赖验证失败：AETHER 或 ase/openai/pymatgen 未能正常导入。请重新运行 aether.cmd。"
+        Fail "依赖验证失败：AETHER 或 ase/openai/pymatgen/rdkit 未能正常导入。请重新运行 aether.cmd。"
     }
 
     New-Item -ItemType File -Path $Stamp -Force | Out-Null

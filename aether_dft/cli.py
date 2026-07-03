@@ -306,7 +306,7 @@ def handle_chat_command_palette() -> str | None:
     return choice
 
 
-def print_chat_status(*, session_store: Any, session_id: str, project: str | None, args: argparse.Namespace | None = None) -> None:
+def _chat_status_payload(*, session_store: Any, session_id: str, project: str | None, args: argparse.Namespace | None = None) -> dict[str, Any]:
     state = session_store.load_state(session_id)
     project_ref = None
     if hasattr(session_store, "project_session_reference_path"):
@@ -319,32 +319,65 @@ def print_chat_status(*, session_store: Any, session_id: str, project: str | Non
         auto = auto_mode_status(project=project or state.get("project"), include_due=False).get("state") or {}
     except Exception:
         auto = {}
-    print_json(
-        {
-            "program": PROGRAM_NAME,
-            "version": __version__,
-            "model": active_model_id(args),
-            "context_window": program_context_window(),
-            "permission": {"mode": get_permission_mode(), "label": permission_mode_label()},
-            "auto": {
-                "enabled": bool(auto.get("enabled")),
-                "research_goal": auto.get("research_goal") or "",
-                "status": auto.get("status") or "",
-                "monitor_interval_hours": auto.get("monitor_interval_hours"),
-                "daily_report_time": auto.get("daily_report_time"),
-                "allow_cluster_submit": bool(auto.get("allow_cluster_submit")),
-            },
-            "session": {
-                "id": session_id,
-                "project": project or state.get("project"),
-                "title": state.get("title"),
-                "turn_count": state.get("turn_count"),
-                "updated_at": state.get("updated_at"),
-                "pending_turn": state.get("pending_turn") if isinstance(state.get("pending_turn"), dict) else None,
-                "project_session_ref": project_ref,
-            },
-        }
-    )
+    return {
+        "program": PROGRAM_NAME,
+        "version": __version__,
+        "model": active_model_id(args),
+        "context_window": program_context_window(),
+        "permission": {"mode": get_permission_mode(), "label": permission_mode_label()},
+        "auto": {
+            "enabled": bool(auto.get("enabled")),
+            "research_goal": auto.get("research_goal") or "",
+            "status": auto.get("status") or "",
+            "monitor_interval_hours": auto.get("monitor_interval_hours"),
+            "daily_report_time": auto.get("daily_report_time"),
+            "allow_cluster_submit": bool(auto.get("allow_cluster_submit")),
+        },
+        "session": {
+            "id": session_id,
+            "project": project or state.get("project"),
+            "title": state.get("title"),
+            "turn_count": state.get("turn_count"),
+            "updated_at": state.get("updated_at"),
+            "pending_turn": state.get("pending_turn") if isinstance(state.get("pending_turn"), dict) else None,
+            "project_session_ref": project_ref,
+        },
+    }
+
+
+def print_chat_status(
+    *,
+    session_store: Any,
+    session_id: str,
+    project: str | None,
+    args: argparse.Namespace | None = None,
+    json_output: bool = False,
+) -> None:
+    payload = _chat_status_payload(session_store=session_store, session_id=session_id, project=project, args=args)
+    if json_output:
+        print_json(payload)
+        return
+    session = payload["session"]
+    auto = payload["auto"]
+    permission = payload["permission"]
+    print(f"{Colors.BOLD}{Colors.CYAN}AETHER status{Colors.RESET}")
+    print(f"  model      : {Colors.YELLOW}{payload['model']}{Colors.RESET} ({payload['context_window']:,} ctx)")
+    print(f"  project    : {session.get('project') or 'none'}")
+    print(f"  session    : {session.get('id')}  turns={session.get('turn_count') or 0}")
+    print(f"  title      : {_shorten_inline(session.get('title'), limit=90) or 'New research chat'}")
+    print(f"  permission : {permission.get('label')} ({permission.get('mode')})")
+    auto_label = "ON" if auto.get("enabled") else "OFF"
+    print(f"  auto       : {auto_label}  status={auto.get('status') or 'idle'}  submit={'allowed' if auto.get('allow_cluster_submit') else 'off'}")
+    goal = str(auto.get("research_goal") or "").strip()
+    if goal:
+        print(f"  goal       : {_shorten_inline(goal, limit=110)}")
+    pending = session.get("pending_turn") if isinstance(session.get("pending_turn"), dict) else None
+    if pending:
+        print(f"  {Colors.YELLOW}pending{Colors.RESET}    : {_shorten_inline(pending.get('prompt'), limit=110)}")
+        print(f"               use /continue to retry")
+    if session.get("project_session_ref"):
+        print(f"  ref        : {session.get('project_session_ref')}")
+    print(f"{Colors.DIM}  json       : /status --json{Colors.RESET}")
 
 
 def print_chat_sessions(*, session_store: Any, project: str | None, limit: int = 10) -> None:
@@ -926,10 +959,14 @@ def run_chat_model_turn(
         print(f"{Colors.RED}模型调用失败{Colors.RESET}: {_shorten_inline(str(exc), limit=360)}")
         print(f"{Colors.DIM}{failure_hint}；这条输入已保存在当前 session，修复后可输入 /continue 重试。{Colors.RESET}")
         return False, session_id
-    if hasattr(session_store, "clear_pending_turn"):
+    interrupted = record.get("finish_reason") == "user_interrupted"
+    if hasattr(session_store, "clear_pending_turn") and not interrupted:
         session_store.clear_pending_turn(session_id)
     print_streamed_or_final_response(record, stream_state)
     print_turn_footer(record)
+    if interrupted:
+        print(f"{Colors.YELLOW}本轮已中断{Colors.RESET}；输入 /continue 可继续重试这条请求。")
+        return False, session_id
     next_steps = (record.get("progress") or {}).get("next_steps") or []
     if next_steps:
         print(f"[next] {next_steps[0]}")
@@ -1046,6 +1083,14 @@ def handle_chat_model_command(line: str, args: argparse.Namespace) -> None:
     if raw.startswith("set "):
         raw = raw[4:].strip()
     try:
+        normalized_candidate = normalize_model_id(raw, Path.cwd())
+        candidate = catalog.get(normalized_candidate)
+        if candidate is not None and not candidate.available:
+            print(
+                f"{Colors.RED}model switch blocked{Colors.RESET}: "
+                f"{normalized_candidate} 缺少 API key（{candidate.api_key_env}）。请先配置 key，或选择 available 模型。"
+            )
+            return
         preferences = set_default_model(raw)
         normalized = str(preferences["global_default_model_id"])
     except Exception as exc:
@@ -1631,6 +1676,7 @@ def doctor(args: argparse.Namespace) -> int:
         "ase": "ase.io",
         "openai": "openai",
         "pymatgen": "pymatgen",
+        "rdkit": "rdkit",
     }
     dependencies = {
         label: {"module": module, "available": importlib.util.find_spec(module) is not None}
@@ -2154,8 +2200,15 @@ def handle_chat(args: argparse.Namespace) -> int:
             print_chat_home(session_id=session_id, project=args.project, model_id=active_model_id(args))
             print_chat_shortcuts()
             continue
-        if line == "/status":
-            print_chat_status(session_store=session_store, session_id=session_id, project=args.project, args=args)
+        if line.startswith("/status"):
+            raw_status = line[len("/status") :].strip()
+            print_chat_status(
+                session_store=session_store,
+                session_id=session_id,
+                project=args.project,
+                args=args,
+                json_output=raw_status == "--json",
+            )
             continue
         if line == "/sessions":
             print_chat_sessions(session_store=session_store, project=args.project)

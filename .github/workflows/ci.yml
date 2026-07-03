@@ -42,8 +42,9 @@ jobs:
         shell: pwsh
         run: |
           $env:AETHER_LAUNCHER_SELFTEST = "1"
-          .\aether.cmd doctor --json
+          .\aether.cmd
           Remove-Item Env:\AETHER_LAUNCHER_SELFTEST
+          .\aether.cmd doctor --json
           python -m aether_dft.cli doctor --json
 
       - name: Compile sources

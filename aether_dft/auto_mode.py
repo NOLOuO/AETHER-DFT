@@ -674,7 +674,31 @@ def checkpoint_auto_mode(
     if open_questions is not None:
         state["open_questions"] = [str(item).strip() for item in open_questions if str(item).strip()]
     if human_questions is not None:
-        state["human_questions"] = [str(item).strip() for item in human_questions if str(item).strip()]
+        questions = [str(item).strip() for item in human_questions if str(item).strip()]
+        records = [item for item in (state.get("human_question_records") or []) if isinstance(item, dict)]
+        has_pending = any(str(item.get("status") or "") == "pending" for item in records)
+        if questions and not has_pending:
+            question = questions[0]
+            records.append(
+                {
+                    "id": _question_id(question),
+                    "status": "pending",
+                    "project": _normalize_project(project or state.get("project")),
+                    "question": question,
+                    "why_needed": "auto_mode_checkpoint requested human input.",
+                    "decision_boundary": "",
+                    "options": [],
+                    "default_if_unanswered": "",
+                    "evidence_refs": [str(item).strip() for item in (evidence_refs or []) if str(item).strip()][:30],
+                    "asked_at": _now_iso(),
+                }
+            )
+            state["human_question_records"] = records[-50:]
+            state["status"] = "waiting_for_human"
+            if len(questions) > 1:
+                existing_open = [str(item).strip() for item in (state.get("open_questions") or []) if str(item).strip()]
+                state["open_questions"] = list(dict.fromkeys(existing_open + questions[1:]))
+        _refresh_human_question_summary(state)
     checkpoint = {
         "updated_at": _now_iso(),
         "observation": str(observation or "").strip(),

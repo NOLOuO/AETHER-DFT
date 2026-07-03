@@ -312,6 +312,32 @@ def test_auto_mode_tools_are_model_visible_and_permissioned(tmp_path: Path, monk
     assert blocked["result"]["status"] == "permission_required"
 
 
+def test_model_facing_auto_configure_cannot_enable_cluster_submit(tmp_path: Path, monkeypatch):
+    _redirect_dirs(monkeypatch, tmp_path)
+
+    registry = ToolRegistry(permission_mode="dev")
+    result = registry.run_tool(
+        "auto_mode_configure",
+        {
+            "project": "demo",
+            "enabled": True,
+            "research_goal": "筛选 CO/Pt(111) 吸附构型",
+            "allow_cluster_submit": True,
+        },
+    )
+
+    assert result["result"]["status"] == "ok"
+    state = auto_mode_status(project="demo")["state"]
+    assert state["enabled"] is True
+    assert state["allow_cluster_submit"] is False
+    schema = next(
+        item
+        for item in registry.openai_tool_schemas(interaction_mode="execution")
+        if item["function"]["name"] == "auto_mode_configure"
+    )
+    assert "allow_cluster_submit" not in schema["function"]["parameters"]["properties"]
+
+
 def test_auto_human_question_tool_records_pending_and_answer(tmp_path: Path, monkeypatch):
     _redirect_dirs(monkeypatch, tmp_path)
     configure_auto_mode(project="demo", enabled=True, research_goal="筛选 H2O/Pt(111) 吸附候选")
@@ -350,6 +376,30 @@ def test_auto_human_question_tool_records_pending_and_answer(tmp_path: Path, mon
     repeated = answer_auto_human_question(project="demo", question_id=pending["id"], answer="覆盖答案不应生效")
     assert repeated["status"] == "already_answered"
     assert auto_mode_status(project="demo")["state"]["human_answers"][-1]["answer"] == "先稳定吸附"
+
+
+def test_auto_checkpoint_human_questions_create_answerable_pending_record(tmp_path: Path, monkeypatch):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="筛选 H2O/Pt(111) 吸附候选")
+
+    result = ToolRegistry(permission_mode="dev").run_tool(
+        "auto_mode_checkpoint",
+        {
+            "project": "demo",
+            "status": "waiting_for_human",
+            "observation": "候选分支存在目标歧义。",
+            "human_questions": ["优先最稳定吸附能，还是同时筛扩散路径？"],
+            "evidence_refs": ["auto:goal"],
+        },
+    )
+
+    assert result["result"]["status"] == "ok"
+    pending = latest_pending_auto_human_question(project="demo")
+    assert pending is not None
+    assert "最稳定吸附能" in pending["question"]
+    state = auto_mode_status(project="demo")["state"]
+    assert state["status"] == "waiting_for_human"
+    assert state["human_questions"] == [pending["question"]]
 
 
 def test_auto_human_question_tool_uses_cli_handler(tmp_path: Path, monkeypatch):
