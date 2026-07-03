@@ -540,6 +540,58 @@ def test_auto_cli_default_status_is_human_card(tmp_path: Path, monkeypatch, caps
     assert "OUTCAR" in out
 
 
+def test_auto_daemon_exits_cleanly_when_auto_is_off(tmp_path: Path, monkeypatch, capsys):
+    _redirect_dirs(monkeypatch, tmp_path)
+
+    assert cli.main(["auto", "daemon", "--project", "demo", "--once", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "auto_disabled"
+    assert payload["ran"] is False
+
+
+def test_auto_daemon_runs_due_worker_without_new_workflow(tmp_path: Path, monkeypatch, capsys):
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="筛选 CO/Pt(111) 吸附构型")
+    calls: list[dict[str, object]] = []
+
+    def fake_run_auto_due_once(**kwargs):
+        calls.append(kwargs)
+        return {"status": "ok", "ran": True, "completed": True}
+
+    monkeypatch.setattr(cli, "run_auto_due_once", fake_run_auto_due_once)
+
+    assert cli.main(["auto", "daemon", "--project", "demo", "--max-cycles", "1", "--interval-seconds", "1"]) == 0
+
+    out = capsys.readouterr().out
+    assert "[auto daemon]" in out
+    assert calls
+    assert calls[0]["args"].project == "demo"
+    assert calls[0]["args"].max_steps >= cli.AUTO_TURN_MIN_STEPS
+
+
+def test_auto_daemon_waits_for_pending_human_question(tmp_path: Path, monkeypatch, capsys):
+    from aether_dft.auto_mode import request_auto_human_question
+
+    _redirect_dirs(monkeypatch, tmp_path)
+    configure_auto_mode(project="demo", enabled=True, research_goal="筛选 CO/Pt(111) 吸附构型")
+    request_auto_human_question(project="demo", question="优先筛选吸附构型还是扩散路径？")
+    calls: list[dict[str, object]] = []
+
+    def fake_run_auto_due_once(**kwargs):
+        calls.append(kwargs)
+        return {"status": "ok", "ran": True}
+
+    monkeypatch.setattr(cli, "run_auto_due_once", fake_run_auto_due_once)
+
+    assert cli.main(["auto", "daemon", "--project", "demo", "--once"]) == 0
+
+    out = capsys.readouterr().out
+    assert "waiting for human answer" in out
+    assert "优先筛选吸附构型" in out
+    assert calls == []
+
+
 def test_interactive_slash_auto_run_words_do_not_trigger_manual_model_turn(monkeypatch, tmp_path, capsys):
     import aether_dft.paths as paths
     import aether_dft.project_state as project_state

@@ -2482,6 +2482,88 @@ def handle_auto_off(args: argparse.Namespace) -> int:
     return 0 if result.get("status") == "ok" else 1
 
 
+def handle_auto_daemon(args: argparse.Namespace) -> int:
+    """Run the durable /auto follow-up queue as a long-lived foreground worker.
+
+    This is intentionally a scheduler shell, not a second research workflow.
+    The follow-up queue and auto-mode state remain the source of truth; the
+    daemon only wakes up, lets the model handle due intents, and sleeps again.
+    """
+
+    from .auto_mode import auto_mode_status
+    from .session_store import AetherSessionStore
+
+    ensure_console_utf8()
+    session_store = AetherSessionStore()
+    resumed = session_store.resume_payload(project=args.project)
+    session_ref = {"id": resumed.get("session_id") if resumed.get("status") == "ok" else None}
+    try:
+        interval = max(1.0, float(args.interval_seconds))
+    except (TypeError, ValueError):
+        interval = 300.0
+    max_cycles = int(args.max_cycles) if getattr(args, "max_cycles", None) is not None else None
+    cycle = 0
+    last_result: dict[str, Any] = {"status": "not_started"}
+    if not getattr(args, "json", False):
+        print(
+            f"{Colors.CYAN}[auto daemon]{Colors.RESET} project={args.project or 'default'} "
+            f"interval={interval:g}s; Ctrl+C to stop"
+        )
+    while True:
+        cycle += 1
+        status = auto_mode_status(project=args.project, include_due=True)
+        state = status.get("state") or {}
+        if not state.get("enabled"):
+            last_result = {"status": "auto_disabled", "ran": False, "cycle": cycle, "state": state}
+            if getattr(args, "json", False):
+                print_json(last_result)
+            else:
+                print(f"{Colors.YELLOW}[auto daemon]{Colors.RESET} /auto is off; enable it with /auto or `aether auto \"<goal>\"`.")
+            return 0
+        pending_questions = [str(item).strip() for item in state.get("human_questions") or [] if str(item).strip()]
+        if pending_questions:
+            last_result = {
+                "status": "waiting_for_human",
+                "ran": False,
+                "cycle": cycle,
+                "questions": pending_questions,
+            }
+            if getattr(args, "json", False):
+                print_json(last_result)
+            else:
+                print(f"{Colors.YELLOW}[auto daemon]{Colors.RESET} waiting for human answer:")
+                for question in pending_questions[:3]:
+                    print(f"  - {question}")
+            return 0
+        turn_args = auto_turn_args(_prepare_auto_launcher_turn_args(args))
+        last_result = run_auto_due_once(
+            args=turn_args,
+            session_store=session_store,
+            session_ref=session_ref,
+            quiet=bool(getattr(args, "quiet", False) or getattr(args, "json", False)),
+            interactive_questions=not bool(getattr(args, "no_interactive_questions", False)),
+        )
+        last_result["cycle"] = cycle
+        if getattr(args, "json", False):
+            print_json(last_result)
+        elif last_result.get("ran"):
+            print(
+                f"{Colors.CYAN}[auto daemon]{Colors.RESET} cycle={cycle} "
+                f"status={last_result.get('status')} completed={last_result.get('completed')}"
+            )
+        elif not getattr(args, "quiet", False):
+            due_count = (status.get("due_followups") or {}).get("count", 0)
+            print(f"{Colors.DIM}[auto daemon] cycle={cycle} idle; due={due_count}{Colors.RESET}")
+        if getattr(args, "once", False) or (max_cycles is not None and cycle >= max_cycles):
+            return 1 if last_result.get("status") == "error" else 0
+        try:
+            time.sleep(interval)
+        except KeyboardInterrupt:
+            if not getattr(args, "json", False):
+                print(f"\n{Colors.DIM}[auto daemon] stopped by user{Colors.RESET}")
+            return 0
+
+
 def handle_tools_list(args: argparse.Namespace) -> int:
     from .tool_registry import list_registered_tools
 
@@ -3182,7 +3264,7 @@ def build_parser() -> argparse.ArgumentParser:
         "Shortcut: if the word after 'auto' is not status/on/off, AETHER treats the rest as the research goal. "
         "Example: aether auto \"筛选 CO/Pt(111) 最稳定吸附构型\" --project demo"
     )
-    auto_sub = auto_parser.add_subparsers(dest="auto_command", metavar="[status|on|off]")
+    auto_sub = auto_parser.add_subparsers(dest="auto_command", metavar="[status|on|off|daemon]")
     auto_status = auto_sub.add_parser("status", help="查看 /auto 状态。")
     auto_status.add_argument("--project")
     auto_status.add_argument("--json", action="store_true", help="输出原始 JSON，供脚本/测试使用。")
@@ -3194,6 +3276,22 @@ def build_parser() -> argparse.ArgumentParser:
     auto_off.add_argument("--project")
     auto_off.add_argument("--json", action="store_true", help="输出原始 JSON，供脚本/测试使用。")
     auto_off.set_defaults(func=handle_auto_off)
+    auto_daemon = auto_sub.add_parser(
+        "daemon",
+        help="长期运行 /auto follow-up worker；用于每隔几小时监控任务和日报。",
+        description=(
+            "Foreground worker for /auto. It does not define a fixed research pipeline; "
+            "it repeatedly checks the durable follow-up queue and lets the model handle due evidence work."
+        ),
+    )
+    auto_daemon.add_argument("--project")
+    auto_daemon.add_argument("--interval-seconds", type=float, default=float(os.getenv("AETHER_AUTO_DAEMON_INTERVAL_SECONDS", "300")))
+    auto_daemon.add_argument("--once", action="store_true", help="只检查/推进一次后退出，适合任务计划器调用。")
+    auto_daemon.add_argument("--max-cycles", type=int, help="最多循环次数；测试或受控运行使用。")
+    auto_daemon.add_argument("--quiet", action="store_true", help="减少心跳输出。")
+    auto_daemon.add_argument("--json", action="store_true", help="每轮输出 JSON。")
+    auto_daemon.add_argument("--no-interactive-questions", action="store_true", help="后台运行时不要在终端提问；遇到人类问题则保持 pending。")
+    auto_daemon.set_defaults(func=handle_auto_daemon)
     tools_parser = sub.add_parser("tools", help="AETHER harness 工具注册表。")
     tools_sub = tools_parser.add_subparsers(dest="tools_command")
     tools_list = tools_sub.add_parser("list", help="列出模型可调用工具。")
@@ -3396,7 +3494,7 @@ def normalize_auto_argv(raw_args: list[str]) -> list[str]:
     if len(raw_args) == 1:
         return raw_args
     first = raw_args[1]
-    explicit = {"status", "on", "off", "-h", "--help"}
+    explicit = {"status", "on", "off", "daemon", "-h", "--help"}
     if first in explicit or first.startswith("-"):
         return raw_args
     goal_tokens: list[str] = []
