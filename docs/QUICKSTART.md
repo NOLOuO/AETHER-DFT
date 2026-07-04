@@ -1,6 +1,8 @@
 # AETHER-DFT Quickstart
 
-目标：从一个干净工作区开始，跑通 **对话式计算化学合伙人** 的最小体验：持续交互式 REPL、research 课题切换、会话续接、真实模型工具调用 dry-run，以及可选的集群探测。
+目标：从一个干净工作区开始，跑通 **CLI-first 对话式计算化学合伙人** 的最小体验：持续交互式 REPL、research 课题切换、会话续接、真实模型工具调用 dry-run，以及可选的集群探测。
+
+AETHER-DFT 不提供 Web 前端；产品前端就是终端 CLI。详细交互设计见 `docs/CLI_FRONTEND_DESIGN.md`。
 
 > 默认路径不会提交集群任务。真实 LLM/API 和真实集群提交都需要显式开关。
 

@@ -2,9 +2,21 @@
 
 AETHER-DFT 是面向计算化学 / DFT 的对话式科研合伙人。它不是固定流水线脚本；用户用自然语言给出研究目标，模型基于项目状态、research 规则、结构文件、集群状态和计算结果，自主选择工具推进：查文献、建结构、生成 VASP 输入、提交/监控集群任务、解析 OUTCAR、沉淀项目经验。
 
+## 产品形态：CLI-first
+
+AETHER-DFT 的前端就是 **终端 CLI**，不是 Web 页面。交互体验目标接近 Codex / Claude Code：用户直接输入自然语言，少数控制动作通过 slash command 完成。
+
+核心入口：
+
+```powershell
+.\aether.cmd
+```
+
+进入 REPL 后支持 `/model`、`/project`、`/resume`、`/auto`、`/status`、`/continue`、`/exit`。详细 CLI 产品设计见 `docs/CLI_FRONTEND_DESIGN.md`。
+
 ## 当前能力
 
-- **交互式科研对话**：`aether` 进入持续 REPL，支持 `/model`、`/project`、`/resume`、`/auto`、`/status`、`/exit`。
+- **交互式科研对话**：进入持续 REPL 后直接输入自然语言；模型自己判断是否需要调用工具。
 - **项目级记忆**：会话、运行记录、知识笔记和 research 课题状态保存在项目内 `.aether/` 与 `research/<project>/`。
 - **模型统一后端**：DeepSeek 与 Qwen/Bailian 走同一套 OpenAI-compatible tool-calling harness，可按需扩展更多模型。
 - **DFT 工具闭环**：支持结构建模、吸附候选生成、VASP 输入检查、集群提交门控、实时查询、OUTCAR/OSZICAR 解析和结果回写。
