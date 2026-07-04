@@ -316,8 +316,10 @@ def test_cli_no_args_enters_interactive_when_tty(monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
     assert cli.main([]) == 0
     out = capsys.readouterr().out
-    assert "Session Info" in out
-    assert "Program: " in out
+    assert "AETHER-DFT" in out
+    assert "model" in out
+    assert "project" in out
+    assert "session" in out
     assert "Resume this session with:" in out
     assert "aether chat --resume --session-id" in out
     assert "resumed:" not in out
@@ -326,7 +328,8 @@ def test_cli_no_args_enters_interactive_when_tty(monkeypatch, capsys):
 def test_cli_demo_is_display_only_not_second_repl(capsys):
     assert cli.main(["demo"]) == 0
     out = capsys.readouterr().out
-    assert "Session Info" in out
+    assert "AETHER-DFT" in out
+    assert "demo session" in out
     assert "display-only" in out
     assert "aether" in out
 

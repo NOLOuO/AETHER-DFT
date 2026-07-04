@@ -84,6 +84,7 @@ class Colors:
     YELLOW = "\033[33m"
     RED = "\033[31m"
     BLUE = "\033[34m"
+    MAGENTA = "\033[35m"
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -180,53 +181,34 @@ def print_chat_cli_help() -> None:
 
 def print_demo_home(run_root: str | None = None) -> None:
     run_root = run_root or r"runs\task_0a4a1ddd\run_a295c506"
-    box_width = 58
-
-    def line(text: str = "") -> None:
-        raw = ANSI_RE.sub("", text)
-        clipped = text if len(raw) <= box_width - 1 else raw[: box_width - 4] + "..."
-        print(f"{Colors.DIM}│{Colors.RESET} {clipped}{' ' * max(0, box_width - 1 - visible_len(clipped))}{Colors.DIM}│{Colors.RESET}")
-
-    print(f"{Colors.DIM}┌{'─' * box_width}┐{Colors.RESET}")
-    line(f"{Colors.BOLD}{Colors.CYAN}Session Info{Colors.RESET}")
-    print(f"{Colors.DIM}├{'─' * box_width}┤{Colors.RESET}")
-    line(f"Program: {Colors.CYAN}{PROGRAM_NAME}{Colors.RESET}")
-    line(f"Version: {Colors.GREEN}{__version__}{Colors.RESET}")
-    line(f"Model: {Colors.YELLOW}{program_model_id()}{Colors.RESET}")
-    line(f"Workspace: {Path.cwd()}")
-    line(f"Cluster: {Colors.BLUE}SSH / SLURM configured{Colors.RESET}")
-    print(f"{Colors.DIM}└{'─' * box_width}┘{Colors.RESET}")
-    print()
+    print(f"{Colors.BOLD}{Colors.CYAN}AETHER-DFT{Colors.RESET} {Colors.DIM}demo session{Colors.RESET}")
+    print(
+        f"{Colors.DIM}model{Colors.RESET} {Colors.YELLOW}{program_model_id()}{Colors.RESET}  "
+        f"{Colors.DIM}workspace{Colors.RESET} {Path.cwd()}"
+    )
+    print(f"{Colors.DIM}cluster{Colors.RESET} {Colors.BLUE}SSH / SLURM configured{Colors.RESET}")
+    print(f"{Colors.DIM}sample run{Colors.RESET} {run_root}")
     print(f"{Colors.DIM}Type {Colors.GREEN}/help{Colors.DIM} for help, {Colors.GREEN}/exit{Colors.DIM} to quit{Colors.RESET}")
 
 
 def print_chat_home(*, session_id: str, project: str | None = None, model_id: str | None = None) -> None:
-    box_width = 58
-
-    def line(text: str = "") -> None:
-        raw = ANSI_RE.sub("", text)
-        clipped = text if len(raw) <= box_width - 1 else raw[: box_width - 4] + "..."
-        print(f"{Colors.DIM}│{Colors.RESET} {clipped}{' ' * max(0, box_width - 1 - visible_len(clipped))}{Colors.DIM}│{Colors.RESET}")
-
-    print(f"{Colors.DIM}┌{'─' * box_width}┐{Colors.RESET}")
-    line(f"{Colors.BOLD}{Colors.CYAN}Session Info{Colors.RESET}")
-    print(f"{Colors.DIM}├{'─' * box_width}┤{Colors.RESET}")
-    line(f"Program: {Colors.CYAN}{PROGRAM_NAME}{Colors.RESET}")
-    line(f"Version: {Colors.GREEN}{__version__}{Colors.RESET}")
-    line(f"Model: {Colors.YELLOW}{model_id or program_model_id()}{Colors.RESET}")
+    print(f"{Colors.BOLD}{Colors.CYAN}AETHER-DFT{Colors.RESET} {Colors.DIM}v{__version__}{Colors.RESET}")
+    print(
+        f"{Colors.DIM}model{Colors.RESET} {Colors.YELLOW}{model_id or program_model_id()}{Colors.RESET}  "
+        f"{Colors.DIM}project{Colors.RESET} {Colors.MAGENTA}{project or 'none'}{Colors.RESET}"
+    )
+    print(
+        f"{Colors.DIM}session{Colors.RESET} {Colors.BLUE}{session_id}{Colors.RESET}  "
+        f"{Colors.DIM}permission{Colors.RESET} {Colors.GREEN}{permission_mode_label()}{Colors.RESET}"
+    )
     context_window = program_context_window()
     if context_window:
-        line(f"Context: {context_window:,} tokens")
-    line(f"Permission: {Colors.BLUE}{permission_mode_label()}{Colors.RESET}")
-    line(f"Session: {session_id}")
-    line(f"Project: {project or 'none'}")
-    line("Preload: project/session/research injected each turn")
-    print(f"{Colors.DIM}└{'─' * box_width}┘{Colors.RESET}")
+        print(f"{Colors.DIM}context{Colors.RESET} {context_window:,} tokens")
+    print(f"{Colors.DIM}preload{Colors.RESET} project + session + research memory")
 
 
 def print_chat_shortcuts() -> None:
-    print("直接输入自然语言即可；模型会自己判断是否需要调用工具。")
-    print("输入 / 打开命令面板；也可直接用 /model、/project、/resume、/exit。")
+    print(f"{Colors.DIM}直接输入自然语言；{Colors.GREEN}/{Colors.DIM} 打开命令面板。{Colors.GREEN}/status{Colors.DIM} 查看状态，{Colors.GREEN}/exit{Colors.DIM} 退出。{Colors.RESET}")
 
 
 def _shorten_inline(value: Any, *, limit: int = 160) -> str:
@@ -2175,7 +2157,12 @@ def handle_chat(args: argparse.Namespace) -> int:
         try:
             model_short = active_model_id(args).split(":", 1)[-1]
             project_short = args.project or "no-project"
-            line = input(f"aether[{project_short}|{model_short}]> ").strip()
+            prompt = (
+                f"{Colors.CYAN}aether{Colors.RESET}"
+                f"{Colors.DIM}[{Colors.MAGENTA}{project_short}{Colors.DIM}|{Colors.YELLOW}{model_short}{Colors.DIM}]"
+                f"{Colors.RESET} › "
+            )
+            line = input(prompt).strip()
         except (EOFError, KeyboardInterrupt):
             print()
             auto_stop_event.set()

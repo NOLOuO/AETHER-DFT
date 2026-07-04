@@ -2,6 +2,8 @@
 
 AETHER-DFT 的产品前端就是 **终端 CLI**。不做 Web 前端，不做 Electron 壳，不把科研流程拆成按钮式固定向导。CLI 的目标是让用户像使用 Codex / Claude Code 一样，用自然语言持续推进一个计算化学课题；Slash command 只负责切换状态和处理少数显式控制动作。
 
+视觉方向：**极简、低噪声、Codex-like**。不要大面积边框和复杂 ASCII UI；用少量颜色表达层级和状态。
+
 ## 1. 产品定位
 
 CLI 是科研合伙人的交互界面，不是传统命令行工具集合。
@@ -27,23 +29,15 @@ CLI 是科研合伙人的交互界面，不是传统命令行工具集合。
 .\aether.cmd
 ```
 
-启动后必须直接进入可用 REPL：
+启动后必须直接进入可用 REPL。首屏使用极简行式信息，不使用大框：
 
 ```text
-┌──────────────────────────────────────────────────────────┐
-│ Session Info                                             │
-├──────────────────────────────────────────────────────────┤
-│ Program: AETHER-DFT                                      │
-│ Version: 0.1.0                                           │
-│ Model: deepseek:deepseek-v4-pro                          │
-│ Context: 1,000,000 tokens                                │
-│ Permission: 完全开发                                     │
-│ Session: session_xxx                                     │
-│ Project: MCH-Pt-Br                                       │
-│ Preload: project/session/research injected each turn     │
-└──────────────────────────────────────────────────────────┘
-直接输入自然语言即可；模型会自己判断是否需要调用工具。
-输入 / 打开命令面板；也可直接用 /model、/project、/resume、/exit。
+AETHER-DFT v0.1.0
+model deepseek:deepseek-v4-pro  project MCH-Pt-Br
+session session_xxx  permission 完全开发
+context 1,000,000 tokens
+preload project + session + research memory
+直接输入自然语言；/ 打开命令面板。/status 查看状态，/exit 退出。
 ```
 
 启动页必须回答用户的四个问题：
@@ -55,12 +49,34 @@ CLI 是科研合伙人的交互界面，不是传统命令行工具集合。
 
 不要在启动页塞长说明。长说明放 `/help` 或文档。
 
+## 2.1 颜色系统
+
+颜色只用于层级和状态，不做花哨装饰。
+
+| 用途 | 颜色 | 含义 |
+|---|---|---|
+| 产品名 / 主标题 | Cyan | 当前处于 AETHER 交互界面 |
+| 模型 | Yellow | 模型是可切换资源 |
+| Project | Magenta | 科研项目上下文 |
+| Session / cluster | Blue | 运行态、远端态、可追踪 ID |
+| OK / 可用 / 权限标签 | Green | 可继续 |
+| 警告 / pending / auto off | Yellow | 需要注意但不是错误 |
+| 错误 / blocked | Red | 需要修复或授权 |
+| 辅助说明 | Dim | 可以忽略的帮助信息 |
+
+禁止：
+
+- 每个字段都上色。
+- 用粗边框占据首屏。
+- 用 emoji 表示严肃科研状态。
+- 把颜色当作唯一信息来源；文字仍必须自解释。
+
 ## 3. Prompt 行
 
 格式：
 
 ```text
-aether[MCH-Pt-Br|deepseek-v4-pro]>
+aether[MCH-Pt-Br|deepseek-v4-pro] ›
 ```
 
 规则：
@@ -313,4 +329,3 @@ thinking with deepseek:deepseek-v4-pro...
 - 结构预览图导出。
 
 这些都不能改变 CLI-first 主产品形态。
-
