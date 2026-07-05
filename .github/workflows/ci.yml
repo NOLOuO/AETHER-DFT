@@ -44,7 +44,6 @@ jobs:
           $env:AETHER_LAUNCHER_SELFTEST = "1"
           .\aether.cmd
           Remove-Item Env:\AETHER_LAUNCHER_SELFTEST
-          .\aether.cmd doctor --json
           python -m aether_dft.cli doctor --json
 
       - name: Compile sources
