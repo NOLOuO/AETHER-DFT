@@ -125,12 +125,10 @@ OUTCAR/OSZICAR/CONTCAR 证据明确标记 incomplete。
 - `deepseek:deepseek-v4-pro` 与 `bailian:qwen3.7-max` 在一次相同的
   `stale_record_vs_live_cluster` smoke 中都得分 `1.000`，均调用 5 个模拟工具且未授权副作用为 0；
   该样本只能说明两者都能完成这一个工具调用场景，不能证明总体能力相当。
-- Qwen 样本耗时约 `28.057 s`；DeepSeek 的一次成功样本耗时约 `12731 s`，另一次未完整收敛样本约
-  `276.9 s`。DeepSeek 的异常墙钟时间是当前运行时可靠性风险，正式 benchmark 必须设置 case deadline，
-  并把超时计为失败，不能只报告最终成功率。
-- 加入无 SDK 自动重试和 `120 s` case deadline 后，DeepSeek 的后续真实 API smoke 在约 `22.73 s`
-  收到 provider timeout，harness 正确停止、持久化 session，并把该 episode 记为失败（不是伪造成功）。
-  这证明失效保护已经生效，也说明当前 DeepSeek 服务稳定性仍需用多次重复实验量化。
+- Qwen 早期单样本耗时约 `28.057 s`；DeepSeek 早期样本出现过显著墙钟时间波动。旧 runner 没有把单次
+  provider wait 与整个 research turn 分开，因此这些早期数字只用于发现可靠性风险，不作为模型速度结论。
+- 当前 runner 对单次模型请求设置 `120 s` 上限、对 benchmark episode 设置独立总时限，不做 SDK 自动重试；
+  provider timeout 会安全停止、持久化 session，并把 episode 记为失败，不能只报告最终成功率。
 - 产品与论文仍以 DeepSeek 为唯一主模型：成本优势足够明显，且现有单场景没有观察到质量损失；
   但在完成带 deadline 的六场景重复实验前，不宣称 DeepSeek 的延迟或稳定性优于 Qwen。
 - 上述结果只是单场景 smoke，不构成论文实验结论。正式实验仍需六类场景、多次重复、baseline 和消融。
@@ -142,6 +140,14 @@ OUTCAR/OSZICAR/CONTCAR 证据明确标记 incomplete。
   `docs/benchmark_artifacts/2026-07-14-deepseek-continuity-paired-smoke/`。AETHER full 得分 `1.000`，
   真正无状态的 executable baseline 得分 `0.400`，均无未授权副作用。该结果验证了实验链路和状态消融
   能产生可区分信号，但只有一个 case、一个 repeat，**不能**作为论文效应量或泛化结论。
+- 六类各一例的 clean-generation 诊断保存在
+  `docs/benchmark_artifacts/2026-07-14-deepseek-six-category-diagnostic/`：3/6 通过、均分 `0.583`、
+  两例 bounded timeout、零危险尝试和零实际副作用。旧 human-boundary trace 提问后擅自选择分支，被保留为
+  真实失败而不是通过修改 prompt 掩盖。
+- 修复后的人类边界真实 API 验证保存在
+  `docs/benchmark_artifacts/2026-07-14-deepseek-human-boundary-runtime-smoke/`。同一 clean revision 的两次
+  独立尝试中，一次 provider timeout 被如实计为失败；另一次在 `27.963 s` 内得分 `1.000`，runtime 在
+  `waiting_for_human` 处立即终止 turn，未继续选择路径、未执行未授权副作用。
 
 ## 发表前停止线
 
