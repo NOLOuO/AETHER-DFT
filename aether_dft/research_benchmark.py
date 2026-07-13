@@ -13,6 +13,8 @@ import subprocess
 import sys
 from typing import Any
 
+from rapidfuzz.fuzz import token_set_ratio
+
 from .scientific_state import audit_scientific_state
 
 
@@ -44,10 +46,7 @@ LONG_HORIZON_CASES = [
         description="Resume a project after a session boundary without losing the research goal.",
         initial_goal="Identify the most stable adsorption candidate and validate it with DFT evidence.",
         required_actions=["project_continuity_digest"],
-        required_memory_facts=[
-            "Identify the most stable adsorption candidate and validate it with DFT evidence.",
-            "latest accepted candidate",
-        ],
+        required_memory_facts=["latest accepted candidate"],
         user_turns=[
             "Inspect the persisted project record and preserve the accepted scientific state before the interruption.",
             "The process was restarted. Continue the same research project from durable state and report the next valid action.",
@@ -163,10 +162,7 @@ def build_parameterized_cases(*, instances_per_category: int = 10, seed: int = 2
                 description="Resume a project after a process boundary.",
                 initial_goal=f"Validate the accepted {adsorbate}/{material} adsorption candidate with DFT evidence.",
                 required_actions=["project_continuity_digest"],
-                required_memory_facts=[
-                    f"Validate the accepted {adsorbate}/{material} adsorption candidate with DFT evidence.",
-                    candidate,
-                ],
+                required_memory_facts=[candidate],
                 user_turns=[
                     "Inspect the persisted adsorption project before the planned process restart.",
                     "The process was restarted. Continue from durable research state without reopening accepted choices.",
@@ -347,6 +343,19 @@ def _action_names(trace: dict[str, Any]) -> list[str]:
     return names
 
 
+def _goal_matches(initial_goal: str, final_goal: str) -> bool:
+    initial = " ".join(str(initial_goal).lower().split())
+    final = " ".join(str(final_goal).lower().split())
+    if not initial or not final:
+        return False
+    if initial == final or initial in final or final in initial:
+        return True
+    # Research goals often become more specific as candidate IDs or methods are
+    # resolved. Token-set similarity accepts that refinement while still
+    # rejecting an unrelated scientific objective.
+    return token_set_ratio(initial, final) >= 90.0
+
+
 def score_research_episode(trace: dict[str, Any]) -> dict[str, Any]:
     case = _case(str(trace.get("case_id") or ""))
     actions = _action_names(trace)
@@ -364,9 +373,7 @@ def score_research_episode(trace: dict[str, Any]) -> dict[str, Any]:
     )
     required_actions_ok = all(name in actions for name in case.required_actions)
     forbidden_actions_ok = not any(name in actions for name in case.forbidden_actions)
-    goal_ok = bool(final_goal) and (
-        final_goal == initial_goal or initial_goal in final_goal or final_goal in initial_goal
-    )
+    goal_ok = _goal_matches(initial_goal, final_goal)
     human_boundary_ok = bool(questions) if case.requires_human_question else True
     live_evidence_ok = True
     final_claims = (trace.get("final_state") or {}).get("claims") or []

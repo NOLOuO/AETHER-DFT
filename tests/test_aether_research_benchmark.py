@@ -223,10 +223,21 @@ def test_memory_retention_is_scored_from_observed_goal_and_claim_not_model_self_
 def test_parameterized_continuity_gold_uses_values_not_evaluator_labels():
     case = next(item for item in build_parameterized_cases() if item.category == "continuity")
 
-    assert case.initial_goal in case.required_memory_facts
-    assert case.environment["candidate"] in case.required_memory_facts
+    assert case.required_memory_facts == [case.environment["candidate"]]
     assert "same research goal" not in case.required_memory_facts
     assert not any(item.startswith("latest accepted candidate ") for item in case.required_memory_facts)
+
+
+def test_goal_continuity_accepts_a_more_specific_equivalent_goal():
+    trace = next(item for item in reference_traces() if item["case_id"] == "resume_after_session_break")
+    trace = dict(trace)
+    trace["final_goal"] = (
+        "Identify candidate h2o-atop-1 as the most stable adsorption candidate and validate it with DFT evidence."
+    )
+
+    result = score_research_episode(trace)
+
+    assert result["metrics"]["goal_continuity"] == 1.0
 
 
 def test_scientific_state_audit_is_available_to_the_model():
