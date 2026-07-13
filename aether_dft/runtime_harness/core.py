@@ -110,6 +110,23 @@ def _clean_text(value: Any) -> str:
     return str(value or "").encode("utf-8", errors="replace").decode("utf-8", errors="replace")
 
 
+def _human_question_response(payload: dict[str, Any]) -> str:
+    """Render a pending model-authored question without asking the model again."""
+
+    raw_question = payload.get("question")
+    question_record = raw_question if isinstance(raw_question, dict) else {}
+    question = str(question_record.get("question") or raw_question or "").strip()
+    why_needed = str(question_record.get("why_needed") or payload.get("why_needed") or "").strip()
+    options = question_record.get("options") or payload.get("options") or []
+    lines = [question or "继续推进前需要你确认一个关键科研判断。"]
+    if why_needed:
+        lines.append(f"为什么需要确认：{why_needed}")
+    normalized_options = [str(item).strip() for item in options if str(item).strip()] if isinstance(options, list) else []
+    if normalized_options:
+        lines.append("可选方向：" + "；".join(normalized_options))
+    return "\n".join(lines)
+
+
 def _contains_tool_markup(value: str) -> bool:
     text = str(value or "")
     return any(
@@ -787,6 +804,7 @@ class AgentHarness:
                     if human_question_indexes:
                         step_number = step_index + 1
                         first_question_index = human_question_indexes[0]
+                        pending_human_payload: dict[str, Any] | None = None
                         for parsed_index, (call_index, call, name, raw_args, _read_only) in enumerate(parsed_calls[:executable_count]):
                             if parsed_index == first_question_index:
                                 if progress_callback:
@@ -798,6 +816,9 @@ class AgentHarness:
                                     step=step_number,
                                     progress_callback=progress_callback,
                                 )
+                                candidate_payload = result.get("result")
+                                if isinstance(candidate_payload, dict):
+                                    pending_human_payload = candidate_payload
                             else:
                                 result = {
                                     "name": name,
@@ -826,6 +847,20 @@ class AgentHarness:
                                 step_number,
                             )
                         messages = _clean_messages(messages)
+                        pending_status = str((pending_human_payload or {}).get("status") or "").strip().lower()
+                        if pending_status in {"waiting_for_human", "pending_human_answer"}:
+                            response = _human_question_response(pending_human_payload or {})
+                            finish_reason = "waiting_for_human"
+                            if progress_callback:
+                                progress_callback(
+                                    {
+                                        "event": "human_input_required",
+                                        "step": step_number,
+                                        "session_id": session_id,
+                                        "question": response,
+                                    }
+                                )
+                            break
                         continue
                     parallel_read_only = (
                         executable_count > 1

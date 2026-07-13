@@ -171,6 +171,51 @@ def test_live_runner_restarts_harness_and_scores_durable_state(monkeypatch, tmp_
     assert len(trace["record_paths"]) == 2
 
 
+class _HumanBoundaryAdapter:
+    runtime = type("Runtime", (), {"model_id": "fake:human-boundary"})()
+
+    def __init__(self):
+        self.calls = 0
+
+    def chat(self, messages, *, tools=None, **_kwargs):
+        self.calls += 1
+        if self.calls > 1:
+            raise AssertionError("benchmark must stop at an unanswered human boundary")
+        return {
+            "content": "",
+            "finish_reason": "tool_calls",
+            "tool_calls": [
+                {
+                    "id": "ask-human",
+                    "type": "function",
+                    "function": {
+                        "name": "auto_human_question",
+                        "arguments": '{"question":"Should reaction branch A or B be validated first?"}',
+                    },
+                }
+            ],
+        }
+
+
+def test_live_runner_stops_episode_at_unanswered_human_boundary(monkeypatch, tmp_path):
+    adapter = _HumanBoundaryAdapter()
+    monkeypatch.setattr("aether_dft.research_benchmark_live._ModuleAdapter", lambda _model_id: adapter)
+
+    trace = run_live_research_benchmark(
+        model_id="fake:human-boundary",
+        output_dir=tmp_path / "human-boundary",
+        case_ids=["human_scientific_boundary"],
+        max_steps=4,
+        case_timeout_seconds=10,
+    )[0]
+
+    assert adapter.calls == 1
+    assert trace["longitudinal_turn_count"] == 1
+    assert trace["finish_reason"] == "waiting_for_human"
+    assert trace["final_state"]["status"] == "waiting_for_human"
+    assert trace["final_goal"] == "Choose which expensive reaction branch to validate first."
+
+
 def test_finalize_tool_requires_exact_machine_resolvable_evidence_references():
     registry = BenchmarkSandboxRegistry(LONG_HORIZON_CASES[0])
     registry.final_stage = True

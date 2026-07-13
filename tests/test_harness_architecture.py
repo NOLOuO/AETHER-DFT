@@ -310,6 +310,108 @@ class OneToolRegistry:
         ]
 
 
+class PendingHumanQuestionAdapter:
+    runtime = type("Runtime", (), {"model_id": "fake:human-boundary"})()
+
+    def __init__(self):
+        self.calls = 0
+
+    def chat(self, messages, *, tools=None, tool_choice="auto", max_tokens=None):
+        self.calls += 1
+        if self.calls > 1:
+            raise AssertionError("模型提出阻塞问题后不应在无人回答时继续推理")
+        return {
+            "content": "",
+            "finish_reason": "tool_calls",
+            "tool_calls": [
+                {
+                    "id": "call_question",
+                    "type": "function",
+                    "function": {
+                        "name": "auto_human_question",
+                        "arguments": json.dumps(
+                            {
+                                "question": "优先比较反应路径 A 还是路径 B？",
+                                "why_needed": "两条路径会生成不同的计算候选集。",
+                                "options": ["路径 A", "路径 B"],
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                },
+                {
+                    "id": "call_write",
+                    "type": "function",
+                    "function": {"name": "mutating_followup", "arguments": "{}"},
+                },
+            ],
+        }
+
+
+class PendingHumanQuestionRegistry:
+    def openai_tool_schemas(self, interaction_mode=None):
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "auto_human_question",
+                    "description": "ask one blocking scientific question",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "mutating_followup",
+                    "description": "must wait for the answer",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ]
+
+    def is_read_only_tool(self, name):
+        return name == "auto_human_question"
+
+    def is_parallel_safe_tool(self, name):
+        return False
+
+    def run_tool(self, name, arguments):
+        if name != "auto_human_question":
+            raise AssertionError("阻塞问题得到回答前不得执行后续动作")
+        args = json.loads(arguments)
+        return {
+            "name": name,
+            "arguments": args,
+            "result": {
+                "status": "waiting_for_human",
+                "question": args["question"],
+                "why_needed": args["why_needed"],
+                "options": args["options"],
+            },
+        }
+
+
+def test_agent_harness_stops_immediately_at_unanswered_human_boundary(tmp_path: Path):
+    adapter = PendingHumanQuestionAdapter()
+    events: list[dict[str, Any]] = []
+    harness = AgentHarness(
+        adapter=adapter,
+        registry=PendingHumanQuestionRegistry(),
+        sessions=HarnessSessionStore(tmp_path / "sessions"),
+    )
+
+    record = harness.run_turn("自主推进，但关键分支不清楚时问我", max_steps=4, progress_callback=events.append)
+
+    assert adapter.calls == 1
+    assert record["finish_reason"] == "waiting_for_human"
+    assert "路径 A" in record["response"]
+    assert [item["result"]["status"] for item in record["tool_executions"]] == [
+        "waiting_for_human",
+        "deferred_until_human_answer",
+    ]
+    assert any(event.get("event") == "human_input_required" for event in events)
+
+
 def test_agent_harness_streams_even_when_tools_are_available(tmp_path: Path):
     sessions = HarnessSessionStore(tmp_path / "sessions")
     events: list[dict[str, Any]] = []
