@@ -288,9 +288,33 @@ def list_long_horizon_cases(*, suite: str = "pilot") -> list[dict[str, Any]]:
     return [case.to_dict() for case in benchmark_case_suite(suite)]
 
 
-def benchmark_suite_digest(suite: str = "pilot") -> str:
-    payload = json.dumps(list_long_horizon_cases(suite=suite), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+def benchmark_case_records_digest(cases: list[dict[str, Any]]) -> str:
+    payload = json.dumps(cases, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def benchmark_suite_digest(suite: str = "pilot") -> str:
+    return benchmark_case_records_digest(list_long_horizon_cases(suite=suite))
+
+
+def recorded_case_suite(traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Resolve the exact known case records referenced by stored traces."""
+
+    known = {
+        case.case_id: case.to_dict()
+        for case in [*LONG_HORIZON_CASES, *PARAMETERIZED_LONG_HORIZON_CASES]
+    }
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for trace in traces:
+        case_id = str(trace.get("case_id") or "").strip()
+        if not case_id or case_id in seen:
+            continue
+        if case_id not in known:
+            raise ValueError(f"unknown benchmark case in recorded trace: {case_id}")
+        selected.append(known[case_id])
+        seen.add(case_id)
+    return selected
 
 
 def experiment_matrix_summary(

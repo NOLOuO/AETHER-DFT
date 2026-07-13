@@ -5,10 +5,12 @@ import json
 
 from aether_dft.research_benchmark import (
     benchmark_case_suite,
+    benchmark_case_records_digest,
     build_parameterized_cases,
     experiment_matrix_summary,
     reference_ablation_traces,
     reference_traces,
+    recorded_case_suite,
     score_benchmark,
     score_research_episode,
     write_benchmark_report,
@@ -274,6 +276,26 @@ def test_cli_research_benchmark_reference_fixtures(tmp_path, capsys):
     manifest = json.loads((tmp_path / "benchmark" / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["git_commit"]
     assert "aether_dft/research_benchmark.py" in manifest["source_sha256"]
+
+
+def test_recorded_input_manifest_uses_the_recorded_cases_and_input_digest(tmp_path, capsys):
+    from aether_dft import cli
+
+    trace = next(item for item in reference_traces() if item["case_id"] == "resume_after_session_break")
+    input_path = tmp_path / "recorded.jsonl"
+    input_path.write_text(json.dumps(trace) + "\n", encoding="utf-8")
+    output_dir = tmp_path / "rescored"
+
+    assert cli.main(
+        ["benchmark", "research", "--input", str(input_path), "--output-dir", str(output_dir)]
+    ) == 0
+
+    manifest = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    case_suite = json.loads((output_dir / "case_suite.json").read_text(encoding="utf-8"))
+    assert manifest["arguments"]["suite"] == "recorded_input"
+    assert manifest["recorded_input_sha256"]
+    assert manifest["suite_sha256"] == benchmark_case_records_digest(recorded_case_suite([trace]))
+    assert [item["case_id"] for item in case_suite] == ["resume_after_session_break"]
 
 
 def test_cli_live_benchmark_routes_variants_and_repeats(monkeypatch, tmp_path, capsys):

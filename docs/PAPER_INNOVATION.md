@@ -138,6 +138,10 @@ OUTCAR/OSZICAR/CONTCAR 证据明确标记 incomplete。
   `docs/benchmark_artifacts/2026-07-13-deepseek-longitudinal-pilot/`。该次第一阶段成功写入 durable checkpoint，
   第二阶段复用了 session 并恢复目标/accepted facts，但 provider 在最终定稿前超时，因此按协议计为 `0.0` 失败。
   artifact 明确标记为 dirty-tree pilot，不能进入正式论文主结果。
+- 一次从 clean revision 运行的真实两阶段 continuity 配对 smoke 已保存在
+  `docs/benchmark_artifacts/2026-07-14-deepseek-continuity-paired-smoke/`。AETHER full 得分 `1.000`，
+  真正无状态的 executable baseline 得分 `0.400`，均无未授权副作用。该结果验证了实验链路和状态消融
+  能产生可区分信号，但只有一个 case、一个 repeat，**不能**作为论文效应量或泛化结论。
 
 ## 发表前停止线
 

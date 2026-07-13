@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -10,13 +11,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from aether_dft.research_benchmark import (
+    benchmark_case_records_digest,
     build_benchmark_manifest,
-    benchmark_suite_digest,
     load_jsonl,
     reference_ablation_traces,
     reference_traces,
     experiment_matrix_summary,
     list_long_horizon_cases,
+    recorded_case_suite,
     score_benchmark,
     write_benchmark_report,
 )
@@ -55,9 +57,12 @@ def main() -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     variants = args.variants or ["aether_full"]
+    input_traces = load_jsonl(args.input) if args.input else []
+    recorded_input_only = bool(args.input and not args.reference_fixtures and not args.live_model)
+    suite_records = recorded_case_suite(input_traces) if recorded_input_only else list_long_horizon_cases(suite=args.suite)
     suite_path = output_dir / "case_suite.json"
     suite_path.write_text(
-        json.dumps(list_long_horizon_cases(suite=args.suite), ensure_ascii=False, indent=2),
+        json.dumps(suite_records, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     if args.plan_only:
@@ -87,7 +92,7 @@ def main() -> int:
     if args.reference_fixtures:
         traces.extend(reference_traces() + reference_ablation_traces())
     if args.input:
-        traces.extend(load_jsonl(args.input))
+        traces.extend(input_traces)
     for model_id in args.live_model or []:
         traces.extend(
             run_live_research_benchmark(
@@ -114,8 +119,11 @@ def main() -> int:
     json_path = output_dir / "results.json"
     json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     report_path = write_benchmark_report(result, output_dir / "report.md")
+    manifest_arguments = dict(vars(args))
+    if recorded_input_only:
+        manifest_arguments["suite"] = "recorded_input"
     manifest = build_benchmark_manifest(
-        arguments=vars(args),
+        arguments=manifest_arguments,
         source_paths=[
             "aether_dft/research_benchmark.py",
             "aether_dft/research_benchmark_live.py",
@@ -123,7 +131,9 @@ def main() -> int:
             "aether_dft/runtime_harness/core.py",
         ],
     )
-    manifest["suite_sha256"] = benchmark_suite_digest(args.suite)
+    manifest["suite_sha256"] = benchmark_case_records_digest(suite_records)
+    if args.input:
+        manifest["recorded_input_sha256"] = hashlib.sha256(Path(args.input).read_bytes()).hexdigest()
     manifest_path = output_dir / "run_manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     print(

@@ -3272,11 +3272,12 @@ def handle_explain(args: argparse.Namespace) -> int:
 
 def handle_research_benchmark(args: argparse.Namespace) -> int:
     from .research_benchmark import (
+        benchmark_case_records_digest,
         build_benchmark_manifest,
-        benchmark_suite_digest,
         experiment_matrix_summary,
         load_jsonl,
         list_long_horizon_cases,
+        recorded_case_suite,
         reference_ablation_traces,
         reference_traces,
         score_benchmark,
@@ -3286,9 +3287,11 @@ def handle_research_benchmark(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     variants = args.variants or ["aether_full"]
+    input_traces = load_jsonl(args.input) if args.input else []
+    suite_records = recorded_case_suite(input_traces) if args.input else list_long_horizon_cases(suite=args.suite)
     suite_path = output_dir / "case_suite.json"
     suite_path.write_text(
-        json.dumps(list_long_horizon_cases(suite=args.suite), ensure_ascii=False, indent=2),
+        json.dumps(suite_records, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     if args.plan_only:
@@ -3314,7 +3317,7 @@ def handle_research_benchmark(args: argparse.Namespace) -> int:
     if args.reference_fixtures:
         traces = reference_traces() + reference_ablation_traces()
     elif args.input:
-        traces.extend(load_jsonl(args.input))
+        traces.extend(input_traces)
     else:
         from .research_benchmark_live import run_live_research_benchmark
 
@@ -3343,8 +3346,11 @@ def handle_research_benchmark(args: argparse.Namespace) -> int:
     results_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     report_path = write_benchmark_report(result, output_dir / "report.md")
     manifest_path = output_dir / "run_manifest.json"
+    manifest_arguments = dict(vars(args))
+    if args.input:
+        manifest_arguments["suite"] = "recorded_input"
     manifest_payload = build_benchmark_manifest(
-        arguments=vars(args),
+        arguments=manifest_arguments,
         source_paths=[
             "aether_dft/research_benchmark.py",
             "aether_dft/research_benchmark_live.py",
@@ -3352,7 +3358,9 @@ def handle_research_benchmark(args: argparse.Namespace) -> int:
             "aether_dft/runtime_harness/core.py",
         ],
     )
-    manifest_payload["suite_sha256"] = benchmark_suite_digest(args.suite)
+    manifest_payload["suite_sha256"] = benchmark_case_records_digest(suite_records)
+    if args.input:
+        manifest_payload["recorded_input_sha256"] = hashlib.sha256(Path(args.input).read_bytes()).hexdigest()
     manifest_path.write_text(
         json.dumps(
             manifest_payload,
