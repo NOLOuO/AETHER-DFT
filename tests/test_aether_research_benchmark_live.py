@@ -183,6 +183,34 @@ def test_finalize_tool_requires_exact_machine_resolvable_evidence_references():
     assert "do not annotate" in description
 
 
+@pytest.mark.parametrize("variant_name", ["stateless_agent", "transcript_only"])
+def test_non_structured_baseline_cannot_reread_project_state_after_process_boundary(variant_name):
+    registry = BenchmarkSandboxRegistry(
+        LONG_HORIZON_CASES[0],
+        variant=BENCHMARK_VARIANTS[variant_name],
+    )
+    assert registry.run_tool("project_continuity_digest", {})["result"]["status"] == "ok"
+
+    registry.final_stage = True
+    result = registry.run_tool("project_continuity_digest", {})["result"]
+
+    assert result["status"] == "unavailable"
+    assert "process boundary" in result["message"]
+
+
+def test_full_agent_can_reread_durable_project_state_after_process_boundary():
+    registry = BenchmarkSandboxRegistry(
+        LONG_HORIZON_CASES[0],
+        variant=BENCHMARK_VARIANTS["aether_full"],
+    )
+    registry.final_stage = True
+
+    result = registry.run_tool("project_continuity_digest", {})["result"]
+
+    assert result["status"] == "ok"
+    assert result["research_goal"] == LONG_HORIZON_CASES[0].initial_goal
+
+
 def test_live_runner_skips_completed_episode_keys_without_calling_model(monkeypatch, tmp_path):
     case = LONG_HORIZON_CASES[0]
     key = f"fake:research|aether_full|1|{case.case_id}"

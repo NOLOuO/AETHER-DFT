@@ -182,6 +182,12 @@ class BenchmarkSandboxRegistry:
             }
         )
         if name == "project_continuity_digest":
+            if self.final_stage and not self.variant.structured_state:
+                result = {
+                    "status": "unavailable",
+                    "message": "No durable project state is available after the simulated process boundary.",
+                }
+                return {"name": name, "arguments": args, "result": result}
             evidence = self._record_evidence(
                 "project-state",
                 "project_record",
