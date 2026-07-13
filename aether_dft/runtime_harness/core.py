@@ -30,6 +30,7 @@ TOOL_VISIBLE_RESULT_LIMIT = 8_000
 TOKEN_GUARD_USAGE_RATIO = 0.88
 TOKEN_GUARD_MIN_STEPS = 2
 DEFAULT_TURN_TIMEOUT_SECONDS = 600.0
+DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS = 120.0
 _TEXT_TOOL_CALL_MARKERS = (
     "<｜｜DSML｜｜tool_calls",
     "<ï½œï½œDSMLï½œï½œtool_calls",
@@ -60,6 +61,19 @@ def _resolve_turn_timeout_seconds(value: float | None) -> float:
     except (TypeError, ValueError):
         timeout = DEFAULT_TURN_TIMEOUT_SECONDS
     return max(1.0, timeout)
+
+
+def _resolve_model_request_timeout_seconds(value: float | None) -> float:
+    raw: Any = (
+        value
+        if value is not None
+        else os.getenv("AETHER_MODEL_REQUEST_TIMEOUT_SECONDS", DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS)
+    )
+    try:
+        timeout = float(raw)
+    except (TypeError, ValueError):
+        timeout = DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS
+    return max(1.0, min(timeout, 600.0))
 
 
 def _looks_like_timeout(exc: BaseException) -> bool:
@@ -533,6 +547,7 @@ class AgentHarness:
         permission_prompt_callback: Any | None = None,
         stream_callback: Any | None = None,
         turn_timeout_seconds: float | None = None,
+        model_request_timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         session_store = self.sessions.store if hasattr(self.sessions, "store") else self.sessions
         if hasattr(self.registry, "default_project"):
@@ -593,6 +608,7 @@ class AgentHarness:
         tools = refresh_tool_schemas()
         started_at = datetime.now().astimezone()
         resolved_turn_timeout = _resolve_turn_timeout_seconds(turn_timeout_seconds)
+        resolved_model_request_timeout = _resolve_model_request_timeout_seconds(model_request_timeout_seconds)
         deadline = time.monotonic() + resolved_turn_timeout
         model_call_durations: list[float] = []
         model_call_metadata: list[dict[str, Any]] = []
@@ -606,7 +622,8 @@ class AgentHarness:
             if remaining <= 0:
                 raise TurnDeadlineExceeded(f"Agent turn exceeded {resolved_turn_timeout:.1f}s deadline")
             bounded_kwargs = dict(kwargs)
-            bounded_kwargs["timeout_seconds"] = max(1, int(math.ceil(remaining)))
+            request_timeout = max(1, int(math.ceil(min(remaining, resolved_model_request_timeout))))
+            bounded_kwargs["timeout_seconds"] = request_timeout
             call_started = time.perf_counter()
             try:
                 try:
@@ -624,6 +641,7 @@ class AgentHarness:
                         "request_id": "",
                         "usage": None,
                         "elapsed_seconds": round(duration, 3),
+                        "timeout_seconds": request_timeout,
                         "error_type": type(exc).__name__,
                         "error": str(exc),
                     }
@@ -652,6 +670,7 @@ class AgentHarness:
                     else "",
                     "usage": raw_result.get("usage") if isinstance(raw_result, dict) else None,
                     "elapsed_seconds": round(duration, 3),
+                    "timeout_seconds": request_timeout,
                 }
             )
             if progress_callback:
@@ -1266,6 +1285,7 @@ class AgentHarness:
             "started_at": started_at.isoformat(timespec="seconds"),
             "elapsed_seconds": round((datetime.now().astimezone() - started_at).total_seconds(), 3),
             "turn_timeout_seconds": resolved_turn_timeout,
+            "model_request_timeout_seconds": resolved_model_request_timeout,
             "deadline_exceeded": finish_reason in {"turn_deadline_exceeded", "model_request_timeout"},
             "provider_error": finish_reason == "model_provider_error",
             "provider_error_type": provider_error_type if finish_reason == "model_provider_error" else "",

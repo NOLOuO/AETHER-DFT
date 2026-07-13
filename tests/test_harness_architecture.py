@@ -806,6 +806,19 @@ def test_agent_harness_bounds_model_calls_and_persists_timeout(tmp_path: Path):
     assert any(event.get("event") == "turn_deadline_exceeded" for event in events)
 
 
+def test_agent_harness_caps_one_model_request_below_the_total_turn_deadline(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("AETHER_MODEL_REQUEST_TIMEOUT_SECONDS", "3")
+    adapter = TimeoutAwareAdapter()
+    harness = AgentHarness(adapter=adapter, sessions=HarnessSessionStore(tmp_path / "sessions"))
+
+    record = harness.run_turn("继续科研任务", max_steps=3, turn_timeout_seconds=30)
+
+    assert 1 <= adapter.timeout_seconds <= 3
+    assert record["turn_timeout_seconds"] == 30
+    assert record["model_request_timeout_seconds"] == 3
+    assert record["model_calls"][0]["timeout_seconds"] <= 3
+
+
 def test_agent_harness_persists_provider_connection_error_without_raising(tmp_path: Path):
     sessions = HarnessSessionStore(tmp_path / "sessions")
     events: list[dict[str, Any]] = []

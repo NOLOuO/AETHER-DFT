@@ -494,6 +494,7 @@ def run_live_research_benchmark(
                         ),
                         "timeout_kind": str(record.get("timeout_kind") or ""),
                         "turn_timeout_seconds": record.get("turn_timeout_seconds"),
+                        "model_request_timeout_seconds": record.get("model_request_timeout_seconds"),
                         "longitudinal_turn_count": len(records),
                         "session_reused": bool(variant.transcript_memory and len(records) > 1),
                         "model_calls": model_calls,
