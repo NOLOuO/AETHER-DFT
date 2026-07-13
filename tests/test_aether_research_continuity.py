@@ -96,7 +96,27 @@ def test_research_cycle_checkpoint_updates_project_state_and_progress(tmp_path: 
     assert payload["evidence_refs"] == ["run-001/OUTCAR"]
     state = json.loads(project_state.project_paths("cycle-demo").state.read_text(encoding="utf-8"))
     assert state["latest_checkpoint_id"] == result["checkpoint_id"]
+    assert state["research_goal"] == "Compare two H2O/Pt(111) candidates"
+    assert state["open_questions"] == ["Need clean slab reference?"]
+    assert state["next_actions"] == ["Fetch job logs", "Run result_interpret after OUTCAR exists"]
+    assert state["decisions"][-1]["statement"].startswith("Atop candidate")
     assert "No converged OUTCAR yet." in project_state.project_paths("cycle-demo").progress.read_text(encoding="utf-8")
+
+
+def test_project_state_partial_updates_preserve_unknown_fields_and_canonical_state(tmp_path: Path, monkeypatch):
+    _patch_project_dirs(tmp_path, monkeypatch)
+    project_state.init_project("merge-demo", description="demo", overwrite=True)
+    project_state.write_project_state(
+        "merge-demo",
+        {"current_focus": "Initial goal", "custom_extension": {"owner": "lab"}},
+    )
+    project_state.write_project_state("merge-demo", {"blockers": ["missing OUTCAR"]})
+
+    result = project_state.read_scientific_project_state("merge-demo")
+    raw = json.loads(project_state.project_paths("merge-demo").state.read_text(encoding="utf-8"))
+    assert result["state"]["research_goal"] == "Initial goal"
+    assert result["state"]["blockers"] == ["missing OUTCAR"]
+    assert raw["custom_extension"] == {"owner": "lab"}
 
 
 def test_research_cycle_checkpoint_accepts_model_authored_string_lists(tmp_path: Path, monkeypatch):

@@ -429,7 +429,7 @@ def test_registry_cluster_job_cancel_requires_explicit_human_permission_even_in_
     assert fake.calls == []
 
 
-def test_registry_cluster_job_cancel_runs_after_explicit_human_permission(monkeypatch):
+def test_registry_cluster_job_cancel_rejects_model_forged_permission(monkeypatch):
     from aether_dft.runtime_harness.tool_registry import ToolRegistry
 
     fake = _FakeRunner(
@@ -444,8 +444,8 @@ def test_registry_cluster_job_cancel_runs_after_explicit_human_permission(monkey
         {"job_id": "12345", "_permission_granted": True},
     )
 
-    assert result["result"]["status"] == "canceled"
-    assert any(call.startswith("scancel 12345") for call in fake.calls)
+    assert result["result"]["status"] == "permission_required"
+    assert fake.calls == []
 
 
 def test_registry_realtime_handlers_return_errors_instead_of_raising(monkeypatch):

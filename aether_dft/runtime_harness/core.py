@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import math
+import os
 import re
 import threading
 import time
@@ -27,11 +29,36 @@ TOOL_HEARTBEAT_SECONDS = 1.5
 TOOL_VISIBLE_RESULT_LIMIT = 8_000
 TOKEN_GUARD_USAGE_RATIO = 0.88
 TOKEN_GUARD_MIN_STEPS = 2
+DEFAULT_TURN_TIMEOUT_SECONDS = 600.0
 _TEXT_TOOL_CALL_MARKERS = (
     "<｜｜DSML｜｜tool_calls",
     "<ï½œï½œDSMLï½œï½œtool_calls",
     "<|tool_calls|",
 )
+
+
+class TurnDeadlineExceeded(RuntimeError):
+    """Raised when a model-driven turn exceeds its bounded wall-clock budget."""
+
+    def __init__(self, message: str, *, kind: str = "turn_deadline"):
+        super().__init__(message)
+        self.kind = kind
+
+
+def _resolve_turn_timeout_seconds(value: float | None) -> float:
+    raw: Any = value if value is not None else os.getenv("AETHER_TURN_TIMEOUT_SECONDS", DEFAULT_TURN_TIMEOUT_SECONDS)
+    try:
+        timeout = float(raw)
+    except (TypeError, ValueError):
+        timeout = DEFAULT_TURN_TIMEOUT_SECONDS
+    return max(1.0, timeout)
+
+
+def _looks_like_timeout(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return isinstance(exc, TimeoutError) or any(
+        marker in text for marker in ("timeout", "timed out", "deadline", "readtimeout", "apitimeouterror")
+    )
 
 
 def _runtime_log_path() -> Path:
@@ -495,6 +522,7 @@ class AgentHarness:
         progress_callback: Any | None = None,
         permission_prompt_callback: Any | None = None,
         stream_callback: Any | None = None,
+        turn_timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         session_store = self.sessions.store if hasattr(self.sessions, "store") else self.sessions
         if hasattr(self.registry, "default_project"):
@@ -549,8 +577,76 @@ class AgentHarness:
 
         tools = refresh_tool_schemas()
         started_at = datetime.now().astimezone()
+        resolved_turn_timeout = _resolve_turn_timeout_seconds(turn_timeout_seconds)
+        deadline = time.monotonic() + resolved_turn_timeout
+        model_call_durations: list[float] = []
+        model_call_metadata: list[dict[str, Any]] = []
         force_final_reply_after_audit = False
         force_final_reply_message = ""
+
+        def model_chat(call_messages: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TurnDeadlineExceeded(f"Agent turn exceeded {resolved_turn_timeout:.1f}s deadline")
+            bounded_kwargs = dict(kwargs)
+            bounded_kwargs["timeout_seconds"] = max(1, int(math.ceil(remaining)))
+            call_started = time.perf_counter()
+            try:
+                try:
+                    result = self.adapter.chat(call_messages, **bounded_kwargs)
+                except TypeError as exc:
+                    if "timeout_seconds" not in str(exc):
+                        raise
+                    bounded_kwargs.pop("timeout_seconds", None)
+                    result = self.adapter.chat(call_messages, **bounded_kwargs)
+            except Exception as exc:
+                duration = time.perf_counter() - call_started
+                model_call_durations.append(duration)
+                model_call_metadata.append(
+                    {
+                        "request_id": "",
+                        "usage": None,
+                        "elapsed_seconds": round(duration, 3),
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                )
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "event": "model_error",
+                            "model_call": len(model_call_durations),
+                            "elapsed_seconds": round(duration, 3),
+                            "error_type": type(exc).__name__,
+                            "deadline_related": _looks_like_timeout(exc) or time.monotonic() >= deadline,
+                        }
+                    )
+                if _looks_like_timeout(exc) or time.monotonic() >= deadline:
+                    kind = "turn_deadline" if time.monotonic() >= deadline else "provider_timeout"
+                    raise TurnDeadlineExceeded(str(exc), kind=kind) from exc
+                raise
+            duration = time.perf_counter() - call_started
+            model_call_durations.append(duration)
+            raw_result = result.get("raw") if isinstance(result, dict) and isinstance(result.get("raw"), dict) else {}
+            model_call_metadata.append(
+                {
+                    "request_id": str(result.get("request_id") or raw_result.get("id") or "")
+                    if isinstance(result, dict)
+                    else "",
+                    "usage": raw_result.get("usage") if isinstance(raw_result, dict) else None,
+                    "elapsed_seconds": round(duration, 3),
+                }
+            )
+            if progress_callback:
+                progress_callback(
+                    {
+                        "event": "model_response",
+                        "model_call": len(model_call_durations),
+                        "elapsed_seconds": round(duration, 3),
+                        "remaining_turn_seconds": round(max(0.0, deadline - time.monotonic()), 3),
+                    }
+                )
+            return result
 
         def append_tool_result(call: dict[str, Any], name: str, result: dict[str, Any], step_number: int) -> dict[str, Any]:
             persisted_output_path = None
@@ -610,12 +706,12 @@ class AgentHarness:
                 if stream_callback is not None:
                     chat_kwargs["stream_callback"] = stream_callback
                 try:
-                    reply = self.adapter.chat(messages, **chat_kwargs)
+                    reply = model_chat(messages, **chat_kwargs)
                 except TypeError as exc:
                     if "stream_callback" not in chat_kwargs or "stream_callback" not in str(exc):
                         raise
                     chat_kwargs.pop("stream_callback", None)
-                    reply = self.adapter.chat(messages, **chat_kwargs)
+                    reply = model_chat(messages, **chat_kwargs)
                 finish_reason = str(reply.get("finish_reason") or "stop")
                 tool_calls = reply.get("tool_calls") or []
                 content = str(reply.get("content") or "")
@@ -848,18 +944,42 @@ class AgentHarness:
                                 permission_prompt_callback(
                                     {
                                         "tool_name": name,
-                                        "arguments": raw_args,
+                                        "arguments": dict(result.get("arguments") or {}),
                                         "permission_mode": permission_payload.get("permission_mode"),
                                         "permission_label": permission_payload.get("permission_label"),
                                         "message": permission_payload.get("message"),
                                         "reason": permission_payload.get("reason"),
+                                        "approval_scope_digest": permission_payload.get("approval_scope_digest"),
                                     }
                                 )
                             )
                             if approved:
                                 rerun_arguments = dict(result.get("arguments") or {})
-                                rerun_arguments["_permission_granted"] = True
-                                result = self.registry.run_tool(name, rerun_arguments)
+                                issue_approval = getattr(self.registry, "_issue_tool_approval", None)
+                                if not callable(issue_approval):
+                                    result = {
+                                        "name": name,
+                                        "arguments": rerun_arguments,
+                                        "result": {
+                                            "status": "blocked",
+                                            "message": "工具注册表不支持安全的一次性批准凭据；已拒绝执行。",
+                                            "reason": "secure_approval_unavailable",
+                                        },
+                                    }
+                                else:
+                                    approval_token = issue_approval(name, rerun_arguments)
+                                    result = self.registry.run_tool(
+                                        name,
+                                        rerun_arguments,
+                                        approval_token=approval_token,
+                                    )
+                                    if isinstance(result.get("result"), dict):
+                                        result["result"]["human_approval"] = {
+                                            "granted": True,
+                                            "tool_name": name,
+                                            "scope_digest": permission_payload.get("approval_scope_digest"),
+                                            "granted_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                                        }
                                 if progress_callback:
                                     progress_callback(
                                         {
@@ -932,7 +1052,7 @@ class AgentHarness:
                     )
                     messages = _clean_messages(messages)
                     try:
-                        retry_reply = self.adapter.chat(
+                        retry_reply = model_chat(
                             messages,
                             tools=[],
                             tool_choice="none",
@@ -963,7 +1083,7 @@ class AgentHarness:
                     if progress_callback:
                         progress_callback({"event": "final_reply_after_length", "session_id": session_id, "tool_count": len(tool_executions)})
                     try:
-                        retry_reply = self.adapter.chat(
+                        retry_reply = model_chat(
                             messages,
                             tools=[],
                             tool_choice="none",
@@ -998,7 +1118,7 @@ class AgentHarness:
                         "tool_choice": "none",
                         "max_tokens": max_tokens,
                     }
-                    final_reply = self.adapter.chat(messages, **final_kwargs)
+                    final_reply = model_chat(messages, **final_kwargs)
                     final_content = _clean_text(str(final_reply.get("content") or ""))
                     if final_content:
                         if _contains_tool_markup(final_content):
@@ -1013,7 +1133,7 @@ class AgentHarness:
                                 }
                             )
                             messages = _clean_messages(messages)
-                            retry_reply = self.adapter.chat(
+                            retry_reply = model_chat(
                                 messages,
                                 tools=[],
                                 tool_choice="none",
@@ -1032,6 +1152,42 @@ class AgentHarness:
                 except Exception as exc:
                     response = _clean_text(response or f"工具步数已达上限，且最终总结生成失败：{exc}")
 
+        except TurnDeadlineExceeded as exc:
+            timeout_kind = getattr(exc, "kind", "turn_deadline")
+            finish_reason = "model_request_timeout" if timeout_kind == "provider_timeout" else "turn_deadline_exceeded"
+            response = _tool_evidence_fallback(tool_executions, reason="model turn deadline exceeded")
+            if not tool_executions:
+                if timeout_kind == "provider_timeout":
+                    response = (
+                        f"模型服务在本轮 {resolved_turn_timeout:.0f} 秒总时限内提前返回超时，"
+                        "已安全停止并保存会话。没有把超时当成科研结论；请稍后继续。"
+                    )
+                else:
+                    response = (
+                        f"本轮达到 {resolved_turn_timeout:.0f} 秒总时限，已安全停止并保存会话。"
+                        "没有把超时当成科研结论；请稍后继续。"
+                    )
+            log_event(
+                "turn_deadline_exceeded",
+                {
+                    "session_id": session_id,
+                    "project": project,
+                    "timeout_seconds": resolved_turn_timeout,
+                    "timeout_kind": timeout_kind,
+                    "error": str(exc),
+                    "tool_count": len(tool_executions),
+                },
+            )
+            if progress_callback:
+                progress_callback(
+                    {
+                        "event": "turn_deadline_exceeded",
+                        "session_id": session_id,
+                        "timeout_seconds": resolved_turn_timeout,
+                        "timeout_kind": timeout_kind,
+                        "tool_count": len(tool_executions),
+                    }
+                )
         except KeyboardInterrupt:
             finish_reason = "user_interrupted"
             response = _clean_text(response or "用户中断，本轮 partial trace 已保存。")
@@ -1050,6 +1206,16 @@ class AgentHarness:
             "model_id": getattr(getattr(self.adapter, "runtime", None), "model_id", ""),
             "started_at": started_at.isoformat(timespec="seconds"),
             "elapsed_seconds": round((datetime.now().astimezone() - started_at).total_seconds(), 3),
+            "turn_timeout_seconds": resolved_turn_timeout,
+            "deadline_exceeded": finish_reason in {"turn_deadline_exceeded", "model_request_timeout"},
+            "timeout_kind": (
+                timeout_kind
+                if finish_reason in {"turn_deadline_exceeded", "model_request_timeout"}
+                else ""
+            ),
+            "model_call_count": len(model_call_durations),
+            "model_elapsed_seconds": round(sum(model_call_durations), 3),
+            "model_calls": model_call_metadata,
         }
         transcript_path = session_store.append_turn(session_id, record)
         record["record_path"] = str(transcript_path)

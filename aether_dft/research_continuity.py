@@ -227,11 +227,14 @@ def write_research_cycle_checkpoint(
         state_path = write_project_state(
             paths.slug,
             {
+                "research_goal": goal_clean,
                 "current_focus": goal_clean,
                 "latest_decision": decision_clean,
                 "latest_checkpoint_id": checkpoint_id,
                 "evidence_refs": checkpoint.evidence_refs,
+                "open_questions": checkpoint.open_questions,
                 "blockers": checkpoint.blockers,
+                "next_actions": checkpoint.next_steps,
                 "next_steps": checkpoint.next_steps,
                 "run_ids": checkpoint.run_ids,
                 "candidate_ids": checkpoint.candidate_ids,

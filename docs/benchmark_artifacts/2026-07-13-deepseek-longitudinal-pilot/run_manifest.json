@@ -1,0 +1,32 @@
+{
+  "created_at": "2026-07-13T05:29:39+08:00",
+  "git_commit": "fc9dbb0b9e07266a2dd766ccfb89d755a853f4a0",
+  "git_dirty": true,
+  "python": "3.12.13 | packaged by conda-forge | (main, Mar  5 2026, 16:36:12) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.22631-SP0",
+  "packages": {
+    "openai": "2.30.0",
+    "pydantic": "2.12.5",
+    "pymatgen": "2026.3.23",
+    "ase": "3.28.0"
+  },
+  "arguments": {
+    "input": ".tmp/paper-benchmark-deepseek-longitudinal-v1/traces.jsonl",
+    "reference_fixtures": false,
+    "live_model": null,
+    "case_ids": null,
+    "max_steps": 8,
+    "max_tokens": 1000,
+    "case_timeout_seconds": 600.0,
+    "variants": null,
+    "repeats": 1,
+    "output_dir": "docs/benchmark_artifacts/2026-07-13-deepseek-longitudinal-pilot"
+  },
+  "source_sha256": {
+    "aether_dft/research_benchmark.py": "b31e48065a5567c22ebffc647e7cf1b132bac2aac44c3f7b5269248b3e868f17",
+    "aether_dft/research_benchmark_live.py": "c37888965ed7f8d602b52ee86794597ec7bd80b9c23018ffce547b5a910bd40d",
+    "aether_dft/scientific_state.py": "386cbffa7e10747a4a3c5dec9e763461ae08a861f915817e800b8378d81f5b81",
+    "aether_dft/runtime_harness/core.py": "46f6fe4c25ece132aedaaa30e0c95688b552dc7de73f6eb5ea79132b030d13b9"
+  },
+  "reproducibility_warning": "working tree was dirty; results are pilot-only until rerun from a tagged clean revision"
+}

@@ -5,7 +5,8 @@
 ## 已跑通的主线
 
 0. **统一模型后端**
-   - DeepSeek 与 Qwen 都通过同一个 OpenAI-compatible Chat Completions 工具调用路径接入，切换模型只改变 provider/model 配置，不改变 harness 业务流程。
+   - DeepSeek 是产品唯一主模型。Qwen 仅作为同一 OpenAI-compatible Chat Completions 路径下的可选兼容后端；
+     切换模型只改变 provider/model 配置，不维护第二套 harness、prompt 或工具定义。
    - Responses-compatible 解析保留为低层兼容 helper，但不再作为 Qwen3 tools 默认路径。
    - 真实 CLI smoke（2026-06-06）已验证 `deepseek:deepseek-v4-pro` 与 `bailian:qwen3.7-max` 都能调用同一个 `project_state_read` 工具路径：`aether-dft model smoke --model ...`。
 

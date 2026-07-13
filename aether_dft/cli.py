@@ -45,6 +45,7 @@ TOP_LEVEL_COMMANDS = {
     "analyze",
     "ask",
     "auto",
+    "benchmark",
     "chat",
     "cluster",
     "context",
@@ -3269,6 +3270,113 @@ def handle_explain(args: argparse.Namespace) -> int:
     return dft_main(forwarded)
 
 
+def handle_research_benchmark(args: argparse.Namespace) -> int:
+    from .research_benchmark import (
+        build_benchmark_manifest,
+        benchmark_suite_digest,
+        experiment_matrix_summary,
+        load_jsonl,
+        list_long_horizon_cases,
+        reference_ablation_traces,
+        reference_traces,
+        score_benchmark,
+        write_benchmark_report,
+    )
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    variants = args.variants or ["aether_full"]
+    suite_path = output_dir / "case_suite.json"
+    suite_path.write_text(
+        json.dumps(list_long_horizon_cases(suite=args.suite), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    if args.plan_only:
+        print_json(
+            experiment_matrix_summary(
+                suite=args.suite,
+                model_ids=[args.live_model] if args.live_model else [],
+                variants=variants,
+                repeats=args.repeats,
+                max_steps=args.max_steps,
+                case_timeout_seconds=args.case_timeout_seconds,
+                shard_count=args.shard_count,
+            )
+        )
+        return 0
+    traces = []
+    traces_path = output_dir / "traces.jsonl"
+    if args.resume and traces_path.exists():
+        traces.extend(load_jsonl(traces_path))
+    completed_episode_keys = {
+        str(trace.get("episode_key") or "") for trace in traces if str(trace.get("episode_key") or "")
+    }
+    if args.reference_fixtures:
+        traces = reference_traces() + reference_ablation_traces()
+    elif args.input:
+        traces.extend(load_jsonl(args.input))
+    else:
+        from .research_benchmark_live import run_live_research_benchmark
+
+        traces.extend(
+            run_live_research_benchmark(
+                model_id=args.live_model,
+                output_dir=output_dir / "live" / args.live_model.replace(":", "_"),
+                case_ids=args.case_ids,
+                max_steps=args.max_steps,
+                max_tokens=args.max_tokens,
+                case_timeout_seconds=args.case_timeout_seconds,
+                variant_names=args.variants,
+                repeats=args.repeats,
+                suite=args.suite,
+                completed_episode_keys=completed_episode_keys,
+                shard_index=args.shard_index,
+                shard_count=args.shard_count,
+            )
+        )
+    result = score_benchmark(traces)
+    traces_path.write_text(
+        "".join(json.dumps(trace, ensure_ascii=False) + "\n" for trace in traces),
+        encoding="utf-8",
+    )
+    results_path = output_dir / "results.json"
+    results_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_path = write_benchmark_report(result, output_dir / "report.md")
+    manifest_path = output_dir / "run_manifest.json"
+    manifest_payload = build_benchmark_manifest(
+        arguments=vars(args),
+        source_paths=[
+            "aether_dft/research_benchmark.py",
+            "aether_dft/research_benchmark_live.py",
+            "aether_dft/scientific_state.py",
+            "aether_dft/runtime_harness/core.py",
+        ],
+    )
+    manifest_payload["suite_sha256"] = benchmark_suite_digest(args.suite)
+    manifest_path.write_text(
+        json.dumps(
+            manifest_payload,
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ),
+        encoding="utf-8",
+    )
+    print_json(
+        {
+            "status": "ok",
+            "reference_fixtures": bool(args.reference_fixtures),
+            "traces_path": str(traces_path),
+            "results_path": str(results_path),
+            "report_path": str(report_path),
+            "manifest_path": str(manifest_path),
+            "case_suite_path": str(suite_path),
+            "variants": result["variants"],
+        }
+    )
+    return 0
+
+
 def add_auto_enable_options(parser: argparse.ArgumentParser, *, include_goal: bool = False) -> None:
     if include_goal:
         parser.add_argument("goal")
@@ -3312,6 +3420,27 @@ def build_parser() -> argparse.ArgumentParser:
     demo_parser = sub.add_parser("demo", help="组会展示用极简首页，不提交、不联网。")
     demo_parser.add_argument("--run-root")
     demo_parser.set_defaults(func=handle_demo)
+
+    benchmark_parser = sub.add_parser("benchmark", help="长期科研连续性、证据和安全边界评估。")
+    benchmark_sub = benchmark_parser.add_subparsers(dest="benchmark_command", required=True)
+    research_benchmark = benchmark_sub.add_parser("research", help="评估记录的 long-horizon research-agent traces。")
+    source = research_benchmark.add_mutually_exclusive_group(required=True)
+    source.add_argument("--input", help="真实 agent episode JSONL。")
+    source.add_argument("--reference-fixtures", action="store_true", help="只跑确定性工程 fixtures，不代表真实模型结果。")
+    source.add_argument("--live-model", help="运行真实模型与模拟工具的多阶段 benchmark，例如 deepseek:deepseek-v4-pro。")
+    research_benchmark.add_argument("--case", action="append", dest="case_ids")
+    research_benchmark.add_argument("--variant", action="append", dest="variants")
+    research_benchmark.add_argument("--repeats", type=int, default=1)
+    research_benchmark.add_argument("--suite", choices=("pilot", "parameterized"), default="pilot")
+    research_benchmark.add_argument("--resume", action="store_true")
+    research_benchmark.add_argument("--plan-only", action="store_true")
+    research_benchmark.add_argument("--shard-count", type=int, default=1)
+    research_benchmark.add_argument("--shard-index", type=int, default=0)
+    research_benchmark.add_argument("--max-steps", type=int, default=8)
+    research_benchmark.add_argument("--max-tokens", type=int, default=1000)
+    research_benchmark.add_argument("--case-timeout-seconds", type=float, default=600.0)
+    research_benchmark.add_argument("--output-dir", default=".aether/benchmarks/latest")
+    research_benchmark.set_defaults(func=handle_research_benchmark)
 
     model_parser = sub.add_parser("model", help="查看或切换当前模型。")
     model_sub = model_parser.add_subparsers(dest="model_command")

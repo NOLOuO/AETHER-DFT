@@ -1,12 +1,74 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import secrets
+import threading
 from typing import Any
 
 from .paths import RUNTIME_DIR
 
 DEFAULT_PERMISSION_MODE = "dev"
 PERMISSIONS_PATH = RUNTIME_DIR / "permissions.json"
+_MODEL_PERMISSION_PREFIXES = ("_permission_", "_approval_")
+
+
+def strip_model_permission_fields(arguments: dict[str, Any] | None) -> dict[str, Any]:
+    """Copy tool arguments while discarding model-controlled approval claims."""
+    return {
+        str(key): value
+        for key, value in dict(arguments or {}).items()
+        if not str(key).startswith(_MODEL_PERMISSION_PREFIXES)
+    }
+
+
+def approval_scope_digest(tool_name: str, arguments: dict[str, Any] | None) -> str:
+    """Return a stable digest binding an approval to one tool call payload."""
+    envelope = {
+        "tool_name": str(tool_name),
+        "arguments": strip_model_permission_fields(arguments),
+    }
+    canonical = json.dumps(
+        envelope,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+class OneTimeApprovalStore:
+    """In-memory, single-use approvals that are unforgeable by model arguments."""
+
+    def __init__(self) -> None:
+        self._pending: dict[str, str] = {}
+        self._lock = threading.Lock()
+
+    def issue(self, tool_name: str, arguments: dict[str, Any] | None) -> str:
+        token = secrets.token_urlsafe(32)
+        digest = approval_scope_digest(tool_name, arguments)
+        with self._lock:
+            self._pending[token] = digest
+        return token
+
+    def consume(
+        self,
+        token: str | None,
+        tool_name: str,
+        arguments: dict[str, Any] | None,
+    ) -> tuple[bool, str]:
+        if not token:
+            return False, "approval_missing"
+        with self._lock:
+            expected_digest = self._pending.pop(str(token), None)
+        if expected_digest is None:
+            return False, "approval_invalid_or_replayed"
+        actual_digest = approval_scope_digest(tool_name, arguments)
+        if not hmac.compare_digest(expected_digest, actual_digest):
+            return False, "approval_scope_mismatch"
+        return True, "one_time_approval_consumed"
 
 
 def normalize_permission_mode(value: str | None) -> str:

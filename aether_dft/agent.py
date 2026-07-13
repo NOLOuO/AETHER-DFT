@@ -29,12 +29,15 @@ class _ModuleAdapter:
         tool_choice: str | dict[str, Any] | None = "auto",
         max_tokens: int | None = None,
         stream_callback: Callable[[dict[str, Any]], None] | None = None,
+        timeout_seconds: int | None = None,
     ) -> dict[str, Any]:
         provider_id, model_name = split_model_id(self.model_id)
         if tools and hasattr(self.llm, "call_messages_with_tools"):
             kwargs: dict[str, Any] = {}
             if stream_callback is not None:
                 kwargs["stream_callback"] = stream_callback
+            if timeout_seconds is not None:
+                kwargs["timeout_seconds"] = timeout_seconds
             return self.llm.call_messages_with_tools(
                 messages,
                 tools=tools,
@@ -47,6 +50,8 @@ class _ModuleAdapter:
         kwargs = {}
         if stream_callback is not None:
             kwargs["stream_callback"] = stream_callback
+        if timeout_seconds is not None:
+            kwargs["timeout_seconds"] = timeout_seconds
         return self.llm.call_messages_inline(
             messages,
             provider_id=provider_id,
@@ -72,6 +77,7 @@ def run_agent_once(
     permission_prompt_callback: Callable[[dict[str, Any]], bool] | None = None,
     stream_callback: Callable[[dict[str, Any]], None] | None = None,
     human_question_callback: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    turn_timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Run one Codex-like AETHER harness turn.
 
@@ -94,5 +100,6 @@ def run_agent_once(
         progress_callback=progress_callback,
         permission_prompt_callback=permission_prompt_callback,
         stream_callback=stream_callback,
+        turn_timeout_seconds=turn_timeout_seconds,
     )
     return summarize_research_turn(record, project=project)

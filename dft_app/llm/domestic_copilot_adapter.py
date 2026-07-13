@@ -112,6 +112,7 @@ class DomesticCopilotLLM:
         max_tokens: int | None = None,
         tool_choice: str | dict[str, Any] | None = "auto",
         stream_callback: Any | None = None,
+        timeout_seconds: int | None = None,
     ) -> dict[str, Any]:
         return self.call_messages_inline(
             messages,
@@ -121,6 +122,7 @@ class DomesticCopilotLLM:
             tools=tools,
             tool_choice=tool_choice,
             stream_callback=stream_callback,
+            timeout_seconds=timeout_seconds,
         )
 
     def _call_messages_external(

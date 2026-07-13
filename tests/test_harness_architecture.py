@@ -465,7 +465,9 @@ def test_cluster_remote_tools_route_to_runner_and_store(tmp_path: Path, monkeypa
     monkeypatch.setattr("aether_dft.runtime_harness.tool_registry.SSHRemoteRunner", FakeRunner)
     registry = ToolRegistry(allow_cluster_submit=True)
 
-    submit = registry.run_tool("cluster_remote_submit", {"run_root": str(tmp_path / "run")})
+    submit_args = {"run_root": str(tmp_path / "run")}
+    submit_token = registry._issue_tool_approval("cluster_remote_submit", submit_args)
+    submit = registry.run_tool("cluster_remote_submit", submit_args, approval_token=submit_token)
     assert submit["result"]["status"] == "submitted"
 
     monitor = registry.run_tool("cluster_remote_monitor", {"run_root": str(tmp_path / "run"), "sync_outputs": False})
@@ -738,6 +740,44 @@ def test_agent_harness_emits_tool_progress_heartbeat(monkeypatch, tmp_path: Path
     assert any(event.get("event") == "tool_progress" and event.get("name") == "slow_read" for event in events)
 
 
+class TimeoutAwareAdapter:
+    runtime = type("Runtime", (), {"model_id": "deepseek:deepseek-v4-pro"})()
+
+    def __init__(self):
+        self.timeout_seconds = None
+
+    def chat(self, messages, *, tools=None, tool_choice="auto", max_tokens=None, timeout_seconds=None):
+        self.timeout_seconds = timeout_seconds
+        raise TimeoutError("simulated provider timeout")
+
+
+def test_agent_harness_bounds_model_calls_and_persists_timeout(tmp_path: Path):
+    sessions = HarnessSessionStore(tmp_path / "sessions")
+    events: list[dict[str, Any]] = []
+    adapter = TimeoutAwareAdapter()
+    harness = AgentHarness(adapter=adapter, sessions=sessions)
+
+    record = harness.run_turn(
+        "继续科研任务",
+        max_steps=3,
+        turn_timeout_seconds=7,
+        progress_callback=events.append,
+    )
+
+    assert adapter.timeout_seconds is not None
+    assert 1 <= adapter.timeout_seconds <= 7
+    assert record["finish_reason"] == "model_request_timeout"
+    assert record["deadline_exceeded"] is True
+    assert record["timeout_kind"] == "provider_timeout"
+    assert record["turn_timeout_seconds"] == 7
+    assert record["model_call_count"] == 1
+    assert record["model_elapsed_seconds"] >= 0
+    assert record["model_calls"][0]["error_type"] == "TimeoutError"
+    assert Path(record["record_path"]).exists()
+    assert any(event.get("event") == "model_error" for event in events)
+    assert any(event.get("event") == "turn_deadline_exceeded" for event in events)
+
+
 def test_token_guard_marks_context_for_finalization(monkeypatch):
     monkeypatch.setenv("AETHER_DFT_CONTEXT_MAX_CHARS", "12000")
     messages = [{"role": "user", "content": "x" * 11500}]
@@ -838,13 +878,17 @@ class ApprovalRetryRegistry:
     def list_tools(self):
         return [{"name": "write_note", "read_only": False}]
 
-    def run_tool(self, name, arguments):
+    def _issue_tool_approval(self, name, arguments):
+        self.approved_call = (name, dict(arguments or {}))
+        return "internal-one-time-token"
+
+    def run_tool(self, name, arguments, *, approval_token=None):
         if isinstance(arguments, str):
             payload = json.loads(arguments)
         else:
             payload = dict(arguments or {})
         self.calls.append(payload)
-        if not payload.get("_permission_granted"):
+        if approval_token != "internal-one-time-token" or getattr(self, "approved_call", None) != (name, payload):
             return {
                 "name": name,
                 "arguments": payload,
@@ -875,7 +919,7 @@ def test_agent_harness_prompts_for_permission_and_retries_approved_tool(tmp_path
     assert record["tool_executions"][0]["result"]["status"] == "ok"
     assert record["response"] == "已完成需要审批的写入。"
     assert "_permission_granted" not in harness.registry.calls[0]
-    assert harness.registry.calls[1]["_permission_granted"] is True
+    assert "_permission_granted" not in harness.registry.calls[1]
 
 
 def test_workflow_map_exposes_capabilities_not_fixed_steps():

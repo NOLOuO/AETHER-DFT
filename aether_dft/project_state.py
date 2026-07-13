@@ -6,6 +6,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from .paths import KNOWLEDGE_BASE_DIR, PROJECTS_DIR, ensure_project_dirs
 from .research_workspace import list_research_projects, read_research_onboarding_context, resolve_research_project
@@ -295,13 +296,84 @@ def read_project_context_digest(slug: str, *, max_chars: int = 7000) -> str:
 
 
 def write_project_state(slug: str, state: dict[str, Any]) -> Path:
+    """Merge a partial update into the canonical scientific project state.
+
+    Legacy aliases remain at the top level for older CLI/tool readers, but the
+    canonical goal/evidence/decision/question/blocker/job fields are now the
+    single persisted representation in ``current_state.json``.
+    """
+
+    from .scientific_state import normalize_scientific_state
+
     paths = project_paths(slug)
     paths.state.parent.mkdir(parents=True, exist_ok=True)
-    payload = dict(state)
+    existing: dict[str, Any] = {}
+    if paths.state.exists():
+        try:
+            loaded = json.loads(paths.state.read_text(encoding="utf-8"))
+            existing = loaded if isinstance(loaded, dict) else {}
+        except Exception:
+            existing = {}
+    merged = dict(existing)
+    merged.update(dict(state))
+    if not str(merged.get("research_goal") or "").strip():
+        merged["research_goal"] = str(merged.get("current_focus") or "").strip()
+    merged["next_actions"] = list(merged.get("next_actions") or merged.get("next_steps") or [])
+    decision = str(merged.get("latest_decision") or "").strip()
+    decisions = [dict(item) for item in merged.get("decisions") or [] if isinstance(item, dict)]
+    if decision and not any(str(item.get("statement") or "").strip() == decision for item in decisions):
+        decisions.append(
+            {
+                "decision_id": str(merged.get("latest_checkpoint_id") or f"decision-{len(decisions) + 1}"),
+                "statement": decision,
+                "evidence_refs": list(merged.get("evidence_refs") or []),
+                "status": "accepted",
+                "recorded_at": now_iso(),
+            }
+        )
+    merged["decisions"] = decisions
+    normalized = normalize_scientific_state(paths.slug, merged).to_dict()
+    compatibility_keys = (
+        "latest_decision",
+        "latest_checkpoint_id",
+        "evidence_refs",
+        "next_steps",
+        "run_ids",
+        "candidate_ids",
+    )
+    payload = dict(merged)
+    payload.update(normalized)
+    for key in compatibility_keys:
+        if key in merged:
+            payload[key] = merged[key]
     payload["updated_at"] = now_iso()
-    paths.state.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary = paths.state.with_name(f".{paths.state.name}.{uuid4().hex}.tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(paths.state)
     _sync_state_markdown(paths)
     return paths.state
+
+
+def read_scientific_project_state(slug: str) -> dict[str, Any]:
+    """Return the canonical typed state and its audit without reading prose as truth."""
+
+    from .scientific_state import audit_scientific_state, normalize_scientific_state
+
+    paths = project_paths(slug)
+    raw: dict[str, Any] = {}
+    if paths.state.exists():
+        try:
+            loaded = json.loads(paths.state.read_text(encoding="utf-8"))
+            raw = loaded if isinstance(loaded, dict) else {}
+        except Exception:
+            raw = {}
+    state = normalize_scientific_state(paths.slug, raw)
+    return {
+        "status": "ok" if raw else "empty",
+        "path": str(paths.state),
+        "state": state.to_dict(),
+        "audit": audit_scientific_state(state),
+    }
 
 
 def append_progress(slug: str, *, completed: list[str] | None = None, blockers: list[str] | None = None, next_steps: list[str] | None = None) -> Path:

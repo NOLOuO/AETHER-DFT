@@ -137,7 +137,7 @@ def _chat_tools_to_responses_tools(tools: list[dict[str, Any]]) -> list[dict[str
     return [item for item in normalized if item.get("name")]
 
 
-def _build_openai_client(api_key: str, base_url: str, timeout: int) -> Any:
+def _build_openai_client(api_key: str, base_url: str, timeout: int, *, max_retries: int = 0) -> Any:
     try:
         from openai import OpenAI
     except Exception as exc:  # pragma: no cover - depends on local environment
@@ -147,6 +147,7 @@ def _build_openai_client(api_key: str, base_url: str, timeout: int) -> Any:
         api_key=api_key,
         base_url=base_url,
         timeout=float(timeout),
+        max_retries=max(0, int(max_retries)),
     )
 
 
@@ -190,6 +191,7 @@ def call_openai_compatible_responses_result(
         resolved_key,
         base_url,
         int(timeout_seconds or config.get("timeout_seconds", 180)),
+        max_retries=int(config.get("max_retries", 0)),
     )
 
     try:
@@ -237,6 +239,7 @@ def call_openai_compatible_responses_result(
         "content": content,
         "finish_reason": "tool_calls" if tool_calls else "stop",
         "tool_calls": tool_calls,
+        "request_id": str(getattr(completion, "_request_id", "") or data.get("id") or ""),
         "raw": data,
     }
 
@@ -265,6 +268,7 @@ def call_openai_compatible_result(
         resolved_key,
         base_url,
         int(timeout_seconds or config.get("timeout_seconds", 180)),
+        max_retries=int(config.get("max_retries", 0)),
     )
 
     body: dict[str, Any] = {
@@ -326,6 +330,7 @@ def call_openai_compatible_result(
         "reasoning_content": reasoning_content,
         "finish_reason": choice.get("finish_reason"),
         "tool_calls": tool_calls,
+        "request_id": str(getattr(completion, "_request_id", "") or data.get("id") or ""),
         "raw": data,
     }
 

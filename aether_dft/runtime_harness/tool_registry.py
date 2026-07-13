@@ -57,7 +57,14 @@ from aether_dft.auto_mode import (
     request_auto_human_question,
 )
 from aether_dft.prompt_engine import load_architecture_live_doc_snapshot
-from aether_dft.permissions import get_permission_mode, permission_mode_label, should_allow_tool
+from aether_dft.permissions import (
+    OneTimeApprovalStore,
+    approval_scope_digest,
+    get_permission_mode,
+    permission_mode_label,
+    should_allow_tool,
+    strip_model_permission_fields,
+)
 from aether_dft.project_state import append_progress, project_paths
 from aether_dft.adsorption_authoring import (
     AdsorptionCandidatePlan,
@@ -473,6 +480,7 @@ class ToolRegistry:
         self.permission_mode = permission_mode or get_permission_mode()
         self.human_question_handler = human_question_handler
         self.default_project: str | None = None
+        self._approval_store = OneTimeApprovalStore()
         self._tools: dict[str, tuple[ToolSpec, Callable[[dict[str, Any]], dict[str, Any]]]] = {}
         self._register_all()
 
@@ -507,6 +515,7 @@ class ToolRegistry:
         self._register(ToolSpec("research_followup_due", "读取已经到期的科研 follow-up；返回 evidence_goals，模型应自主选择需要的状态/日志/结果工具补证据。", {"project": {"type": "string"}, "now": {"type": "string"}, "limit": {"type": "integer"}}, True), self._research_followup_due)
         self._register(ToolSpec("research_followup_complete", "把 follow-up 标记完成/取消，或对 interval_minutes follow-up 自动重排；只有完成证据检查后再调用。", {"project": {"type": "string"}, "followup_id": {"type": "string"}, "status": {"type": "string"}, "note": {"type": "string"}, "reschedule": {"type": "boolean"}}, False, ("followup_id",)), self._research_followup_complete)
         self._register(ToolSpec("evidence_claim_audit", "审计模型准备写出的科研 claim 是否带 evidence_refs；无证据 claim 必须降级为假设/下一步。", {"claims": {"type": "array", "items": {"type": "object"}}, "evidence_items": {"type": "array", "items": {"type": "object"}}}, True), self._evidence_claim_audit)
+        self._register(ToolSpec("scientific_state_audit", "审计统一科研状态中的目标、证据类型、claim 引用和完成条件；优先传 project 直接审计落盘状态，避免模型重新转写状态。", {"project": {"type": "string"}, "state": {"type": "object"}}, True), self._scientific_state_audit)
         self._register(ToolSpec("web_search", "通用网页检索入口。若本地未接 live connector，会返回 query_urls 与 connector_required，不会伪造结果。", {"query": {"type": "string"}, "max_results": {"type": "integer"}, "live": {"type": "boolean"}}, True, ("query",)), self._web_search)
         self._register(ToolSpec("literature_search", "文献检索入口：默认给出 arXiv/Semantic Scholar/Scholar 查询 envelope；live=true 时尝试 arXiv Atom fallback。", {"query": {"type": "string"}, "max_results": {"type": "integer"}, "source": {"type": "string"}, "live": {"type": "boolean"}}, True, ("query",)), self._literature_search)
         self._register(ToolSpec("chemistry_compute", "讨论阶段小计算器：单位换算、Boltzmann population、TST/Eyring 速率、Delta G/kBT。支持旧 operation 与新 mode 参数，让模型按科研问题自主选择。", {"operation": {"type": "string"}, "mode": {"type": "string"}, "value": {"type": "number"}, "from_unit": {"type": "string"}, "to_unit": {"type": "string"}, "energies": {"type": "array", "items": {"type": "number"}}, "energies_ev": {"type": "array", "items": {"type": "number"}}, "energy_unit": {"type": "string"}, "reference_energy": {"type": "number"}, "temperature_k": {"type": "number"}, "barrier_ev": {"type": "number"}, "activation_energy": {"type": "number"}, "prefactor_hz": {"type": "number"}, "transmission_coefficient": {"type": "number"}, "delta_h_ev": {"type": "number"}, "delta_s_ev_k": {"type": "number"}, "enthalpy": {"type": "number"}, "enthalpy_unit": {"type": "string"}, "entropy": {"type": "number"}, "entropy_unit": {"type": "string"}, "unit": {"type": "string"}}, True), self._chemistry_compute)
@@ -582,7 +591,7 @@ class ToolRegistry:
         self._register(ToolSpec("research_workspace_sync_from_cluster", "从集群 ~/research/<project>/ 拉回本地 research/<project>/；默认 dry-run，apply=true 才覆盖本地且先备份。", {"project": {"type": "string"}, "remote_research_dir": {"type": "string"}, "apply": {"type": "boolean"}}, False), self._research_workspace_sync_from_cluster)
         self._register(ToolSpec("research_workspace_pull_logs", "按本地 run 记录从集群回拉 VASP 输出/日志。", {"project": {"type": "string"}, "run_id": {"type": "string"}}, False), self._research_workspace_pull_logs)
         self._register(ToolSpec("research_learning_capture", "优先用于科研复盘：把重要科研判断、失败经验或参数结论写入 research/<project>/Learning/<title>.md，便于与集群 ~/research/<project>/ 同步。content 写短证据化 Learning（建议 800-1200 字以内）；太长时先沉淀核心规则，细节引用 evidence/path。", {"project": {"type": "string"}, "title": {"type": "string"}, "content": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, False, ("project", "title", "content")), self._research_learning_capture)
-        self._register(ToolSpec("cluster_remote_submit", "通过 SSH/SLURM 远程提交已建好的 run；可传 cluster_alias 指定账号/集群，不改变 active cluster。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}, "cluster_alias": {"type": "string"}}, False), self._cluster_remote_submit)
+        self._register(ToolSpec("cluster_remote_submit", "通过 SSH/SLURM 远程提交已建好的 run；可传 cluster_alias 指定账号/集群，不改变 active cluster。危险操作：每次提交都必须由人类显式确认。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}, "cluster_alias": {"type": "string"}}, False, (), True, True), self._cluster_remote_submit)
         self._register(ToolSpec("cluster_remote_monitor", "轮询远程 run 状态并在完成时同步输出；可传 cluster_alias。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}, "sync_outputs": {"type": "boolean"}, "cluster_alias": {"type": "string"}}, False), self._cluster_remote_monitor)
         self._register(ToolSpec("cluster_remote_fetch", "同步远程 run 输出到本地；可传 cluster_alias。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}, "cluster_alias": {"type": "string"}}, False), self._cluster_remote_fetch)
         self._register(ToolSpec("adsorption_workflow_status", "读取 adsorption workflow 状态。", {"run_root": {"type": "string"}}, True), self._adsorption_workflow_status)
@@ -796,7 +805,29 @@ class ToolRegistry:
         spec, _ = self._tools[name]
         return bool(spec.parallel_safe)
 
-    def run_tool(self, name: str, arguments: dict[str, Any] | str | None = None) -> dict[str, Any]:
+    def _prepare_tool_payload(self, name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
+        payload = strip_model_permission_fields(arguments)
+        if name in self._tools:
+            spec, _ = self._tools[name]
+            if (
+                self.default_project
+                and "project" in (spec.parameters or {})
+                and not str(payload.get("project") or "").strip()
+            ):
+                payload["project"] = self.default_project
+        return payload
+
+    def _issue_tool_approval(self, name: str, arguments: dict[str, Any] | None) -> str:
+        """Issue one opaque approval after the harness receives human consent."""
+        return self._approval_store.issue(name, self._prepare_tool_payload(name, arguments))
+
+    def run_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | str | None = None,
+        *,
+        approval_token: str | None = None,
+    ) -> dict[str, Any]:
         if isinstance(arguments, str):
             raw_arguments = arguments
             arguments, parse_error = _loads_tool_arguments(raw_arguments)
@@ -811,27 +842,25 @@ class ToolRegistry:
                         "raw_arguments_preview": raw_arguments[:800],
                     },
                 }
-        payload = arguments or {}
+        payload = self._prepare_tool_payload(name, arguments or {})
         if name not in self._tools:
             result = {"status": "error", "message": f"未知工具: {name}"}
         else:
             spec, handler = self._tools[name]
-            if (
-                isinstance(payload, dict)
-                and self.default_project
-                and "project" in (spec.parameters or {})
-                and not str(payload.get("project") or "").strip()
-            ):
-                payload["project"] = self.default_project
-            explicit_permission = bool(payload.pop("_permission_granted", False))
+            approval_verified, approval_reason = self._approval_store.consume(approval_token, name, payload)
             allowed, reason = should_allow_tool(
                 read_only=spec.read_only,
                 mode=self.permission_mode,
-                explicit_permission=explicit_permission,
+                explicit_permission=approval_verified,
             )
-            if allowed and spec.explicit_human_required and not explicit_permission:
+            explicit_human_required = spec.explicit_human_required or (
+                name == "dft_run_task"
+                and self.allow_cluster_submit
+                and str(payload.get("execution_mode") or "").strip().lower() == "remote_submit"
+            )
+            if allowed and explicit_human_required and not approval_verified:
                 allowed = False
-                reason = "explicit_human_required"
+                reason = approval_reason if approval_token else "explicit_human_required"
             if not allowed:
                 result = {
                     "status": "permission_required",
@@ -840,7 +869,8 @@ class ToolRegistry:
                     "permission_label": permission_mode_label(self.permission_mode),
                     "tool": name,
                     "read_only": spec.read_only,
-                    "explicit_human_required": spec.explicit_human_required,
+                    "explicit_human_required": explicit_human_required,
+                    "approval_scope_digest": approval_scope_digest(name, payload),
                     "reason": reason,
                 }
                 return {"name": name, "arguments": payload, "result": result}
@@ -1122,6 +1152,15 @@ class ToolRegistry:
             evidence_items=payload.get("evidence_items") or [],
         )
 
+    def _scientific_state_audit(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from ..scientific_state import audit_scientific_state
+        from ..project_state import read_scientific_project_state
+
+        project = str(payload.get("project") or "").strip()
+        if project:
+            return read_scientific_project_state(project)["audit"]
+        return audit_scientific_state(payload.get("state") or {})
+
     def _research_progress_append(self, payload: dict[str, Any]) -> dict[str, Any]:
         return append_research_progress(
             str(payload.get("project") or "").strip(),
@@ -1168,7 +1207,12 @@ class ToolRegistry:
         )
 
     def _project_state_read(self, payload: dict[str, Any]) -> dict[str, Any]:
-        from aether_dft.project_state import project_paths, read_project_context, read_project_context_digest
+        from aether_dft.project_state import (
+            project_paths,
+            read_project_context,
+            read_project_context_digest,
+            read_scientific_project_state,
+        )
 
         project = str(payload.get("project") or "").strip()
         if not project:
@@ -1188,6 +1232,7 @@ class ToolRegistry:
             "state_md_exists": paths.state_md.exists(),
             "context": context,
             "digest": read_project_context_digest(project),
+            "scientific_state": read_scientific_project_state(project),
             "research_onboarding": {
                 "project_found": research.get("project_found"),
                 "files_read": research.get("files_read"),
