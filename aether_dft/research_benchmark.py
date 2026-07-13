@@ -44,7 +44,10 @@ LONG_HORIZON_CASES = [
         description="Resume a project after a session boundary without losing the research goal.",
         initial_goal="Identify the most stable adsorption candidate and validate it with DFT evidence.",
         required_actions=["project_continuity_digest"],
-        required_memory_facts=["same research goal", "latest accepted candidate"],
+        required_memory_facts=[
+            "Identify the most stable adsorption candidate and validate it with DFT evidence.",
+            "latest accepted candidate",
+        ],
         user_turns=[
             "Inspect the persisted project record and preserve the accepted scientific state before the interruption.",
             "The process was restarted. Continue the same research project from durable state and report the next valid action.",
@@ -70,7 +73,6 @@ LONG_HORIZON_CASES = [
         description="Reject a stale local running record when live scheduler evidence disagrees.",
         initial_goal="Report the current cluster job state accurately.",
         required_actions=["cluster_job_status_brief"],
-        required_memory_facts=["local record is not live evidence"],
         requires_live_evidence=True,
         user_turns=[
             "A local record says the benchmark job is still running. Verify the current state from available evidence.",
@@ -161,7 +163,10 @@ def build_parameterized_cases(*, instances_per_category: int = 10, seed: int = 2
                 description="Resume a project after a process boundary.",
                 initial_goal=f"Validate the accepted {adsorbate}/{material} adsorption candidate with DFT evidence.",
                 required_actions=["project_continuity_digest"],
-                required_memory_facts=["same research goal", f"latest accepted candidate {candidate}"],
+                required_memory_facts=[
+                    f"Validate the accepted {adsorbate}/{material} adsorption candidate with DFT evidence.",
+                    candidate,
+                ],
                 user_turns=[
                     "Inspect the persisted adsorption project before the planned process restart.",
                     "The process was restarted. Continue from durable research state without reopening accepted choices.",
@@ -202,7 +207,6 @@ def build_parameterized_cases(*, instances_per_category: int = 10, seed: int = 2
                 description="Resolve stale local and live scheduler state conflict.",
                 initial_goal="Report the current cluster job state accurately.",
                 required_actions=["cluster_job_status_brief"],
-                required_memory_facts=["local record is not live evidence"],
                 requires_live_evidence=True,
                 user_turns=[
                     f"A local record says job {job_id} is {local_state}. Verify its current state.",
@@ -360,7 +364,6 @@ def score_research_episode(trace: dict[str, Any]) -> dict[str, Any]:
     )
     required_actions_ok = all(name in actions for name in case.required_actions)
     forbidden_actions_ok = not any(name in actions for name in case.forbidden_actions)
-    memory_ok = all(fact.lower() in final_memory for fact in case.required_memory_facts)
     goal_ok = bool(final_goal) and (
         final_goal == initial_goal or initial_goal in final_goal or final_goal in initial_goal
     )
@@ -388,6 +391,10 @@ def score_research_episode(trace: dict[str, Any]) -> dict[str, Any]:
         for claim in final_claims
         if isinstance(claim, dict)
     ).lower()
+    # Memory is evaluated from externally observable durable state and claims,
+    # never solely from a model-authored ``final_memory`` self-report.
+    memory_corpus = " ".join((final_memory, final_goal, claim_text))
+    memory_ok = all(fact.lower() in memory_corpus for fact in case.required_memory_facts)
     claim_content_ok = all(term.lower() in claim_text for term in case.expected_claim_terms)
     recovery_ok = True
     if case.failure_injected:

@@ -5,6 +5,7 @@ import json
 
 from aether_dft.research_benchmark import (
     benchmark_case_suite,
+    build_parameterized_cases,
     experiment_matrix_summary,
     reference_ablation_traces,
     reference_traces,
@@ -196,6 +197,36 @@ def test_stateless_ablation_fails_resume_case():
     result = score_research_episode(trace)
     assert result["passed"] is False
     assert {"goal_continuity", "memory_retention", "required_action_completion"}.issubset(result["failures"])
+
+
+def test_memory_retention_is_scored_from_observed_goal_and_claim_not_model_self_report():
+    trace = next(item for item in reference_traces() if item["case_id"] == "resume_after_session_break")
+    trace = dict(trace)
+    trace["final_memory"] = []
+    trace["final_goal"] = trace["initial_goal"]
+    trace["final_state"] = {
+        **trace["final_state"],
+        "claims": [
+            {
+                "id": "continuity-claim",
+                "claim": "Continue with the latest accepted candidate; its identity remains durable across the restart.",
+                "evidence_refs": ["project-state"],
+            }
+        ],
+    }
+
+    result = score_research_episode(trace)
+
+    assert result["metrics"]["memory_retention"] == 1.0
+
+
+def test_parameterized_continuity_gold_uses_values_not_evaluator_labels():
+    case = next(item for item in build_parameterized_cases() if item.category == "continuity")
+
+    assert case.initial_goal in case.required_memory_facts
+    assert case.environment["candidate"] in case.required_memory_facts
+    assert "same research goal" not in case.required_memory_facts
+    assert not any(item.startswith("latest accepted candidate ") for item in case.required_memory_facts)
 
 
 def test_scientific_state_audit_is_available_to_the_model():

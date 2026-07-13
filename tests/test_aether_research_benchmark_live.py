@@ -170,6 +170,19 @@ def test_live_runner_restarts_harness_and_scores_durable_state(monkeypatch, tmp_
     assert len(trace["record_paths"]) == 2
 
 
+def test_finalize_tool_requires_exact_machine_resolvable_evidence_references():
+    registry = BenchmarkSandboxRegistry(LONG_HORIZON_CASES[0])
+    registry.final_stage = True
+
+    finalize = next(
+        item for item in registry.openai_tool_schemas() if item["function"]["name"] == "benchmark_finalize"
+    )
+
+    description = finalize["function"]["description"].lower()
+    assert "exact evidence_id or locator" in description
+    assert "do not annotate" in description
+
+
 def test_live_runner_skips_completed_episode_keys_without_calling_model(monkeypatch, tmp_path):
     case = LONG_HORIZON_CASES[0]
     key = f"fake:research|aether_full|1|{case.case_id}"

@@ -114,7 +114,9 @@ class BenchmarkSandboxRegistry:
             schemas.append(
                 _tool_schema(
                     "benchmark_finalize",
-                    "Finish with one evidence-grounded claim. The evaluator reads durable state independently.",
+                    "Finish with one evidence-grounded claim. evidence_refs must contain exact evidence_id or locator "
+                    "strings returned by tools; do not annotate or paraphrase them. The evaluator reads durable state "
+                    "independently.",
                     {
                         "research_goal": {"type": "string"},
                         "claim": {"type": "string"},
@@ -278,7 +280,8 @@ def _benchmark_prompt(
     user_turns = case.user_turns or [case.description]
     user_request = user_turns[min(stage_index, len(user_turns) - 1)]
     final_instruction = (
-        " When you have inspected the necessary evidence, finish with benchmark_finalize."
+        " When you have inspected the necessary evidence, finish with benchmark_finalize. Its evidence_refs must use "
+        "exact evidence_id or locator strings returned by tools, without annotations."
         if final_stage
         else " Preserve durable project state when useful, then answer this stage without claiming the episode is complete."
     )
@@ -398,8 +401,9 @@ def run_live_research_benchmark(
                 reported_goal = str(finalized.get("research_goal") or "").strip()
                 final_goal = persisted_goal or reported_goal
                 persisted_facts = [str(item) for item in world.project_state.get("accepted_facts") or []]
+                observed_text = f"{final_goal} {claim}".lower()
                 observed_facts = persisted_facts or [
-                    fact for fact in case.required_memory_facts if fact.lower() in claim.lower()
+                    fact for fact in case.required_memory_facts if fact.lower() in observed_text
                 ]
                 elapsed = sum(float(item.get("elapsed_seconds") or 0.0) for item in records)
                 timed_out = any(bool(item.get("deadline_exceeded")) for item in records)
