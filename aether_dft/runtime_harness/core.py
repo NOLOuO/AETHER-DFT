@@ -509,6 +509,7 @@ class AgentHarness:
         allow_cluster_submit: bool = False,
         permission_mode: str | None = None,
         human_question_handler: Any | None = None,
+        system_prompt_renderer: Any | None = None,
     ):
         self.adapter = adapter
         self.registry = registry or ToolRegistry(
@@ -518,6 +519,7 @@ class AgentHarness:
         )
         self.sessions = sessions or HarnessSessionStore()
         self.allow_cluster_submit = allow_cluster_submit
+        self.system_prompt_renderer = system_prompt_renderer
 
     def run_turn(
         self,
@@ -564,8 +566,13 @@ class AgentHarness:
                 session_context = session_store.build_session_context(session_id)
             except Exception:
                 session_context = ""
+        system_prompt = (
+            self.system_prompt_renderer(project=project, session_context=session_context)
+            if callable(self.system_prompt_renderer)
+            else render_compiled_system_prompt(project=project, session_context=session_context)
+        )
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": render_compiled_system_prompt(project=project, session_context=session_context)},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
         messages = _clean_messages(messages)
@@ -1103,8 +1110,15 @@ class AgentHarness:
                         )
                         retry_content = _clean_text(str(retry_reply.get("content") or ""))
                         if retry_content:
-                            response = retry_content
-                            finish_reason = "length_finalized"
+                            if _contains_tool_markup(retry_content):
+                                response = _tool_evidence_fallback(
+                                    tool_executions,
+                                    reason="length retry still contained tool markup",
+                                )
+                                finish_reason = "length_tool_markup_blocked"
+                            else:
+                                response = retry_content
+                                finish_reason = "length_finalized"
                             messages.append({"role": "assistant", "content": response})
                             messages = _clean_messages(messages)
                     except ModelProviderError:

@@ -318,6 +318,19 @@ def _benchmark_prompt(
     )
 
 
+def _benchmark_system_prompt(*, project: str | None, session_context: str) -> str:
+    context = str(session_context or "").strip()
+    return (
+        "You are AETHER-DFT in an isolated research-agent evaluation. Only the tool schemas supplied with each "
+        "request are available; never name or call tools that are absent from those schemas. Use native tool calls "
+        "and do not emit DSML, XML, JSON tool arguments, or other tool markup as ordinary text. Base every scientific "
+        "claim on observed tool evidence and preserve accepted decisions across turns when the available state tools "
+        "allow it.\n\n"
+        f"Project: {project or 'benchmark'}\n"
+        f"Prior session context:\n{context or '(none)'}"
+    )
+
+
 def _run_fixed_workflow(registry: BenchmarkSandboxRegistry) -> None:
     for name in registry.case.required_actions:
         registry.run_tool(name, {})
@@ -389,6 +402,7 @@ def run_live_research_benchmark(
                         sessions=sessions,
                         allow_cluster_submit=False,
                         permission_mode="ask",
+                        system_prompt_renderer=_benchmark_system_prompt,
                     )
                     record = harness.run_turn(
                         _benchmark_prompt(

@@ -7,6 +7,7 @@ from aether_dft.research_benchmark_live import (
     BENCHMARK_VARIANTS,
     BenchmarkSandboxRegistry,
     _benchmark_prompt,
+    _benchmark_system_prompt,
     _force_real_compaction,
     run_live_research_benchmark,
 )
@@ -194,6 +195,15 @@ def test_cluster_tool_descriptions_teach_applicability_without_fixed_routing():
     assert "do not probe" in descriptions["cluster_job_status_brief"]
     assert "failed job" in descriptions["cluster_job_tail_log"]
     assert "failure evidence" in descriptions["diagnose_failure"]
+
+
+def test_benchmark_system_prompt_matches_the_sandbox_tool_surface():
+    prompt = _benchmark_system_prompt(project="benchmark-demo", session_context="accepted candidate h2o-atop-1")
+
+    assert "only the tool schemas supplied" in prompt.lower()
+    assert "do not emit" in prompt.lower()
+    assert "accepted candidate h2o-atop-1" in prompt
+    assert "structure_resolve" not in prompt
 
 
 @pytest.mark.parametrize("variant_name", ["stateless_agent", "transcript_only"])

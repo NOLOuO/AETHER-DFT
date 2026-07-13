@@ -97,7 +97,11 @@ class InterruptingAdapter:
 class StreamAwareAdapter:
     runtime = type("Runtime", (), {"model_id": "fake:stream"})()
 
+    def __init__(self):
+        self.messages = []
+
     def chat(self, messages, *, tools=None, tool_choice="auto", max_tokens=None, stream_callback=None):
+        self.messages = messages
         if stream_callback:
             stream_callback({"type": "content_delta", "delta": "流"})
             stream_callback({"type": "content_delta", "delta": "式"})
@@ -758,6 +762,23 @@ class ConnectionFailingAdapter:
         raise RuntimeError("DeepSeek 接口调用失败: Connection error.")
 
 
+class LengthRetryMarkupAdapter:
+    runtime = type("Runtime", (), {"model_id": "fake:length-markup"})()
+
+    def __init__(self):
+        self.calls = 0
+
+    def chat(self, messages, *, tools=None, tool_choice="auto", max_tokens=None, timeout_seconds=None):
+        self.calls += 1
+        if self.calls == 1:
+            return {"content": "部分回答", "finish_reason": "length", "tool_calls": []}
+        return {
+            "content": '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="unknown_tool"></｜｜DSML｜｜invoke>',
+            "finish_reason": "stop",
+            "tool_calls": [],
+        }
+
+
 def test_agent_harness_bounds_model_calls_and_persists_timeout(tmp_path: Path):
     sessions = HarnessSessionStore(tmp_path / "sessions")
     events: list[dict[str, Any]] = []
@@ -804,6 +825,30 @@ def test_agent_harness_persists_provider_connection_error_without_raising(tmp_pa
     assert "模型服务连接或协议错误" in record["response"]
     assert Path(record["record_path"]).exists()
     assert any(event.get("event") == "turn_model_provider_error" for event in events)
+
+
+def test_length_retry_never_leaks_unexecuted_tool_markup(tmp_path: Path):
+    harness = AgentHarness(adapter=LengthRetryMarkupAdapter(), sessions=HarnessSessionStore(tmp_path / "sessions"))
+
+    record = harness.run_turn("给出简短结论", max_steps=1, turn_timeout_seconds=30)
+
+    assert record["finish_reason"] == "length_tool_markup_blocked"
+    assert "DSML" not in record["response"]
+    assert "unknown_tool" not in record["response"]
+
+
+def test_agent_harness_can_use_a_schema_aligned_system_prompt(tmp_path: Path):
+    adapter = StreamAwareAdapter()
+    harness = AgentHarness(
+        adapter=adapter,
+        registry=EmptyRegistry(),
+        sessions=HarnessSessionStore(tmp_path / "sessions"),
+        system_prompt_renderer=lambda **kwargs: f"sandbox-only::{kwargs['project']}::{kwargs['session_context']}",
+    )
+
+    harness.run_turn("直接回答", project="bench", max_steps=1)
+
+    assert adapter.messages[0]["content"].startswith("sandbox-only::bench::")
 
 
 def test_token_guard_marks_context_for_finalization(monkeypatch):
