@@ -1,0 +1,39 @@
+{
+  "created_at": "2026-07-14T06:18:26+08:00",
+  "git_commit": "e15502e02d58a4dec15feff065f7dd3083bd27b5",
+  "git_dirty": false,
+  "python": "3.12.13 | packaged by conda-forge | (main, Mar  5 2026, 16:36:12) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.22631-SP0",
+  "packages": {
+    "openai": "2.30.0",
+    "pydantic": "2.12.5",
+    "pymatgen": "2026.3.23",
+    "ase": "3.28.0"
+  },
+  "arguments": {
+    "input": ".tmp/paper-formal-smoke-20260714-v3/traces.jsonl",
+    "reference_fixtures": false,
+    "live_model": null,
+    "case_ids": null,
+    "max_steps": 8,
+    "max_tokens": 1000,
+    "case_timeout_seconds": 600.0,
+    "variants": null,
+    "repeats": 1,
+    "suite": "recorded_input",
+    "resume": false,
+    "plan_only": false,
+    "shard_count": 1,
+    "shard_index": 0,
+    "output_dir": ".tmp/paper-formal-smoke-20260714-v3-rescored-final-clean"
+  },
+  "source_sha256": {
+    "aether_dft/research_benchmark.py": "951a826425fdaa475bb86fcd9c1d00880c2cd4c23693f9edec5abb6660b05904",
+    "aether_dft/research_benchmark_live.py": "658640de2135473e2b5eb68810cb46903785f1128f36b940d6ab80dbd22daede",
+    "aether_dft/scientific_state.py": "386cbffa7e10747a4a3c5dec9e763461ae08a861f915817e800b8378d81f5b81",
+    "aether_dft/runtime_harness/core.py": "d80731e773b04b833d2ff8ece08d8ff441d78f29ad3cd511227bb252434370a1"
+  },
+  "reproducibility_warning": "",
+  "suite_sha256": "5d0667077ea377ba6f132298b8e241727677c500560f00fda2479496fdb4c200",
+  "recorded_input_sha256": "764ebcfd11fe7deaa647a6d4704d56caa0750aba3ae065daea91657043fea69b"
+}

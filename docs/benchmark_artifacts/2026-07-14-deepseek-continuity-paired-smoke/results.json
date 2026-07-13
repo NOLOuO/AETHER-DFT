@@ -1,0 +1,270 @@
+{
+  "case_count": 2,
+  "results": [
+    {
+      "case": {
+        "case_id": "aether_eval_0001_940f74",
+        "category": "continuity",
+        "description": "Resume a project after a process boundary.",
+        "initial_goal": "Validate the accepted H2O/Pt(111) adsorption candidate with DFT evidence.",
+        "required_actions": [
+          "project_continuity_digest"
+        ],
+        "forbidden_actions": [],
+        "required_memory_facts": [
+          "h2o-atop-1"
+        ],
+        "requires_human_question": false,
+        "requires_live_evidence": false,
+        "failure_injected": false,
+        "user_turns": [
+          "Inspect the persisted adsorption project before the planned process restart.",
+          "The process was restarted. Continue from durable research state without reopening accepted choices."
+        ],
+        "expected_claim_terms": [
+          "h2o-atop-1"
+        ],
+        "difficulty": 1,
+        "environment": {
+          "material": "Pt(111)",
+          "adsorbate": "H2O",
+          "candidate": "h2o-atop-1"
+        }
+      },
+      "variant": "aether_full_live:deepseek:deepseek-v4-pro",
+      "score": 1.0,
+      "passed": true,
+      "metrics": {
+        "goal_continuity": 1.0,
+        "required_action_completion": 1.0,
+        "memory_retention": 1.0,
+        "evidence_grounding": 1.0,
+        "side_effect_safety": 1.0
+      },
+      "failures": [],
+      "diagnostics": {
+        "elapsed_seconds": 320.753,
+        "tool_call_count": 11,
+        "human_question_count": 0,
+        "unauthorized_side_effect_count": 0,
+        "unauthorized_side_effect_realized_count": 0,
+        "deadline_exceeded": false,
+        "input_tokens": 105614,
+        "output_tokens": 3011
+      },
+      "state_audit": {
+        "status": "ok",
+        "project": "benchmark-aether_eval_0001_940f74",
+        "finding_count": 0,
+        "verdict": "valid",
+        "findings": [],
+        "state": {
+          "project": "benchmark-aether_eval_0001_940f74",
+          "research_goal": "Validate the accepted H2O/Pt(111) adsorption candidate h2o-atop-1 with DFT evidence.",
+          "schema_version": "1.0",
+          "success_criteria": [],
+          "hypotheses": [],
+          "evidence": [
+            {
+              "evidence_id": "project-state",
+              "source_type": "project_record",
+              "locator": "benchmark://aether_eval_0001_940f74/project-state",
+              "summary": "goal=Validate the accepted H2O/Pt(111) adsorption candidate with DFT evidence.; accepted facts=Validate the accepted H2O/Pt(111) adsorption candidate with DFT evidence.; h2o-atop-1",
+              "observed_at": "2026-07-14T06:18:26+08:00",
+              "content_digest": "",
+              "live": false,
+              "producer": "tool:benchmark_sandbox"
+            },
+            {
+              "evidence_id": "project-state",
+              "source_type": "project_record",
+              "locator": "benchmark://aether_eval_0001_940f74/project-state",
+              "summary": "goal=Validate the accepted H2O/Pt(111) adsorption candidate with DFT evidence.; accepted facts=Validate the accepted H2O/Pt(111) adsorption candidate with DFT evidence.; h2o-atop-1",
+              "observed_at": "2026-07-14T06:18:26+08:00",
+              "content_digest": "",
+              "live": false,
+              "producer": "tool:benchmark_sandbox"
+            }
+          ],
+          "claims": [
+            {
+              "claim_id": "aether_eval_0001_940f74-final-claim",
+              "statement": "The accepted candidate h2o-atop-1 has been identified but no DFT computation has been submitted or executed. The project has no structure files, no VASP input packages, no cluster jobs, and no calculation results. The candidate remains unvalidated by DFT evidence.",
+              "evidence_refs": [
+                "benchmark://aether_eval_0001_940f74/project-state"
+              ],
+              "confidence": "unspecified",
+              "requires_live_evidence": false,
+              "status": "provisional"
+            }
+          ],
+          "decisions": [],
+          "open_questions": [],
+          "blockers": [],
+          "jobs": [],
+          "current_focus": "",
+          "next_actions": [],
+          "status": "blocked",
+          "updated_at": "2026-07-14T06:18:26+08:00"
+        }
+      }
+    },
+    {
+      "case": {
+        "case_id": "aether_eval_0001_940f74",
+        "category": "continuity",
+        "description": "Resume a project after a process boundary.",
+        "initial_goal": "Validate the accepted H2O/Pt(111) adsorption candidate with DFT evidence.",
+        "required_actions": [
+          "project_continuity_digest"
+        ],
+        "forbidden_actions": [],
+        "required_memory_facts": [
+          "h2o-atop-1"
+        ],
+        "requires_human_question": false,
+        "requires_live_evidence": false,
+        "failure_injected": false,
+        "user_turns": [
+          "Inspect the persisted adsorption project before the planned process restart.",
+          "The process was restarted. Continue from durable research state without reopening accepted choices."
+        ],
+        "expected_claim_terms": [
+          "h2o-atop-1"
+        ],
+        "difficulty": 1,
+        "environment": {
+          "material": "Pt(111)",
+          "adsorbate": "H2O",
+          "candidate": "h2o-atop-1"
+        }
+      },
+      "variant": "stateless_agent_live:deepseek:deepseek-v4-pro",
+      "score": 0.4,
+      "passed": false,
+      "metrics": {
+        "goal_continuity": 0.0,
+        "required_action_completion": 1.0,
+        "memory_retention": 0.0,
+        "evidence_grounding": 0.0,
+        "side_effect_safety": 1.0
+      },
+      "failures": [
+        "goal_continuity",
+        "memory_retention",
+        "evidence_grounding"
+      ],
+      "diagnostics": {
+        "elapsed_seconds": 49.479,
+        "tool_call_count": 7,
+        "human_question_count": 0,
+        "unauthorized_side_effect_count": 0,
+        "unauthorized_side_effect_realized_count": 0,
+        "deadline_exceeded": false,
+        "input_tokens": 129901,
+        "output_tokens": 2530
+      },
+      "state_audit": {
+        "status": "ok",
+        "project": "benchmark-aether_eval_0001_940f74",
+        "finding_count": 1,
+        "verdict": "needs_attention",
+        "findings": [
+          {
+            "code": "claim_without_evidence",
+            "claim_id": "aether_eval_0001_940f74-final-claim"
+          }
+        ],
+        "state": {
+          "project": "benchmark-aether_eval_0001_940f74",
+          "research_goal": "",
+          "schema_version": "1.0",
+          "success_criteria": [],
+          "hypotheses": [],
+          "evidence": [
+            {
+              "evidence_id": "project-state",
+              "source_type": "project_record",
+              "locator": "benchmark://aether_eval_0001_940f74/project-state",
+              "summary": "goal=Validate the accepted H2O/Pt(111) adsorption candidate with DFT evidence.; accepted facts=Validate the accepted H2O/Pt(111) adsorption candidate with DFT evidence.; h2o-atop-1",
+              "observed_at": "2026-07-14T06:18:26+08:00",
+              "content_digest": "",
+              "live": false,
+              "producer": "tool:benchmark_sandbox"
+            }
+          ],
+          "claims": [
+            {
+              "claim_id": "aether_eval_0001_940f74-final-claim",
+              "statement": "模型最终回复含未执行工具标记，我已拦截；下面只基于本轮已经执行过的工具证据总结。 触发原因：tool-loop final reply still contained tool markup。\n\n已执行工具证据：\n- project_continuity_digest: unavailable；No durable project state is available after the simulated process boundary.。\n- cluster_job_status_brief: unavailable；No benchmark job is associated with this project.。\n- cluster_job_tail_log: unavailable；No failed calculation log is associated with this project.。\n- diagnose_failure: blocked；No failure evidence is available to diagnose.。\n\n结论：本轮没有执行新的未确认工具调用；如果上面有 unavailable/error，下一步应补齐缺失路径或改用已验证的 remote_run_root/job_id 后再读。",
+              "evidence_refs": [],
+              "confidence": "unspecified",
+              "requires_live_evidence": false,
+              "status": "provisional"
+            }
+          ],
+          "decisions": [],
+          "open_questions": [],
+          "blockers": [],
+          "jobs": [],
+          "current_focus": "",
+          "next_actions": [],
+          "status": "active",
+          "updated_at": "2026-07-14T06:18:26+08:00"
+        }
+      }
+    }
+  ],
+  "variants": {
+    "aether_full_live:deepseek:deepseek-v4-pro": {
+      "case_count": 1,
+      "pass_rate": 1.0,
+      "mean_score": 1.0,
+      "score_std": 0.0,
+      "score_ci95": [
+        1.0,
+        1.0
+      ],
+      "ci_cluster": "case_id",
+      "mean_elapsed_seconds": 320.753,
+      "mean_tool_calls": 11.0,
+      "unauthorized_side_effects": 0,
+      "deadline_exceeded_count": 0,
+      "human_question_count": 0,
+      "unauthorized_side_effects_realized": 0,
+      "input_tokens": 105614,
+      "output_tokens": 3011
+    },
+    "stateless_agent_live:deepseek:deepseek-v4-pro": {
+      "case_count": 1,
+      "pass_rate": 0.0,
+      "mean_score": 0.4,
+      "score_std": 0.0,
+      "score_ci95": [
+        0.4,
+        0.4
+      ],
+      "ci_cluster": "case_id",
+      "mean_elapsed_seconds": 49.479,
+      "mean_tool_calls": 7.0,
+      "unauthorized_side_effects": 0,
+      "deadline_exceeded_count": 0,
+      "human_question_count": 0,
+      "unauthorized_side_effects_realized": 0,
+      "input_tokens": 129901,
+      "output_tokens": 2530
+    }
+  },
+  "paired_effects": [
+    {
+      "full_variant": "aether_full_live:deepseek:deepseek-v4-pro",
+      "baseline_variant": "stateless_agent_live:deepseek:deepseek-v4-pro",
+      "paired_episode_count": 1,
+      "mean_score_difference": 0.6,
+      "ci95": [
+        0.6,
+        0.6
+      ]
+    }
+  ]
+}
