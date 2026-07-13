@@ -169,6 +169,21 @@ def test_deadline_exceeded_episode_never_passes_even_with_complete_scientific_st
     assert result["diagnostics"]["deadline_exceeded"] is True
 
 
+def test_provider_error_episode_never_passes_even_with_complete_scientific_state():
+    trace = reference_traces()[0]
+    trace["provider_error"] = True
+    trace["provider_error_type"] = "RuntimeError"
+
+    result = score_research_episode(trace)
+
+    assert result["score"] == 0.0
+    assert result["passed"] is False
+    assert "runtime_provider_error" in result["failures"]
+    assert result["diagnostics"]["provider_error"] is True
+    summary = score_benchmark([trace])["variants"][trace["variant"]]
+    assert summary["provider_error_count"] == 1
+
+
 def test_benchmark_summary_aggregates_provider_token_usage():
     trace = reference_traces()[0]
     trace["input_tokens"] = 1200

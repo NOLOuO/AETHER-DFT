@@ -236,3 +236,30 @@ def test_live_runner_rejects_invalid_shard_without_calling_model(tmp_path):
             shard_count=4,
             shard_index=4,
         )
+
+
+class _ConnectionFailingAdapter:
+    runtime = type("Runtime", (), {"model_id": "fake:connection-failure"})()
+
+    def chat(self, *_args, **_kwargs):
+        raise RuntimeError("provider connection error")
+
+
+def test_live_runner_records_provider_failures_and_continues_to_next_case(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "aether_dft.research_benchmark_live._ModuleAdapter",
+        lambda _model_id: _ConnectionFailingAdapter(),
+    )
+    case_ids = [LONG_HORIZON_CASES[0].case_id, LONG_HORIZON_CASES[1].case_id]
+
+    traces = run_live_research_benchmark(
+        model_id="fake:connection-failure",
+        output_dir=tmp_path / "provider-failures",
+        case_ids=case_ids,
+        max_steps=2,
+        case_timeout_seconds=10,
+    )
+
+    assert [trace["case_id"] for trace in traces] == case_ids
+    assert all(trace["provider_error"] is True for trace in traces)
+    assert all(trace["finish_reason"] == "model_provider_error" for trace in traces)

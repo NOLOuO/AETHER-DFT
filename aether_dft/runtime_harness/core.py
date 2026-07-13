@@ -45,6 +45,14 @@ class TurnDeadlineExceeded(RuntimeError):
         self.kind = kind
 
 
+class ModelProviderError(RuntimeError):
+    """A model transport/protocol failure that should end only the current turn."""
+
+    def __init__(self, message: str, *, original_type: str):
+        super().__init__(message)
+        self.original_type = original_type
+
+
 def _resolve_turn_timeout_seconds(value: float | None) -> float:
     raw: Any = value if value is not None else os.getenv("AETHER_TURN_TIMEOUT_SECONDS", DEFAULT_TURN_TIMEOUT_SECONDS)
     try:
@@ -583,6 +591,8 @@ class AgentHarness:
         model_call_metadata: list[dict[str, Any]] = []
         force_final_reply_after_audit = False
         force_final_reply_message = ""
+        provider_error_type = ""
+        provider_error_message = ""
 
         def model_chat(call_messages: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
             remaining = deadline - time.monotonic()
@@ -624,7 +634,7 @@ class AgentHarness:
                 if _looks_like_timeout(exc) or time.monotonic() >= deadline:
                     kind = "turn_deadline" if time.monotonic() >= deadline else "provider_timeout"
                     raise TurnDeadlineExceeded(str(exc), kind=kind) from exc
-                raise
+                raise ModelProviderError(str(exc), original_type=type(exc).__name__) from exc
             duration = time.perf_counter() - call_started
             model_call_durations.append(duration)
             raw_result = result.get("raw") if isinstance(result, dict) and isinstance(result.get("raw"), dict) else {}
@@ -1065,6 +1075,8 @@ class AgentHarness:
                             else (retry_content or _tool_evidence_fallback(tool_executions, reason="empty final reply"))
                         )
                         finish_reason = "tool_markup_finalized"
+                    except ModelProviderError:
+                        raise
                     except Exception:
                         response = _tool_evidence_fallback(tool_executions, reason="final reply retry failed")
                 messages.append({"role": "assistant", "content": response})
@@ -1095,6 +1107,8 @@ class AgentHarness:
                             finish_reason = "length_finalized"
                             messages.append({"role": "assistant", "content": response})
                             messages = _clean_messages(messages)
+                    except ModelProviderError:
+                        raise
                     except Exception:
                         response = (response + "\n\n[提示] 上一条回复被模型截断；请继续追问，我会基于已获得工具证据给出更短结论。").strip()
                 break
@@ -1149,6 +1163,8 @@ class AgentHarness:
                         finish_reason = "tool_loop_limit_finalized"
                         messages.append({"role": "assistant", "content": response})
                         messages = _clean_messages(messages)
+                except ModelProviderError:
+                    raise
                 except Exception as exc:
                     response = _clean_text(response or f"工具步数已达上限，且最终总结生成失败：{exc}")
 
@@ -1188,6 +1204,35 @@ class AgentHarness:
                         "tool_count": len(tool_executions),
                     }
                 )
+        except ModelProviderError as exc:
+            finish_reason = "model_provider_error"
+            provider_error_type = exc.original_type
+            provider_error_message = str(exc)
+            response = _tool_evidence_fallback(tool_executions, reason="model provider connection or protocol error")
+            if not tool_executions:
+                response = (
+                    "模型服务连接或协议错误，本轮已安全停止并保存会话。"
+                    "没有把服务异常当成科研结论；稍后可从同一会话继续。"
+                )
+            log_event(
+                "turn_model_provider_error",
+                {
+                    "session_id": session_id,
+                    "project": project,
+                    "error_type": provider_error_type,
+                    "error": provider_error_message,
+                    "tool_count": len(tool_executions),
+                },
+            )
+            if progress_callback:
+                progress_callback(
+                    {
+                        "event": "turn_model_provider_error",
+                        "session_id": session_id,
+                        "error_type": provider_error_type,
+                        "tool_count": len(tool_executions),
+                    }
+                )
         except KeyboardInterrupt:
             finish_reason = "user_interrupted"
             response = _clean_text(response or "用户中断，本轮 partial trace 已保存。")
@@ -1208,6 +1253,9 @@ class AgentHarness:
             "elapsed_seconds": round((datetime.now().astimezone() - started_at).total_seconds(), 3),
             "turn_timeout_seconds": resolved_turn_timeout,
             "deadline_exceeded": finish_reason in {"turn_deadline_exceeded", "model_request_timeout"},
+            "provider_error": finish_reason == "model_provider_error",
+            "provider_error_type": provider_error_type if finish_reason == "model_provider_error" else "",
+            "provider_error_message": provider_error_message if finish_reason == "model_provider_error" else "",
             "timeout_kind": (
                 timeout_kind
                 if finish_reason in {"turn_deadline_exceeded", "model_request_timeout"}

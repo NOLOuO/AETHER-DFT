@@ -399,6 +399,8 @@ def run_live_research_benchmark(
                         _force_real_compaction(sessions, session_id)
                     if record.get("deadline_exceeded"):
                         break
+                    if record.get("provider_error"):
+                        break
                 record = records[-1]
                 finalized = registry.finalized
                 claim = str(finalized.get("claim") or record.get("response") or "").strip()
@@ -456,6 +458,15 @@ def run_live_research_benchmark(
                         "finish_reason": record.get("finish_reason"),
                         "elapsed_seconds": round(elapsed, 3),
                         "deadline_exceeded": timed_out,
+                        "provider_error": any(bool(item.get("provider_error")) for item in records),
+                        "provider_error_type": next(
+                            (
+                                str(item.get("provider_error_type") or "")
+                                for item in records
+                                if item.get("provider_error")
+                            ),
+                            "",
+                        ),
                         "timeout_kind": str(record.get("timeout_kind") or ""),
                         "turn_timeout_seconds": record.get("turn_timeout_seconds"),
                         "longitudinal_turn_count": len(records),

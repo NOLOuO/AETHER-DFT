@@ -751,6 +751,13 @@ class TimeoutAwareAdapter:
         raise TimeoutError("simulated provider timeout")
 
 
+class ConnectionFailingAdapter:
+    runtime = type("Runtime", (), {"model_id": "deepseek:deepseek-v4-pro"})()
+
+    def chat(self, messages, *, tools=None, tool_choice="auto", max_tokens=None, timeout_seconds=None):
+        raise RuntimeError("DeepSeek 接口调用失败: Connection error.")
+
+
 def test_agent_harness_bounds_model_calls_and_persists_timeout(tmp_path: Path):
     sessions = HarnessSessionStore(tmp_path / "sessions")
     events: list[dict[str, Any]] = []
@@ -776,6 +783,27 @@ def test_agent_harness_bounds_model_calls_and_persists_timeout(tmp_path: Path):
     assert Path(record["record_path"]).exists()
     assert any(event.get("event") == "model_error" for event in events)
     assert any(event.get("event") == "turn_deadline_exceeded" for event in events)
+
+
+def test_agent_harness_persists_provider_connection_error_without_raising(tmp_path: Path):
+    sessions = HarnessSessionStore(tmp_path / "sessions")
+    events: list[dict[str, Any]] = []
+    harness = AgentHarness(adapter=ConnectionFailingAdapter(), sessions=sessions)
+
+    record = harness.run_turn(
+        "继续科研任务",
+        max_steps=3,
+        turn_timeout_seconds=30,
+        progress_callback=events.append,
+    )
+
+    assert record["finish_reason"] == "model_provider_error"
+    assert record["provider_error"] is True
+    assert record["deadline_exceeded"] is False
+    assert record["model_calls"][0]["error_type"] == "RuntimeError"
+    assert "模型服务连接或协议错误" in record["response"]
+    assert Path(record["record_path"]).exists()
+    assert any(event.get("event") == "turn_model_provider_error" for event in events)
 
 
 def test_token_guard_marks_context_for_finalization(monkeypatch):
