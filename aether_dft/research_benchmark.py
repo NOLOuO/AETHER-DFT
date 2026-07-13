@@ -14,6 +14,7 @@ import sys
 from typing import Any
 
 from rapidfuzz.fuzz import token_set_ratio
+from rapidfuzz.utils import default_process
 
 from .scientific_state import audit_scientific_state
 
@@ -377,7 +378,13 @@ def _goal_matches(initial_goal: str, final_goal: str) -> bool:
     # Research goals often become more specific as candidate IDs or methods are
     # resolved. Token-set similarity accepts that refinement while still
     # rejecting an unrelated scientific objective.
-    return token_set_ratio(initial, final) >= 90.0
+    return token_set_ratio(initial, final, processor=default_process) >= 90.0
+
+
+def _fact_matches(fact: str, corpus: str) -> bool:
+    normalized_fact = " ".join((default_process(str(fact)) or "").split())
+    normalized_corpus = " ".join((default_process(str(corpus)) or "").split())
+    return bool(normalized_fact) and normalized_fact in normalized_corpus
 
 
 def score_research_episode(trace: dict[str, Any]) -> dict[str, Any]:
@@ -425,7 +432,7 @@ def score_research_episode(trace: dict[str, Any]) -> dict[str, Any]:
     # Memory is evaluated from externally observable durable state and claims,
     # never solely from a model-authored ``final_memory`` self-report.
     memory_corpus = " ".join((final_memory, final_goal, claim_text))
-    memory_ok = all(fact.lower() in memory_corpus for fact in case.required_memory_facts)
+    memory_ok = all(_fact_matches(fact, memory_corpus) for fact in case.required_memory_facts)
     claim_content_ok = all(term.lower() in claim_text for term in case.expected_claim_terms)
     recovery_ok = True
     if case.failure_injected:

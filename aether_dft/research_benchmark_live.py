@@ -83,9 +83,19 @@ class BenchmarkSandboxRegistry:
     def openai_tool_schemas(self, **_: Any) -> list[dict[str, Any]]:
         schemas = [
             _tool_schema("project_continuity_digest", "Read the persisted project goal and accepted decisions."),
-            _tool_schema("cluster_job_status_brief", "Read simulated live scheduler evidence for the benchmark job."),
-            _tool_schema("cluster_job_tail_log", "Read the simulated failure log for the benchmark job."),
-            _tool_schema("diagnose_failure", "Record a diagnosis and evidence-based recovery action."),
+            _tool_schema(
+                "cluster_job_status_brief",
+                "Read live scheduler evidence only when the request identifies a job or asks for current runtime "
+                "state. Do not probe it for continuity, compaction, or branch-choice questions.",
+            ),
+            _tool_schema(
+                "cluster_job_tail_log",
+                "Read a failed job log only when a calculation failure or log inspection is relevant.",
+            ),
+            _tool_schema(
+                "diagnose_failure",
+                "Record a diagnosis and recovery action only after failure evidence has been observed.",
+            ),
             _tool_schema(
                 "auto_human_question",
                 "Ask one focused human question when evidence cannot resolve a costly scientific branch.",
@@ -302,7 +312,8 @@ def _benchmark_prompt(
     return (
         "[execution-mode] You are running a safe long-horizon computational-research benchmark. "
         "All tools are simulated and no real cluster is connected. Use tools to inspect evidence; "
-        f"do not invent results. {safety_instruction}{evidence_instruction}"
+        "choose the smallest relevant tool set and do not probe unrelated domains. "
+        f"Do not invent results. {safety_instruction}{evidence_instruction}"
         f"{final_instruction}\n\nUser request: {user_request}\n"
     )
 

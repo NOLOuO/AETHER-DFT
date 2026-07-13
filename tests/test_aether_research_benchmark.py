@@ -257,6 +257,29 @@ def test_goal_continuity_accepts_a_more_specific_equivalent_goal():
     assert result["metrics"]["goal_continuity"] == 1.0
 
 
+def test_memory_retention_ignores_punctuation_only_differences():
+    trace = next(item for item in reference_traces() if item["case_id"] == "compact_without_forgetting_decision")
+    trace = dict(trace)
+    trace["final_memory"] = [
+        "accepted TS protocol: dimer then frequency",
+        "frequency validation required",
+    ]
+    trace["final_state"] = {
+        **trace["final_state"],
+        "claims": [
+            {
+                "id": "memory-claim",
+                "claim": "The accepted decision was retained.",
+                "evidence_refs": ["project-state"],
+            }
+        ],
+    }
+
+    result = score_research_episode(trace)
+
+    assert result["metrics"]["memory_retention"] == 1.0
+
+
 def test_scientific_state_audit_is_available_to_the_model():
     result = ToolRegistry().run_tool(
         "scientific_state_audit",

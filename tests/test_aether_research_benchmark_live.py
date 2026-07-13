@@ -183,6 +183,19 @@ def test_finalize_tool_requires_exact_machine_resolvable_evidence_references():
     assert "do not annotate" in description
 
 
+def test_cluster_tool_descriptions_teach_applicability_without_fixed_routing():
+    registry = BenchmarkSandboxRegistry(LONG_HORIZON_CASES[0])
+    descriptions = {
+        item["function"]["name"]: item["function"]["description"].lower()
+        for item in registry.openai_tool_schemas()
+    }
+
+    assert "only" in descriptions["cluster_job_status_brief"]
+    assert "do not probe" in descriptions["cluster_job_status_brief"]
+    assert "failed job" in descriptions["cluster_job_tail_log"]
+    assert "failure evidence" in descriptions["diagnose_failure"]
+
+
 @pytest.mark.parametrize("variant_name", ["stateless_agent", "transcript_only"])
 def test_non_structured_baseline_cannot_reread_project_state_after_process_boundary(variant_name):
     registry = BenchmarkSandboxRegistry(
