@@ -31,6 +31,17 @@ _EXPECTED_SOURCE_HASHES = {
 }
 
 
+def _portable_source_sha256(raw: bytes) -> str:
+    """Hash research text independently of platform newline conversion."""
+
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return hashlib.sha256(raw).hexdigest()
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+    return hashlib.sha256(normalized).hexdigest()
+
+
 def normalize_research_task_type(task_type: str | None, prompt: str = "") -> str | None:
     raw = (task_type or "").strip().lower()
     if raw:
@@ -66,7 +77,9 @@ def _source_from_path(label: str, path: Any) -> dict[str, Any]:
     }
     if source_path.exists() and source_path.is_file():
         raw = source_path.read_bytes()
-        payload["sha256"] = hashlib.sha256(raw).hexdigest()
+        payload["raw_sha256"] = hashlib.sha256(raw).hexdigest()
+        payload["sha256"] = _portable_source_sha256(raw)
+        payload["hash_basis"] = "utf-8 text normalized to LF"
         payload["mtime_ns"] = source_path.stat().st_mtime_ns
     expected = _EXPECTED_SOURCE_HASHES.get(relative_path)
     if expected:

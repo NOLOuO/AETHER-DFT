@@ -13,6 +13,7 @@ from pymatgen.io.ase import AseAtomsAdaptor
 
 from aether_dft import paths, project_state
 from aether_dft.prompt_engine import load_base_system_prompt
+import aether_dft.research_vasp_templates as research_vasp_templates
 import aether_dft.runtime_harness.core as harness_core
 from aether_dft.runtime_harness.core import AgentHarness, infer_turn_mode
 from aether_dft.runtime_harness.session import HarnessSessionStore
@@ -1645,6 +1646,20 @@ def test_research_vasp_template_resolve_returns_mch_frequency_rules():
     assert all("sha256" in item for item in template["source_paths"] if item["exists"] and item["label"].startswith("project_common"))
     assert template["source_integrity"]["status"] == "ok"
     assert template["requires_template_review"] is False
+
+
+def test_research_vasp_source_fingerprint_is_newline_stable(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(research_vasp_templates, "PROJECT_ROOT", tmp_path)
+    source = tmp_path / "rules.md"
+    source.write_bytes("规则一\n规则二\n".encode("utf-8"))
+    lf = research_vasp_templates._source_from_path("rules", source)
+
+    source.write_bytes("规则一\r\n规则二\r\n".encode("utf-8"))
+    crlf = research_vasp_templates._source_from_path("rules", source)
+
+    assert lf["sha256"] == crlf["sha256"]
+    assert lf["raw_sha256"] != crlf["raw_sha256"]
+    assert crlf["hash_basis"] == "utf-8 text normalized to LF"
 
 
 def test_vasp_input_preflight_blocks_dimer_research_parameter_mismatch(tmp_path: Path):
