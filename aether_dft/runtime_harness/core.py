@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import html
 import json
-import math
 import os
 import re
 import threading
@@ -639,7 +638,10 @@ class AgentHarness:
             if remaining <= 0:
                 raise TurnDeadlineExceeded(f"Agent turn exceeded {resolved_turn_timeout:.1f}s deadline")
             bounded_kwargs = dict(kwargs)
-            request_timeout = max(1, int(math.ceil(min(remaining, resolved_model_request_timeout))))
+            # Provider timeouts are integer seconds.  Round down so floating-point
+            # noise from ``deadline - monotonic()`` can never produce a request
+            # timeout longer than either configured budget (for example 7.0 -> 8).
+            request_timeout = max(1, int(min(remaining, resolved_model_request_timeout)))
             bounded_kwargs["timeout_seconds"] = request_timeout
             call_started = time.perf_counter()
             try:
