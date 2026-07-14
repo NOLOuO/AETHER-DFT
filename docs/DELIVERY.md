@@ -92,6 +92,11 @@ $env:AETHER_RUN_LLM_TESTS='1'
 `adsorption_workflow_parse_analyze` 和 `adsorption_workflow_status`。这些工具已接入交互式
 `ToolRegistry`，不再只存在于旧 runner 或手工 CLI；真实 submit 仍要求一次性人类批准。
 
+同日完成六类 long-horizon 配对诊断：AETHER full 与 stateless baseline 共 12 个真实 DeepSeek
+episode，结果和失败轨迹已归档到
+`docs/benchmark_artifacts/2026-07-14-deepseek-six-category-paired-cc4d119/`。该诊断无 provider
+error、deadline 或实际副作用，并通过独立确定性重评分；它仍不是 60-case 正式论文主实验。
+
 ## 全量回归
 
 ```powershell

@@ -148,6 +148,12 @@ OUTCAR/OSZICAR/CONTCAR 证据明确标记 incomplete。
   `docs/benchmark_artifacts/2026-07-14-deepseek-human-boundary-runtime-smoke/`。同一 clean revision 的两次
   独立尝试中，一次 provider timeout 被如实计为失败；另一次在 `27.963 s` 内得分 `1.000`，runtime 在
   `waiting_for_human` 处立即终止 turn，未继续选择路径、未执行未授权副作用。
+- 当前 clean-revision 六类配对诊断保存在
+  `docs/benchmark_artifacts/2026-07-14-deepseek-six-category-paired-cc4d119/`。AETHER full 在 6 个 case 上
+  均分 `0.925`、通过率 `66.7%`，stateless baseline 均分 `0.692`、通过率 `16.7%`；六个配对样本的
+  平均分差为 `+0.233`，paired bootstrap 95% CI `[0.117, 0.358]`。12 个 episode 均无 provider error、
+  deadline、危险尝试或实际副作用，同一 trace 在 clean scoring revision 上两次重评分 bitwise 一致。
+  该运行每类仅 1 个 case、每个 variant 仅 1 次，仍是诊断证据，不是论文效应量。
 
 ## 发表前停止线
 

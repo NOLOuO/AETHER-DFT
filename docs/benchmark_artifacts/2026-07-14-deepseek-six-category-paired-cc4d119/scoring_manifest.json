@@ -1,0 +1,39 @@
+{
+  "created_at": "2026-07-14T23:06:58+08:00",
+  "git_commit": "256389d87fb3cf5613ea4eaad12f8fe10da2db9b",
+  "git_dirty": false,
+  "python": "3.12.13 | packaged by conda-forge | (main, Mar  5 2026, 16:36:12) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.22631-SP0",
+  "packages": {
+    "openai": "2.30.0",
+    "pydantic": "2.12.5",
+    "pymatgen": "2026.3.23",
+    "ase": "3.28.0"
+  },
+  "arguments": {
+    "input": ".aether/benchmarks/2026-07-14-deepseek-six-category-paired-cc4d119/traces.jsonl",
+    "reference_fixtures": false,
+    "live_model": null,
+    "case_ids": null,
+    "max_steps": 8,
+    "max_tokens": 1000,
+    "case_timeout_seconds": 600.0,
+    "variants": null,
+    "repeats": 1,
+    "suite": "recorded_input",
+    "resume": false,
+    "plan_only": false,
+    "shard_count": 1,
+    "shard_index": 0,
+    "output_dir": ".aether/benchmarks/2026-07-14-deepseek-six-category-paired-cc4d119-canonical"
+  },
+  "source_sha256": {
+    "aether_dft/research_benchmark.py": "f31085c1270812e3dca413b029cedde41b20a0efa912ea8fb102fbeb322d9d18",
+    "aether_dft/research_benchmark_live.py": "85e457fbcfcbfbd7507eae33dc3b45b8d8ed8ac7783fbaa05c84da05a603cf7e",
+    "aether_dft/scientific_state.py": "2d037dab61a898f1a5d378b7c65a4d390669d41527f7c8fa1571bbb684c8dc3e",
+    "aether_dft/runtime_harness/core.py": "ca85272acc976e73af051cae3fa84a945db05a8284c87999c7b04862429528a6"
+  },
+  "reproducibility_warning": "",
+  "suite_sha256": "3f83df9380478e69f041ba9b8b8b8b54693cc47a70ab845675a469a493662bdf",
+  "recorded_input_sha256": "d7a3ad9a399a29df7720de379f9a9282ef4cc121170a9e145bc414415ef78d5b"
+}

@@ -1,0 +1,35 @@
+{
+  "status": "verified",
+  "trace_count": 12,
+  "unique_episode_keys": 12,
+  "case_count": 6,
+  "variants": [
+    "aether_full_live:deepseek:deepseek-v4-pro",
+    "stateless_agent_live:deepseek:deepseek-v4-pro"
+  ],
+  "deadline_exceeded_count": 0,
+  "provider_error_count": 0,
+  "unsafe_attempt_count": 0,
+  "realized_harm_count": 0,
+  "deterministic_rescore_equal": true,
+  "paired_effects": [
+    {
+      "full_variant": "aether_full_live:deepseek:deepseek-v4-pro",
+      "baseline_variant": "stateless_agent_live:deepseek:deepseek-v4-pro",
+      "paired_episode_count": 6,
+      "mean_score_difference": 0.233,
+      "ci95": [
+        0.117,
+        0.358
+      ]
+    }
+  ],
+  "sha256": {
+    "case_suite.json": "5dedddf5a1b5a5d95c271aa4994892c78a2105ddad4001a3ed9f2af0b12df16e",
+    "generation_manifest.json": "6f2f8d2c30d1d742fd1cd93a5db860ddf264a2e43fe479643e9641a258d28f2f",
+    "report.md": "efa006a3543b59eb99065120ddbb03052087fd273f38ac1676adaeb569af7d19",
+    "results.json": "5462b5e6fba3b692a6f7d1a841996e0b7ef2fc7f58a373c84bb219fff4293550",
+    "scoring_manifest.json": "72dc355393afd5d4fe5da31991f201076cd11a3225b3e31a2506afeeb7ce626f",
+    "traces.jsonl": "d7a3ad9a399a29df7720de379f9a9282ef4cc121170a9e145bc414415ef78d5b"
+  }
+}
