@@ -302,6 +302,26 @@ def list_long_horizon_cases(*, suite: str = "pilot") -> list[dict[str, Any]]:
     return [case.to_dict() for case in benchmark_case_suite(suite)]
 
 
+def select_benchmark_cases(
+    suite: str = "pilot",
+    case_ids: list[str] | None = None,
+) -> list[ResearchBenchmarkCase]:
+    """Select an explicit benchmark subset and reject typos before paid runs."""
+
+    cases = benchmark_case_suite(suite)
+    if not case_ids:
+        return cases
+    known = {case.case_id: case for case in cases}
+    requested = list(dict.fromkeys(str(case_id or "").strip() for case_id in case_ids))
+    requested = [case_id for case_id in requested if case_id]
+    unknown = [case_id for case_id in requested if case_id not in known]
+    if unknown:
+        raise ValueError(
+            f"unknown benchmark case(s) for suite {suite}: {', '.join(unknown)}"
+        )
+    return [known[case_id] for case_id in requested]
+
+
 def benchmark_case_records_digest(cases: list[dict[str, Any]]) -> str:
     payload = json.dumps(cases, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -340,13 +360,19 @@ def experiment_matrix_summary(
     max_steps: int,
     case_timeout_seconds: float,
     shard_count: int = 1,
+    case_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    case_count = len(benchmark_case_suite(suite))
+    all_cases = benchmark_case_suite(suite)
+    selected_cases = select_benchmark_cases(suite, case_ids)
+    case_count = len(selected_cases)
     episode_count = case_count * max(1, len(model_ids)) * max(1, len(variants)) * max(1, int(repeats))
     return {
         "suite": suite,
+        "suite_case_count": len(all_cases),
         "case_count": case_count,
         "suite_sha256": benchmark_suite_digest(suite),
+        "selection_sha256": benchmark_case_records_digest([case.to_dict() for case in selected_cases]),
+        "selected_case_ids": [case.case_id for case in selected_cases],
         "model_count": max(1, len(model_ids)),
         "variant_count": max(1, len(variants)),
         "repeats": max(1, int(repeats)),

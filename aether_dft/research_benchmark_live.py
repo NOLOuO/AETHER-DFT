@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .agent import _ModuleAdapter
-from .research_benchmark import LONG_HORIZON_CASES, ResearchBenchmarkCase, benchmark_case_suite
+from .research_benchmark import LONG_HORIZON_CASES, ResearchBenchmarkCase, select_benchmark_cases
 from .runtime_harness.core import AgentHarness
 from .session_store import AetherSessionStore
 
@@ -382,9 +382,8 @@ def run_live_research_benchmark(
         raise ValueError("shard_index must satisfy 0 <= shard_index < shard_count")
     selected = [
         case
-        for case in benchmark_case_suite(suite)
-        if (not case_ids or case.case_id in case_ids)
-        and int(hashlib.sha256(case.case_id.encode("utf-8")).hexdigest()[:8], 16) % shard_count == shard_index
+        for case in select_benchmark_cases(suite, case_ids)
+        if int(hashlib.sha256(case.case_id.encode("utf-8")).hexdigest()[:8], 16) % shard_count == shard_index
     ]
     selected_variants = [BENCHMARK_VARIANTS[name] for name in (variant_names or ["aether_full"])]
     root = Path(output_dir)

@@ -3276,8 +3276,8 @@ def handle_research_benchmark(args: argparse.Namespace) -> int:
         build_benchmark_manifest,
         experiment_matrix_summary,
         load_jsonl,
-        list_long_horizon_cases,
         recorded_case_suite,
+        select_benchmark_cases,
         reference_ablation_traces,
         reference_traces,
         score_benchmark,
@@ -3288,7 +3288,11 @@ def handle_research_benchmark(args: argparse.Namespace) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     variants = args.variants or ["aether_full"]
     input_traces = load_jsonl(args.input) if args.input else []
-    suite_records = recorded_case_suite(input_traces) if args.input else list_long_horizon_cases(suite=args.suite)
+    suite_records = (
+        recorded_case_suite(input_traces)
+        if args.input
+        else [case.to_dict() for case in select_benchmark_cases(args.suite, args.case_ids)]
+    )
     suite_path = output_dir / "case_suite.json"
     suite_path.write_text(
         json.dumps(suite_records, ensure_ascii=False, indent=2),
@@ -3304,6 +3308,7 @@ def handle_research_benchmark(args: argparse.Namespace) -> int:
                 max_steps=args.max_steps,
                 case_timeout_seconds=args.case_timeout_seconds,
                 shard_count=args.shard_count,
+                case_ids=args.case_ids,
             )
         )
         return 0

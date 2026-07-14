@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 
+import pytest
+
 from aether_dft.research_benchmark import (
     benchmark_case_suite,
     benchmark_case_records_digest,
@@ -139,6 +141,35 @@ def test_formal_experiment_matrix_counts_all_episodes():
     assert matrix["episode_count"] == 720
     assert matrix["max_model_steps"] == 11520
     assert matrix["approx_episodes_per_shard"] == 90
+
+
+def test_experiment_matrix_honors_selected_cases_and_rejects_typos():
+    case_ids = [case.case_id for case in benchmark_case_suite("parameterized")[:6]]
+    matrix = experiment_matrix_summary(
+        suite="parameterized",
+        model_ids=["deepseek:deepseek-v4-pro"],
+        variants=["aether_full", "stateless_agent"],
+        repeats=1,
+        max_steps=8,
+        case_timeout_seconds=600,
+        case_ids=case_ids,
+    )
+
+    assert matrix["suite_case_count"] == 60
+    assert matrix["case_count"] == 6
+    assert matrix["episode_count"] == 12
+    assert matrix["selected_case_ids"] == case_ids
+
+    with pytest.raises(ValueError, match="unknown benchmark case"):
+        experiment_matrix_summary(
+            suite="parameterized",
+            model_ids=["deepseek:deepseek-v4-pro"],
+            variants=["aether_full"],
+            repeats=1,
+            max_steps=8,
+            case_timeout_seconds=600,
+            case_ids=["aether_eval_typo"],
+        )
 
 
 def test_reference_ablation_fixtures_score_below_full_system():
@@ -430,3 +461,40 @@ def test_cli_benchmark_plan_only_does_not_call_model(monkeypatch, tmp_path, caps
     output = capsys.readouterr().out
     assert '"case_count": 60' in output
     assert '"episode_count": 360' in output
+
+
+def test_cli_benchmark_plan_only_honors_case_selection(monkeypatch, tmp_path, capsys):
+    from aether_dft import cli
+
+    monkeypatch.setattr(
+        "aether_dft.research_benchmark_live.run_live_research_benchmark",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("model must not run")),
+    )
+    case_ids = [case.case_id for case in benchmark_case_suite("parameterized")[:2]]
+    assert cli.main(
+        [
+            "benchmark",
+            "research",
+            "--live-model",
+            "deepseek:deepseek-v4-pro",
+            "--suite",
+            "parameterized",
+            "--case",
+            case_ids[0],
+            "--case",
+            case_ids[1],
+            "--variant",
+            "aether_full",
+            "--variant",
+            "stateless_agent",
+            "--plan-only",
+            "--output-dir",
+            str(tmp_path / "selected-plan"),
+        ]
+    ) == 0
+    output = capsys.readouterr().out
+    assert '"suite_case_count": 60' in output
+    assert '"case_count": 2' in output
+    assert '"episode_count": 4' in output
+    suite_records = json.loads((tmp_path / "selected-plan" / "case_suite.json").read_text(encoding="utf-8"))
+    assert [item["case_id"] for item in suite_records] == case_ids

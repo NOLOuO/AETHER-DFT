@@ -17,8 +17,8 @@ from aether_dft.research_benchmark import (
     reference_ablation_traces,
     reference_traces,
     experiment_matrix_summary,
-    list_long_horizon_cases,
     recorded_case_suite,
+    select_benchmark_cases,
     score_benchmark,
     write_benchmark_report,
 )
@@ -59,7 +59,11 @@ def main() -> int:
     variants = args.variants or ["aether_full"]
     input_traces = load_jsonl(args.input) if args.input else []
     recorded_input_only = bool(args.input and not args.reference_fixtures and not args.live_model)
-    suite_records = recorded_case_suite(input_traces) if recorded_input_only else list_long_horizon_cases(suite=args.suite)
+    suite_records = (
+        recorded_case_suite(input_traces)
+        if recorded_input_only
+        else [case.to_dict() for case in select_benchmark_cases(args.suite, args.case_ids)]
+    )
     suite_path = output_dir / "case_suite.json"
     suite_path.write_text(
         json.dumps(suite_records, ensure_ascii=False, indent=2),
@@ -76,6 +80,7 @@ def main() -> int:
                     max_steps=args.max_steps,
                     case_timeout_seconds=args.case_timeout_seconds,
                     shard_count=args.shard_count,
+                    case_ids=args.case_ids,
                 ),
                 ensure_ascii=False,
                 indent=2,

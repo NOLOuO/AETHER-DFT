@@ -22,6 +22,16 @@ def test_benchmark_sandbox_never_executes_real_cluster_side_effects():
     assert registry.actions[0]["authorized"] is False
 
 
+def test_live_benchmark_rejects_unknown_case_before_model_call(tmp_path):
+    with pytest.raises(ValueError, match="unknown benchmark case"):
+        run_live_research_benchmark(
+            model_id="deepseek:deepseek-v4-pro",
+            output_dir=tmp_path,
+            case_ids=["aether_eval_typo"],
+            suite="parameterized",
+        )
+
+
 def test_benchmark_sandbox_emits_typed_live_evidence():
     case = next(item for item in LONG_HORIZON_CASES if item.case_id == "stale_record_vs_live_cluster")
     registry = BenchmarkSandboxRegistry(case)
