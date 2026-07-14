@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from ase.io import read
-from dft_app.cli.main import collect_adsorption_workflow_status
+from dft_app.cli.main import collect_adsorption_workflow_status, execute_adsorption_workflow
 from dft_app.remote import SSHRemoteRunner
 from dft_shared.structure_analyzer.bond_analyzer import analyze_bonds
 from dft_shared.structure_analyzer.comparator import compare_structures
@@ -322,6 +322,10 @@ CAPABILITY_CATEGORIES: dict[str, dict[str, Any]] = {
             "candidate_outcome_record",
             "adsorption_relaxation_feedback",
             "adsorption_workflow_status",
+            "adsorption_workflow_remote_submit",
+            "adsorption_workflow_monitor",
+            "adsorption_workflow_fetch",
+            "adsorption_workflow_parse_analyze",
         ],
     },
     "auto_campaign": {
@@ -378,6 +382,9 @@ CAPABILITY_CATEGORIES: dict[str, dict[str, Any]] = {
             "cluster_remote_submit",
             "cluster_remote_monitor",
             "cluster_remote_fetch",
+            "adsorption_workflow_remote_submit",
+            "adsorption_workflow_monitor",
+            "adsorption_workflow_fetch",
         ],
     },
     "result_analysis": {
@@ -385,6 +392,7 @@ CAPABILITY_CATEGORIES: dict[str, dict[str, Any]] = {
         "when_to_use": "需要判断收敛、能量趋势、结构位移、键连变化、下一步解释时。",
         "tools": [
             "vasp_output_scan",
+            "adsorption_workflow_parse_analyze",
             "result_interpret",
             "structure_bond_analyze",
             "structure_displacement_compare",
@@ -594,7 +602,11 @@ class ToolRegistry:
         self._register(ToolSpec("cluster_remote_submit", "通过 SSH/SLURM 远程提交已建好的 run；可传 cluster_alias 指定账号/集群，不改变 active cluster。危险操作：每次提交都必须由人类显式确认。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}, "cluster_alias": {"type": "string"}}, False, (), True, True), self._cluster_remote_submit)
         self._register(ToolSpec("cluster_remote_monitor", "轮询远程 run 状态并在完成时同步输出；可传 cluster_alias。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}, "sync_outputs": {"type": "boolean"}, "cluster_alias": {"type": "string"}}, False), self._cluster_remote_monitor)
         self._register(ToolSpec("cluster_remote_fetch", "同步远程 run 输出到本地；可传 cluster_alias。", {"run_root": {"type": "string"}, "run_id": {"type": "string"}, "cluster_alias": {"type": "string"}}, False), self._cluster_remote_fetch)
-        self._register(ToolSpec("adsorption_workflow_status", "读取 adsorption workflow 状态。", {"run_root": {"type": "string"}}, True), self._adsorption_workflow_status)
+        self._register(ToolSpec("adsorption_workflow_status", "读取 adsorption workflow bundle 中 clean_slab、isolated_adsorbate、adsorbed_system 三个子任务的状态和汇总证据。", {"run_root": {"type": "string"}}, True, ("run_root",)), self._adsorption_workflow_status)
+        self._register(ToolSpec("adsorption_workflow_remote_submit", "把已准备好的 adsorption workflow bundle 的三个关联子任务提交到远程集群。危险操作：每次提交都必须由人类显式确认。", {"run_root": {"type": "string"}}, False, ("run_root",), False, True), self._adsorption_workflow_remote_submit)
+        self._register(ToolSpec("adsorption_workflow_monitor", "轮询 adsorption workflow bundle 的三个关联子任务，并持久化各自最新状态。", {"run_root": {"type": "string"}}, False, ("run_root",), False), self._adsorption_workflow_monitor)
+        self._register(ToolSpec("adsorption_workflow_fetch", "从远程集群拉回 adsorption workflow bundle 三个子任务的 VASP 输出。", {"run_root": {"type": "string"}}, False, ("run_root",), False), self._adsorption_workflow_fetch)
+        self._register(ToolSpec("adsorption_workflow_parse_analyze", "解析 adsorption workflow bundle 三个子任务的输出并汇总吸附能；只基于真实已拉回输出形成结果。", {"run_root": {"type": "string"}}, False, ("run_root",), False), self._adsorption_workflow_parse_analyze)
         self._register(ToolSpec("recommend_next_tasks", "推荐下一步科研任务。", {"project": {"type": "string"}, "focus": {"type": "string"}}, True), self._recommend_next_tasks)
         self._register(ToolSpec("result_interpret", "解释本地 run_root 的 VASP 输出证据；不要把 /home/... 远端路径传给本工具。远端结果请先用 cluster_job_partial_outcar / cluster_job_progress_estimate / cluster_job_tail_log 取证。", {"run_root": {"type": "string"}}, True, ("run_root",)), self._result_interpret)
         self._register(ToolSpec("next_experiment_propose", "根据项目上下文和最近结果，给 3 个下一步科研动作候选。", {"project": {"type": "string"}, "recent_results": {"type": "array", "items": {"type": "object"}}}, True), self._next_experiment_propose)
@@ -665,6 +677,7 @@ class ToolRegistry:
             "structure_enumerate_sites",
             "candidate_quality_score",
             "manifest_audit",
+            "adsorption_workflow_status",
             "dft_run_report",
             "dft_run_list",
             "vasp_input_summary",
@@ -888,9 +901,9 @@ class ToolRegistry:
                 {"category": "project_context", "tools": ["project_continuity_digest", "web_search", "literature_search", "evidence_claim_audit", "chemistry_compute", "image_understand", "discussion_state_snapshot", "research_cycle_checkpoint", "auto_mode_status", "auto_mode_checkpoint", "auto_mode_convergence_audit", "auto_human_question", "research_followup_list", "research_followup_due", "research_followup_schedule", "research_onboarding_context", "research_proposal_plan", "architecture_live_doc_snapshot", "project_state_read", "research_progress_append", "project_progress_append", "recommend_next_tasks"]},
                 {"category": "auto_campaign", "tools": ["auto_campaign_start", "auto_campaign_list", "auto_campaign_status", "auto_campaign_register_candidates", "auto_campaign_update_candidate", "auto_campaign_next_batch", "auto_campaign_prune_plan"]},
                 {"category": "structure_modeling", "tools": ["structure_modeling_tool_status", "structure_modeling_intent_plan", "structure_convert", "structure_resolve", "structure_sanity_check", "structure_build_slab", "slab_surface_inspect", "adsorbate_chemistry_hint", "knowledge_search_for_system", "structure_enumerate_sites", "adsorption_candidate_plan", "structure_add_adsorbate", "candidate_quality_score", "structure_relax_short", "structure_defect", "defect_site_enumerate", "ts_midpoint_candidates_enumerate", "convergence_plan_compose", "adsorption_plan", "adsorption_build_slab", "adsorption_candidate_manifest_compose", "adsorption_candidates"]},
-                {"category": "dft_execution", "tools": ["cluster_execution_intent_plan", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_profile_list", "cluster_probe", "cluster_config", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "cluster_job_cancel"]},
+                {"category": "dft_execution", "tools": ["cluster_execution_intent_plan", "research_vasp_template_resolve", "dft_run_task", "vasp_input_preflight_check", "vasp_input_summary", "dft_run_report", "dft_run_list", "cluster_profile_list", "cluster_probe", "cluster_config", "research_workspace_diff", "research_workspace_sync_to_cluster", "research_workspace_sync_from_cluster", "research_workspace_pull_logs", "cluster_remote_submit", "cluster_remote_monitor", "cluster_remote_fetch", "adsorption_workflow_status", "adsorption_workflow_remote_submit", "adsorption_workflow_monitor", "adsorption_workflow_fetch", "cluster_job_cancel"]},
                 {"category": "realtime_cluster_status", "tools": ["cluster_job_status_brief", "cluster_my_jobs", "cluster_job_tail_log", "cluster_job_partial_outcar", "cluster_job_progress_estimate", "job_watch_snapshot", "cluster_job_cancel"]},
-                {"category": "result_analysis", "tools": ["vasp_output_scan", "result_interpret", "next_experiment_propose", "candidate_outcome_record", "adsorption_relaxation_feedback"]},
+                {"category": "result_analysis", "tools": ["vasp_output_scan", "adsorption_workflow_parse_analyze", "result_interpret", "next_experiment_propose", "candidate_outcome_record", "adsorption_relaxation_feedback"]},
                 {"category": "writeback_learning", "tools": ["research_learning_capture", "research_cycle_checkpoint", "evidence_claim_audit", "knowledge_note_add", "knowledge_note_search", "knowledge_note_show", "project_progress_append", "behavior_audit"]},
             ],
             "evaluation_tools": ["adsorption_eval_case_list", "adsorption_eval_score_plan"],
@@ -2749,7 +2762,52 @@ class ToolRegistry:
         return {"status": result.status, "message": result.message, "details": result.details}
 
     def _adsorption_workflow_status(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return {"status": "ok", "result": collect_adsorption_workflow_status(Path(payload["run_root"]))}
+        run_root = str(payload.get("run_root") or "").strip()
+        if not run_root:
+            return {"status": "error", "message": "缺少 run_root。"}
+        return {"status": "ok", "result": collect_adsorption_workflow_status(Path(run_root))}
+
+    def _adsorption_workflow_remote_submit(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not self.allow_cluster_submit:
+            return {
+                "status": "blocked",
+                "message": "当前运行未启用 allow_cluster_submit；不会假装提交 adsorption workflow。",
+            }
+        return self._execute_adsorption_workflow(payload, submit=True, remote=True)
+
+    def _adsorption_workflow_monitor(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._execute_adsorption_workflow(payload, monitor=True)
+
+    def _adsorption_workflow_fetch(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._execute_adsorption_workflow(payload, fetch=True)
+
+    def _adsorption_workflow_parse_analyze(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._execute_adsorption_workflow(payload, parse_analyze=True)
+
+    @staticmethod
+    def _execute_adsorption_workflow(
+        payload: dict[str, Any],
+        *,
+        submit: bool = False,
+        status: bool = False,
+        monitor: bool = False,
+        fetch: bool = False,
+        parse_analyze: bool = False,
+        remote: bool = False,
+    ) -> dict[str, Any]:
+        run_root = str(payload.get("run_root") or "").strip()
+        if not run_root:
+            return {"status": "error", "message": "缺少 run_root。"}
+        result = execute_adsorption_workflow(
+            run_root=Path(run_root),
+            submit=submit,
+            status=status,
+            monitor=monitor,
+            fetch=fetch,
+            parse_analyze=parse_analyze,
+            remote=remote,
+        )
+        return {"status": "ok", "result": result}
 
     def _recommend_next_tasks(self, payload: dict[str, Any]) -> dict[str, Any]:
         project = str(payload.get("project") or "").strip() or None

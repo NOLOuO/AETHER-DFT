@@ -48,6 +48,43 @@ class FakeToolCallingAdapter:
         return {"content": "已读取项目状态，可以继续推进。", "finish_reason": "stop", "tool_calls": []}
 
 
+class WorkflowLifecycleAdapter:
+    runtime = type("Runtime", (), {"model_id": "fake:workflow-lifecycle"})()
+
+    def __init__(self, run_root: Path):
+        self.run_root = run_root
+        self.calls = 0
+        self.sequence = [
+            "adsorption_workflow_monitor",
+            "adsorption_workflow_fetch",
+            "adsorption_workflow_parse_analyze",
+        ]
+
+    def chat(self, messages, *, tools=None, tool_choice="auto", max_tokens=None):
+        names = {tool["function"]["name"] for tool in tools or []}
+        assert set(self.sequence).issubset(names)
+        if self.calls < len(self.sequence):
+            name = self.sequence[self.calls]
+            self.calls += 1
+            return {
+                "content": "",
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": f"call_{self.calls}",
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": json.dumps({"run_root": str(self.run_root)}),
+                        },
+                    }
+                ],
+            }
+        tool_names = [item.get("name") for item in messages if item.get("role") == "tool"]
+        assert tool_names[-3:] == self.sequence
+        return {"content": "三个关联子任务已回拉、解析并汇总。", "finish_reason": "stop", "tool_calls": []}
+
+
 class TextToolCallingAdapter:
     runtime = type("Runtime", (), {"model_id": "fake:deepseek-dsml"})()
 
@@ -181,6 +218,10 @@ def test_root_tool_registry_discovers_domain_tools():
     assert "cluster_remote_monitor" in names
     assert "cluster_remote_fetch" in names
     assert "adsorption_workflow_status" in names
+    assert "adsorption_workflow_remote_submit" in names
+    assert "adsorption_workflow_monitor" in names
+    assert "adsorption_workflow_fetch" in names
+    assert "adsorption_workflow_parse_analyze" in names
     by_name = {item["name"]: item for item in tools}
     for side_effect_tool in {
         "structure_convert",
@@ -201,6 +242,10 @@ def test_root_tool_registry_discovers_domain_tools():
         "cluster_remote_submit",
         "cluster_remote_monitor",
         "cluster_remote_fetch",
+        "adsorption_workflow_remote_submit",
+        "adsorption_workflow_monitor",
+        "adsorption_workflow_fetch",
+        "adsorption_workflow_parse_analyze",
     }:
         if side_effect_tool in {"knowledge_note_search", "knowledge_note_show"}:
             assert by_name[side_effect_tool]["read_only"] is True
@@ -230,6 +275,49 @@ def test_agent_harness_executes_tool_loop_and_persists_session(tmp_path: Path, m
     resumed = sessions.store.resume_payload(session_id=record["session_id"])
     assert resumed["status"] == "ok"
     assert resumed["state"]["turn_count"] == 1
+
+
+def test_agent_harness_can_complete_adsorption_workflow_lifecycle(tmp_path: Path, monkeypatch):
+    captured: list[dict[str, Any]] = []
+
+    def fake_execute_adsorption_workflow(**kwargs):
+        captured.append(kwargs)
+        return {
+            "run_root": str(kwargs["run_root"]),
+            "actions": {key: bool(kwargs.get(key)) for key in ("monitor", "fetch", "parse_analyze")},
+            "workflow_status": {"status": "completed"},
+        }
+
+    monkeypatch.setattr(
+        "aether_dft.runtime_harness.tool_registry.execute_adsorption_workflow",
+        fake_execute_adsorption_workflow,
+    )
+    run_root = tmp_path / "adsorption-bundle"
+    harness = AgentHarness(
+        adapter=WorkflowLifecycleAdapter(run_root),
+        registry=ToolRegistry(permission_mode="dev"),
+        sessions=HarnessSessionStore(tmp_path / "sessions"),
+    )
+
+    record = harness.run_turn(
+        "[execution-mode] 继续这个 adsorption workflow：监控、回拉并解析三个关联子任务。",
+        max_steps=5,
+    )
+
+    assert record["response"] == "三个关联子任务已回拉、解析并汇总。"
+    assert [item["name"] for item in record["tool_executions"]] == [
+        "adsorption_workflow_monitor",
+        "adsorption_workflow_fetch",
+        "adsorption_workflow_parse_analyze",
+    ]
+    assert [
+        (item["monitor"], item["fetch"], item["parse_analyze"])
+        for item in captured
+    ] == [
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+    ]
 
 
 def test_agent_harness_executes_dsml_text_tool_calls(tmp_path: Path, monkeypatch):
@@ -582,6 +670,37 @@ def test_cluster_remote_tools_route_to_runner_and_store(tmp_path: Path, monkeypa
 
     fetch = registry.run_tool("cluster_remote_fetch", {"run_root": str(tmp_path / "run")})
     assert fetch["result"]["status"] == "synced"
+
+
+def test_adsorption_workflow_submit_requires_one_time_human_approval(tmp_path: Path, monkeypatch):
+    captured: list[dict[str, Any]] = []
+
+    def fake_execute_adsorption_workflow(**kwargs):
+        captured.append(kwargs)
+        return {"run_root": str(kwargs["run_root"]), "actions": {"submit": kwargs["submit"]}}
+
+    monkeypatch.setattr(
+        "aether_dft.runtime_harness.tool_registry.execute_adsorption_workflow",
+        fake_execute_adsorption_workflow,
+    )
+    registry = ToolRegistry(allow_cluster_submit=True, permission_mode="dev")
+    arguments = {"run_root": str(tmp_path / "adsorption-bundle")}
+
+    denied = registry.run_tool("adsorption_workflow_remote_submit", arguments)
+    assert denied["result"]["status"] == "permission_required"
+    assert denied["result"]["explicit_human_required"] is True
+    assert captured == []
+
+    approval = registry._issue_tool_approval("adsorption_workflow_remote_submit", arguments)
+    submitted = registry.run_tool(
+        "adsorption_workflow_remote_submit",
+        arguments,
+        approval_token=approval,
+    )
+
+    assert submitted["result"]["status"] == "ok"
+    assert captured[0]["submit"] is True
+    assert captured[0]["remote"] is True
 
 
 def test_research_workspace_tools_status_and_sync_dry_run(monkeypatch):

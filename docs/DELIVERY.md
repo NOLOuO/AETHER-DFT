@@ -86,13 +86,19 @@ $env:AETHER_RUN_LLM_TESTS='1'
 
 最近一次手动验证（2026-06-06）：`1 passed`，模型 `deepseek:deepseek-v4-pro` 能真实调用工具生成 adsorption candidate plan。该测试默认跳过，只有显式设置 `AETHER_RUN_LLM_TESTS=1` 才会访问真实 API。
 
+生产 harness 最新烟测（2026-07-14）：真实 `deepseek:deepseek-v4-pro` 在 CLI 中调用
+`aether_discover_tools`，正确发现 `adsorption_workflow_remote_submit`、
+`adsorption_workflow_monitor`、`adsorption_workflow_fetch`、
+`adsorption_workflow_parse_analyze` 和 `adsorption_workflow_status`。这些工具已接入交互式
+`ToolRegistry`，不再只存在于旧 runner 或手工 CLI；真实 submit 仍要求一次性人类批准。
+
 ## 全量回归
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-本轮回归结果：`242 passed, 1 skipped`。
+本轮回归结果（2026-07-14）：`464 passed, 1 skipped`；Ruff 与 compileall 同时通过。
 
 ## 真实模型后端 smoke
 
