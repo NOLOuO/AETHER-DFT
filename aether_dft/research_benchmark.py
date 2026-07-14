@@ -526,7 +526,6 @@ def score_benchmark(traces: list[dict[str, Any]]) -> dict[str, Any]:
         variants.setdefault(result["variant"], []).append(result)
     summary = {}
     for variant, rows in variants.items():
-        scores = [float(row["score"]) for row in rows]
         scores_by_case: dict[str, list[float]] = {}
         for row in rows:
             scores_by_case.setdefault(str(row["case"]["case_id"]), []).append(float(row["score"]))
