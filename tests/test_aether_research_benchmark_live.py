@@ -179,6 +179,8 @@ def test_live_runner_restarts_harness_and_scores_durable_state(monkeypatch, tmp_
     assert trace["final_goal"].startswith("Identify the most stable")
     assert trace["final_memory"] == ["same research goal", "latest accepted candidate"]
     assert len(trace["record_paths"]) == 2
+    assert trace["evaluated_at"] == trace["final_state"]["updated_at"]
+    assert all(item["observed_at"] == trace["evaluated_at"] for item in trace["final_state"]["evidence"])
 
 
 class _HumanBoundaryAdapter:

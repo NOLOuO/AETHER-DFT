@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
@@ -464,6 +465,12 @@ def run_live_research_benchmark(
                     int((call.get("usage") or {}).get("completion_tokens") or (call.get("usage") or {}).get("output_tokens") or 0)
                     for call in model_calls
                 )
+                evaluated_at = datetime.now().astimezone().isoformat(timespec="seconds")
+                final_evidence = []
+                for item in registry.evidence:
+                    evidence_item = dict(item)
+                    evidence_item.setdefault("observed_at", evaluated_at)
+                    final_evidence.append(evidence_item)
                 traces.append(
                     {
                         "case_id": case.case_id,
@@ -475,6 +482,7 @@ def run_live_research_benchmark(
                         "actions": registry.actions,
                         "questions": registry.questions,
                         "final_memory": observed_facts,
+                        "evaluated_at": evaluated_at,
                         "final_state": {
                             "project": f"benchmark-{case.case_id}",
                             "research_goal": final_goal,
@@ -482,7 +490,7 @@ def run_live_research_benchmark(
                                 finalized.get("status")
                                 or ("waiting_for_human" if record.get("finish_reason") == "waiting_for_human" else "active")
                             ),
-                            "evidence": registry.evidence,
+                            "evidence": final_evidence,
                             "claims": [
                                 {
                                     "claim_id": f"{case.case_id}-final-claim",
@@ -491,6 +499,7 @@ def run_live_research_benchmark(
                                     "requires_live_evidence": case.requires_live_evidence,
                                 }
                             ],
+                            "updated_at": evaluated_at,
                         },
                         "record_paths": [item.get("record_path") for item in records],
                         "finish_reason": record.get("finish_reason"),

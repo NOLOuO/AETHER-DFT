@@ -132,7 +132,11 @@ def normalize_scientific_state(project: str, payload: dict[str, Any] | None = No
     )
 
 
-def audit_scientific_state(state: ScientificProjectState | dict[str, Any]) -> dict[str, Any]:
+def audit_scientific_state(
+    state: ScientificProjectState | dict[str, Any],
+    *,
+    reference_time: datetime | None = None,
+) -> dict[str, Any]:
     normalized = (
         state
         if isinstance(state, ScientificProjectState)
@@ -144,7 +148,9 @@ def audit_scientific_state(state: ScientificProjectState | dict[str, Any]) -> di
         if item.locator:
             evidence_by_ref[item.locator] = item
     findings: list[dict[str, str]] = []
-    now = datetime.now().astimezone()
+    now = reference_time or datetime.now().astimezone()
+    if now.tzinfo is None:
+        now = now.astimezone()
 
     def trusted_fresh_live(item: EvidenceRecord) -> bool:
         if not (item.live and item.source_type == "live_cluster" and item.producer.startswith("tool:")):

@@ -188,6 +188,12 @@ def test_reference_ablation_fixtures_score_below_full_system():
     assert stateless_effect["mean_score_difference"] > 0
 
 
+def test_recorded_trace_rescoring_is_bitwise_deterministic():
+    traces = reference_traces() + reference_ablation_traces()
+
+    assert score_benchmark(traces) == score_benchmark(traces)
+
+
 def test_deadline_exceeded_episode_never_passes_even_with_complete_scientific_state():
     trace = reference_traces()[0]
     trace["deadline_exceeded"] = True
