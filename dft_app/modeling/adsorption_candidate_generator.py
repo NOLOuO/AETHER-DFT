@@ -8,8 +8,8 @@ import numpy as np
 from ase import Atoms
 from ase.build import molecule as ase_molecule
 from ase.io import read as ase_read
-from pymatgen.analysis.adsorption import AdsorbateSiteFinder
 from pymatgen.core import Structure
+from pymatgen.core.adsorption import AdsorbateSiteFinder
 from pymatgen.io.ase import AseAtomsAdaptor
 
 from .adsorption_models import AdsorptionCandidate

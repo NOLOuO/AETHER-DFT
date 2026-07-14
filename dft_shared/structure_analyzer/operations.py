@@ -264,7 +264,7 @@ def enumerate_adsorption_sites(
     - ``slab_top_z``: 顶层 z 坐标参考。
     """
     structure = _load_structure(slab_path)
-    from pymatgen.analysis.adsorption import AdsorbateSiteFinder
+    from pymatgen.core.adsorption import AdsorbateSiteFinder
     finder = AdsorbateSiteFinder(structure)
     raw_sites = finder.find_adsorption_sites()
 
